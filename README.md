@@ -120,3 +120,10 @@ This stage takes the per-run tetramer count files and generates feature sets (cl
   Each CSV row is a sequencing run; `cluster_*` columns are normalized per-run abundances.
 - `make fit_uc_cap` fits the UC/CAP features using the same models and hyperparameters described above for the tetramer classifier.
   With `FEAT=M EXPT=N` it writes results to `results/uc_cap/{M}/{name}.json` using the N'th named `fit_classifier` experiment in `experiments.yaml`
+
+### HyenaDNA
+
+HyenaDNA code is located under `hyena_dna/`:
+
+- `standalone_hyenadna.py` was downloaded from [HazyResearch/hyena-dna](https://github.com/HazyResearch/hyena-dna)
+- `huggingface_wrapper.py` and `inference_example` were extracted from the [HyenaDNA Colab Notebook](https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL)
