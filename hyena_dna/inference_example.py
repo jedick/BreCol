@@ -2,13 +2,17 @@
 # Date added to repo: 2026-05-05
 # Source Colab notebook: HyenaDNA training & inference example (Public)
 # Source URL: https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL
+# Local modifications:
+#   - Change imports
+#   - Comment add_special_tokens=False (was getting AttributeError: add_special_tokens
+#     conflicts with the method add_special_tokens in CharacterTokenizer)
+#   - Use download=False (avoids downloading the checkpoint on every invocation)
+# Modified by: Jeffrey Dick
 
 #@title Single example
-import json
-import os
-import subprocess
-import transformers
-from transformers import PreTrainedModel, AutoModelForCausalLM, PretrainedConfig
+import torch
+from standalone_hyenadna import HyenaDNAModel, CharacterTokenizer
+from huggingface_wrapper import HyenaDNAPreTrainedModel
 
 def inference_single():
 
@@ -61,7 +65,8 @@ def inference_single():
         model = HyenaDNAPreTrainedModel.from_pretrained(
             './checkpoints',
             pretrained_model_name,
-            download=True,
+            # Change to True to force downloading the checkpoint
+            download=False,
             config=backbone_cfg,
             device=device,
             use_head=use_head,
@@ -76,7 +81,8 @@ def inference_single():
     tokenizer = CharacterTokenizer(
         characters=['A', 'C', 'G', 'T', 'N'],  # add DNA characters, N is uncertain
         model_max_length=max_length + 2,  # to account for special tokens, like EOS
-        add_special_tokens=False,  # we handle special tokens elsewhere
+        # Commented because add_special_tokens is incompatible with newer tokenizers
+        #add_special_tokens=False,  # we handle special tokens elsewhere
         padding_side='left', # since HyenaDNA is causal, we pad on the left
     )
 

@@ -123,7 +123,10 @@ This stage takes the per-run tetramer count files and generates feature sets (cl
 
 ### HyenaDNA
 
-HyenaDNA code is located under `hyena_dna/`:
+HyenaDNA code is located under `hyena_dna/`.
+Be sure to install the dependencies for HyenaDNA listed in `requirements.txt`.
 
 - `standalone_hyenadna.py` was downloaded from [HazyResearch/hyena-dna](https://github.com/HazyResearch/hyena-dna)
-- `huggingface_wrapper.py` and `inference_example` were extracted from the [HyenaDNA Colab Notebook](https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL)
+- `huggingface_wrapper.py` and `inference_example.py` were extracted from the [HyenaDNA Colab Notebook](https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL)
+- Local modifications are summarized in the comments in each file.
+- To run the inference example: `cd hyena_dna; python -c 'import inference_example as ex; ex.inference_single()'`

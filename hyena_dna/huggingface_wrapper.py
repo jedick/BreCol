@@ -2,16 +2,21 @@
 # Date added to repo: 2026-05-05
 # Source Colab notebook: HyenaDNA training & inference example (Public)
 # Source URL: https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL
+# Local modifications:
+#   - Change imports
+#   - Use weights_only=False for torch.load()
+# Modified by: Jeffrey Dick
 
 #@title Huggingface Pretrained Wrapper
 # for Huggingface integration, we use a wrapper class around the model
 # to load weights
-import json
-import os
-import subprocess
-import transformers
-from transformers import PreTrainedModel, AutoModelForCausalLM, PretrainedConfig
 import re
+import os
+import json
+import subprocess
+import torch
+from transformers import PreTrainedModel
+from standalone_hyenadna import HyenaDNAModel
 
 def inject_substring(orig_str):
     """Hack to handle matching keys between models trained with and without
@@ -106,7 +111,9 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
         scratch_model = HyenaDNAModel(**config, use_head=use_head, n_classes=n_classes)  # the new model format
         loaded_ckpt = torch.load(
             os.path.join(pretrained_model_name_or_path, 'weights.ckpt'),
-            map_location=torch.device(device)
+            map_location=torch.device(device),
+            # Needed for PyTorch >= 2.6
+            weights_only=False,
         )
 
         # need to load weights slightly different if using gradient checkpointing
