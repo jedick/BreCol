@@ -30,7 +30,7 @@ from tqdm import tqdm
 
 from shared_utilities import (
     binary_roc_auc_from_scores,
-    run_task_table_from_study_csvs,
+    build_run_task_table,
 )
 from hyenadna_fasta_data import (
     cache_slug,
@@ -280,15 +280,6 @@ def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     return args
 
 
-def _norm_label_arg(raw: object) -> Optional[str]:
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    if not s or s.lower() in ("null", "none"):
-        return None
-    return s
-
-
 def _write_results_json(
     path: Path,
     *,
@@ -368,12 +359,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if len(class_names) != 2:
         raise SystemExit(f"Expected 2 classes; meta has {class_names!r}.")
 
-    label_arg = _norm_label_arg(merged.get("label_column"))
-    run_task_df, label_column = run_task_table_from_study_csvs(
-        config_path=defaults_path,
-        task=task,
-        label_column=label_arg,
-    )
+    run_task_df = build_run_task_table(task, config_path=defaults_path)
     expected = (
         run_task_df.loc[:, ["Run", "split", "task_label"]]
         .drop_duplicates(subset=["Run"])

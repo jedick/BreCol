@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-"""Shared split-assignment and classifier table utilities.
+"""Shared split-assignment and run metadata utilities.
 
-This module centralizes:
-- deterministic run metadata and train/val/test/holdout split assignment
-- task/label table preparation shared by classifier scripts
+Public API
+----------
+build_run_split_table()       Run + sample_label + study_name + cancer_type + split
+build_run_task_table(task)    extends the above with a task_label column
+require_binary_classes()      validates a label array has exactly two classes
+binary_roc_auc_from_scores()  ROC AUC from positive-class probability scores
+
+Constants: RUN_PATTERN, TETRAMERS, CANCER_LABELS, SPLITS, TRAIN, VAL, TEST, HOLDOUT
+
+Consuming scripts merge their own feature data (tetramer CSV, CAP CSV, torch tensors)
+onto the table returned by build_run_task_table on Run, then subset by split:
+
+    df = build_run_task_table("cancer_diagnosis")
+    train_df = df[df["split"] == "train"]
 """
 
 from __future__ import annotations
@@ -12,7 +23,7 @@ import csv
 import itertools
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -34,36 +45,30 @@ CANCER_LABELS: Tuple[str, str] = ("breast_cancer", "colorectal_cancer")
 RUN_PATTERN = re.compile(r"^(SRR|ERR|DRR)\d+$")
 
 
-def stratified_split_70_10_20(
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _stratified_split_70_10_20(
     items: np.ndarray,
     labels: np.ndarray,
     random_state: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return stratified train/val/test arrays in a 70/10/20 split."""
-    items_tv, items_test, labels_tv, labels_test = train_test_split(
-        items,
-        labels,
-        test_size=0.2,
-        stratify=labels,
-        random_state=random_state,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return stratified (train, val, test) item arrays in a 70/10/20 split."""
+    items_tv, items_test, labels_tv, _ = train_test_split(
+        items, labels, test_size=0.2, stratify=labels, random_state=random_state,
     )
     val_fraction_of_tv = 0.1 / 0.8
-    items_train, items_val, labels_train, labels_val = train_test_split(
-        items_tv,
-        labels_tv,
-        test_size=val_fraction_of_tv,
-        stratify=labels_tv,
+    items_train, items_val, _, _ = train_test_split(
+        items_tv, labels_tv, test_size=val_fraction_of_tv, stratify=labels_tv,
         random_state=random_state,
     )
-    return items_train, items_val, items_test, labels_train, labels_val, labels_test
+    return items_train, items_val, items_test
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
-
-
-def _default_config_path() -> Path:
-    return _repo_root() / "defaults.yaml"
 
 
 def _resolve_repo_path(raw: object) -> Path:
@@ -72,7 +77,7 @@ def _resolve_repo_path(raw: object) -> Path:
 
 
 def _load_split_config(config_path: Optional[Path] = None) -> Tuple[Path, int, Path]:
-    cfg_path = config_path if config_path is not None else _default_config_path()
+    cfg_path = config_path if config_path is not None else _repo_root() / "defaults.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     try:
         datasets_csv = _resolve_repo_path(cfg["paths"]["datasets_csv"])
@@ -86,17 +91,14 @@ def _load_split_config(config_path: Optional[Path] = None) -> Tuple[Path, int, P
 
 
 def _row_is_sample_used(row: Mapping[str, object]) -> bool:
-    """Return True when a row uses sample_used=TRUE (case-insensitive)."""
     return (row.get("sample_used") or "").strip().casefold() == "true"
 
 
 def _run_metadata_from_study_csvs(datasets_csv: Path, data_dir: Path) -> pd.DataFrame:
-    """Build ordered Run metadata from ``datasets.csv`` and per-study ``data/`` CSVs."""
+    """Build ordered run metadata from datasets.csv and per-study data/ CSVs."""
     try:
         datasets_order = pd.read_csv(
-            datasets_csv,
-            dtype="string",
-            usecols=["study_name", "cancer_type"],
+            datasets_csv, dtype="string", usecols=["study_name", "cancer_type"],
         )
     except ValueError as exc:
         raise SystemExit(
@@ -104,7 +106,7 @@ def _run_metadata_from_study_csvs(datasets_csv: Path, data_dir: Path) -> pd.Data
             f"study_name and cancer_type: {exc}"
         ) from exc
 
-    records: List[dict[str, str]] = []
+    records: List[dict] = []
     run_first: Dict[str, Tuple[str, str]] = {}
 
     for _, ds_row in datasets_order.iterrows():
@@ -122,8 +124,7 @@ def _run_metadata_from_study_csvs(datasets_csv: Path, data_dir: Path) -> pd.Data
             )
 
         with open(study_path, newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
+            for row in csv.DictReader(handle):
                 run = (row.get("Run") or "").strip()
                 if not run or RUN_PATTERN.match(run) is None:
                     continue
@@ -150,52 +151,32 @@ def _run_metadata_from_study_csvs(datasets_csv: Path, data_dir: Path) -> pd.Data
 
                 run_first[run] = (study_name, sample_label)
                 records.append(
-                    {
-                        "Run": run,
-                        "sample_label": sample_label,
-                        "study_name": study_name,
-                        "cancer_type": cancer_type,
-                    }
+                    {"Run": run, "sample_label": sample_label,
+                     "study_name": study_name, "cancer_type": cancer_type}
                 )
 
     if not records:
         raise SystemExit(
-            "No eligible runs found in study data CSVs for shared splits "
+            "No eligible runs found in study data CSVs "
             "(need valid Run, sample_used=TRUE, non-empty sample_label)."
         )
 
     metadata = pd.DataFrame.from_records(records)
     for col in ("Run", "sample_label", "study_name", "cancer_type"):
         metadata[col] = metadata[col].astype(str).str.strip()
-
-    conflicts = metadata.groupby("Run")[["sample_label", "study_name"]].nunique()
-    bad_runs = conflicts[(conflicts["sample_label"] > 1) | (conflicts["study_name"] > 1)]
-    if not bad_runs.empty:
-        raise SystemExit(
-            "A run has conflicting sample_label or study_name values. "
-            f"Example runs: {bad_runs.index[:5].tolist()}"
-        )
     return metadata
-
-
-def build_run_metadata(*, config_path: Optional[Path] = None) -> pd.DataFrame:
-    """Return deterministic run metadata built from datasets and study CSVs."""
-    datasets_csv, _, data_dir = _load_split_config(config_path)
-    return _run_metadata_from_study_csvs(datasets_csv, data_dir)
 
 
 def _study_partitions(datasets_csv: Path) -> pd.DataFrame:
     datasets = pd.read_csv(
-        datasets_csv,
-        usecols=["study_name", "partition"],
+        datasets_csv, usecols=["study_name", "partition"],
         dtype={"study_name": "string", "partition": "string"},
     )
     datasets = datasets.dropna(subset=["study_name", "partition"]).copy()
     datasets["study_name"] = datasets["study_name"].astype(str).str.strip()
     datasets["partition"] = datasets["partition"].astype(str).str.strip().str.lower()
 
-    valid_partitions = {"development", "holdout"}
-    bad = sorted(set(datasets["partition"]) - valid_partitions)
+    bad = sorted(set(datasets["partition"]) - {"development", "holdout"})
     if bad:
         raise SystemExit(
             f"Invalid datasets.csv partition values: {bad}. "
@@ -204,18 +185,46 @@ def _study_partitions(datasets_csv: Path) -> pd.DataFrame:
     return datasets.drop_duplicates(subset=["study_name"])
 
 
-def load_run_split_map(*, config_path: Optional[Path] = None) -> Dict[str, SplitName]:
-    """Return canonical split assignment for every Run."""
+def _apply_task_labels(df: pd.DataFrame, task: str) -> pd.DataFrame:
+    """Add a task_label column; for cancer_type, also drops non-cancer rows."""
+    out = df.copy()
+    if task == "cancer_diagnosis":
+        out["task_label"] = np.where(
+            out["sample_label"].isin(CANCER_LABELS), "cancer", "healthy"
+        )
+        return out
+    if task == "cancer_type":
+        out = out[out["sample_label"].isin(CANCER_LABELS)].copy()
+        if out.empty:
+            raise SystemExit("Task cancer_type selected, but no cancer samples were found.")
+        out["task_label"] = out["sample_label"].astype(str)
+        return out
+    raise SystemExit(f"Unknown task value: {task!r}")
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def build_run_split_table(*, config_path: Optional[Path] = None) -> pd.DataFrame:
+    """Return run metadata with canonical split assignments.
+
+    Columns: Run, sample_label, study_name, cancer_type, split.
+    Row order matches datasets.csv study order, then per-study CSV row order.
+    Split assignment is deterministic: stratified 70/10/20 over development runs,
+    with holdout studies assigned the 'holdout' split directly.
+    """
     datasets_csv, random_state, data_dir = _load_split_config(config_path)
     metadata = _run_metadata_from_study_csvs(datasets_csv, data_dir)
     datasets = _study_partitions(datasets_csv)
     run_table = metadata.merge(datasets, on="study_name", how="left")
 
-    missing_partition = run_table["partition"].isna()
-    if missing_partition.any():
-        examples = sorted(run_table.loc[missing_partition, "study_name"].unique())[:5]
+    missing = run_table["partition"].isna()
+    if missing.any():
+        examples = sorted(run_table.loc[missing, "study_name"].unique())[:5]
         raise SystemExit(
-            "Some run metadata study_name values are missing from datasets.csv. "
+            "Some studies in run metadata are missing from datasets.csv. "
             f"Example studies: {examples}"
         )
 
@@ -228,11 +237,9 @@ def load_run_split_map(*, config_path: Optional[Path] = None) -> Dict[str, Split
     if development.empty:
         raise SystemExit("No development runs found for shared split assignment.")
 
-    runs = development["Run"].to_numpy(dtype=object)
-    labels = development["sample_label"].to_numpy(dtype=object)
-    runs_train, runs_val, runs_test, _, _, _ = stratified_split_70_10_20(
-        runs,
-        labels,
+    runs_train, runs_val, runs_test = _stratified_split_70_10_20(
+        development["Run"].to_numpy(dtype=object),
+        development["sample_label"].to_numpy(dtype=object),
         random_state=random_state,
     )
     for run in runs_train:
@@ -241,110 +248,33 @@ def load_run_split_map(*, config_path: Optional[Path] = None) -> Dict[str, Split
         split_map[str(run)] = VAL
     for run in runs_test:
         split_map[str(run)] = TEST
-    return split_map
 
-
-def assign_splits_for_runs(
-    runs: Iterable[object],
-    *,
-    config_path: Optional[Path] = None,
-) -> list[SplitName]:
-    """Return split names for input Runs, preserving input order."""
-    split_map = load_run_split_map(config_path=config_path)
-    out: list[SplitName] = []
-    missing: list[str] = []
-    for run in runs:
-        run_id = str(run)
-        split = split_map.get(run_id)
-        if split is None:
-            missing.append(run_id)
-        else:
-            out.append(split)
-    if missing:
-        raise SystemExit(
-            "Some Runs were not assigned by shared split logic. "
-            f"Example Runs: {missing[:5]}"
-        )
+    out = metadata.copy()
+    out["split"] = out["Run"].map(split_map)
     return out
 
 
-def add_split_column(
-    df: pd.DataFrame,
-    *,
-    config_path: Optional[Path] = None,
-    run_column: str = "Run",
-    split_column: str = "split",
-) -> pd.DataFrame:
-    """Return a copy of ``df`` with canonical split assignments attached."""
-    split_map = load_run_split_map(config_path=config_path)
-    out = df.copy()
-    out[run_column] = out[run_column].astype(str)
-    out[split_column] = out[run_column].map(split_map)
-    if out[split_column].isna().any():
-        examples = sorted(out.loc[out[split_column].isna(), run_column].unique())[:5]
-        raise SystemExit(
-            "Some Runs were not assigned by shared split logic. "
-            f"Example Runs: {examples}"
-        )
-    return out
+def build_run_task_table(task: str, *, config_path: Optional[Path] = None) -> pd.DataFrame:
+    """Return run metadata with canonical splits and task-specific labels.
 
+    Columns: Run, sample_label, study_name, cancer_type, split, task_label.
+    For task='cancer_type', rows for non-cancer runs are dropped.
 
-def resolve_label_column(fieldnames: Sequence[str], explicit: Optional[str]) -> str:
-    """Resolve the sample label column name from table columns/config."""
-    names = set(fieldnames)
-    if explicit is not None:
-        if explicit not in names:
-            raise SystemExit(f"Label column {explicit!r} not found in table.")
-        return explicit
-    if "sample_labels" in names:
-        return "sample_labels"
-    if "sample_label" in names:
-        return "sample_label"
-    raise SystemExit(
-        "No label column found. Expected 'sample_label' or 'sample_labels'; "
-        "use label_column in defaults.yaml."
-    )
-
-
-def run_task_table_from_study_csvs(
-    *,
-    config_path: Path,
-    task: str,
-    label_column: Optional[str] = None,
-) -> Tuple[pd.DataFrame, str]:
-    """Build run-level table with canonical splits and task-specific labels."""
-    meta = build_run_metadata(config_path=config_path)
-    resolved_label = resolve_label_column(meta.columns, label_column)
-    meta = add_split_column(meta, config_path=config_path, split_column="split")
-    task_df = prepare_task_table(meta, resolved_label, task)
-    return task_df, resolved_label
-
-
-def prepare_task_table(df: pd.DataFrame, label_column: str, task: str) -> pd.DataFrame:
-    """Map study labels to task labels for diagnosis/type tasks."""
-    out = df.copy()
-    if task == "cancer_diagnosis":
-        out["task_label"] = np.where(
-            out[label_column].isin(CANCER_LABELS),
-            "cancer",
-            "healthy",
-        )
-        return out
-    if task == "cancer_type":
-        out = out[out[label_column].isin(CANCER_LABELS)].copy()
-        if out.empty:
-            raise SystemExit("Task cancer_type selected, but no cancer samples were found.")
-        out["task_label"] = out[label_column].astype(str)
-        return out
-    raise SystemExit(f"Unknown task value: {task!r}")
+    Consuming scripts merge their feature data onto this table by Run, then
+    subset by split:
+        df = build_run_task_table("cancer_diagnosis")
+        train_df = df[df["split"] == "train"]
+    """
+    return _apply_task_labels(build_run_split_table(config_path=config_path), task)
 
 
 def require_binary_classes(y: np.ndarray, *, split_name: str, task: str) -> None:
-    """Validate that a split has exactly two classes."""
+    """Raise SystemExit unless the label array contains exactly two distinct classes."""
     classes = np.unique(np.asarray(y, dtype=object))
     if classes.size != 2:
         raise SystemExit(
-            f"Task {task!r} requires exactly 2 classes in {split_name}; got {classes.tolist()}."
+            f"Task {task!r} requires exactly 2 classes in {split_name}; "
+            f"got {classes.tolist()}."
         )
 
 
@@ -356,52 +286,7 @@ def binary_roc_auc_from_scores(y_true_obj: np.ndarray, y_score: np.ndarray) -> f
     if classes.size != 2:
         return float("nan")
     pos_label = classes[1]
-    y_bin = y_true_obj == pos_label
     try:
-        return float(roc_auc_score(y_bin, y_score))
+        return float(roc_auc_score(y_true_obj == pos_label, y_score))
     except ValueError:
         return float("nan")
-
-
-def load_tetramer_features(csv_path: Path) -> pd.DataFrame:
-    """Load and validate tetramer feature table columns used for classification."""
-    df = pd.read_csv(csv_path)
-    if df.empty:
-        raise SystemExit("No data rows in tetramer CSV.")
-    required = {"Run", *TETRAMERS}
-    missing = sorted(required - set(df.columns))
-    if missing:
-        raise SystemExit(
-            f"Tetramer CSV is missing {len(missing)} required columns (first few: {missing[:5]!r})."
-        )
-    out = df.copy()
-    out["Run"] = out["Run"].astype(str).str.strip()
-    if (out["Run"] == "").any():
-        raise SystemExit("Found empty 'Run' values in tetramer CSV.")
-    return out
-
-
-def build_task_splits(
-    task_df: pd.DataFrame,
-    *,
-    feature_cols: Sequence[str],
-    task: str,
-) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Build split -> (X, y) matrices for prepared task tables."""
-    frames = {
-        TRAIN: task_df[task_df["split"] == TRAIN],
-        VAL: task_df[task_df["split"] == VAL],
-        TEST: task_df[task_df["split"] == TEST],
-        HOLDOUT: task_df[task_df["split"] == HOLDOUT],
-    }
-    for split_name in (TRAIN, VAL, TEST):
-        if frames[split_name].empty:
-            raise SystemExit(f"No {split_name} rows found after task filtering.")
-    out: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
-    for split_name, frame in frames.items():
-        X = frame.loc[:, list(feature_cols)].to_numpy(dtype=np.float64, copy=False)
-        y = frame["task_label"].to_numpy(dtype=object)
-        out[split_name] = (X, y)
-    require_binary_classes(out[TRAIN][1], split_name="train split", task=task)
-    return out
-

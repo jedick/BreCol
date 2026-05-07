@@ -1,0 +1,63 @@
+---
+description: Replace old infrastructure with clean APIs; prefer composable reusable functions over task-specific helpers; no backward-compat shims.
+alwaysApply: true
+---
+
+# API evolution and code simplicity
+
+## No backward compatibility shims
+
+While this repo is under active development, **do not** add or keep compatibility shims for old file formats, JSON schemas, CLI flags, or Make targets **unless the user explicitly requests** backward compatibility.
+
+Update consumers (scripts, helpers, docs) to match the current contract; regenerate artifacts when shapes change.
+
+## Replace, don't accumulate
+
+When new functionality supersedes existing code, **remove the old code**. The default agent instinct is to add alongside existing infrastructure; resist this. Leaving old functions in place because they might be needed later creates the exact fragmentation that makes the codebase hard to understand.
+
+Signals that you should **replace** rather than add:
+- A new function makes an existing one redundant (even partially).
+- A consuming script imports many narrow helpers that together reconstruct one coherent concept — that is a sign the shared module grew by accumulation and should be collapsed.
+- Two scripts independently implement similar logic — consolidate into a shared utility and delete the copies.
+
+## Composable entry points over partial views
+
+Prefer functions that return a **combined table** over multiple functions that each return one slice of the same data. Consuming code can always subset columns or filter rows; it cannot easily reconstruct the whole from partial pieces without reimplementing join logic that belongs inside the utility.
+
+**Anti-pattern** — what caused `shared_utilities.py` to fragment:
+- `build_run_metadata()` → Run + sample_label, no split
+- `load_run_split_map()` → Run → split dict, no label
+- `add_split_column(df)` → caller must know to call this after the above
+- Result: every consumer imported 5–8 symbols and manually assembled the same table
+
+**Current design** — two composable entry points:
+- `build_run_split_table()` → Run + sample_label + study_name + cancer_type + split
+- `build_run_task_table(task)` → extends the above with task_label; cancer_type task also filters rows
+- Consumers merge their own feature data onto this table by Run, then subset by split
+
+The principle generalises: if you find yourself writing `foo = get_a(); bar = get_b(); merged = foo.merge(bar, ...)` in every consuming script, that merge belongs inside a shared function.
+
+## Slightly general beats perfectly specific
+
+The default agent instinct is to write the most efficient function for the immediate task. Prefer a function that is slightly more general — returning a column a given consumer ignores, or accepting an optional parameter — if that generalisation means the same function can be reused by a second script without duplication.
+
+The cost of one ignored column is negligible. The cost of two divergent implementations of the same concept — different error messages, subtle behavioural differences, separate bug-fix surfaces — compounds over time.
+
+## Feature data versus metadata
+
+In this project, **feature files** (`tetramer_frequencies.csv`, UC/CAP CSVs, torch tensor caches) carry **Run identifiers and feature columns only**. Labels and splits are always derived from study CSVs via `scripts/shared_utilities.py`.
+
+Consuming scripts follow this pattern:
+1. Call `build_run_task_table(task)` to get the canonical metadata table.
+2. Load the feature file for its `Run` and feature columns only.
+3. Inner-join features onto the metadata table by `Run`.
+
+Do not derive split assignments from feature files, and do not embed labels into feature files in a way that classifier scripts depend on.
+
+## Internalize validation; don't re-check guarantees at call sites
+
+If a function documents a guarantee about its output (e.g., every returned row has a valid split), consumers do **not** re-validate with `isna()` checks or similar assertions. Validation belongs inside the function, not scattered across every call site. Duplicated checks give a false impression that the guarantee might not hold, and they create silent divergence when the inner guarantee is strengthened.
+
+## Keep shared modules genuinely shared
+
+A function belongs in `shared_utilities.py` only if **more than one script uses it**. Task-specific helpers — e.g., sklearn/numpy matrix builders, a tetramer CSV loader — belong in the script that uses them. Shared modules that grow by accumulation become the hardest part of the codebase to understand; each addition should earn its place by serving multiple consumers.

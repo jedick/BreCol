@@ -10,6 +10,7 @@ $(strip $(shell awk -F': *' 'BEGIN{inside=0} $$1=="$(1)"{inside=1; next} inside 
 endef
 
 DATA_DIR := $(call yaml_section_value,paths,data_dir)
+DATASETS_CSV := $(ROOT)/$(call yaml_section_value,paths,datasets_csv)
 TETRAMER_FREQUENCIES_CSV := $(call yaml_section_value,paths,tetramer_frequencies_csv)
 UC_CAP_ROOT := $(call yaml_section_value,paths,uc_cap_root)
 SEQUENCE_CACHE_N_MAX := $(call yaml_section_value,sequence_cache,n_max_per_run)
@@ -104,8 +105,7 @@ help:
 	@echo "                make explain-sequence_cache"
 	@echo ""
 
-$(TETRA_CSV): $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py \
-		$(ROOT)/scripts/shared_utilities.py
+$(TETRA_CSV): $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py
 	@mkdir -p "$(dir $(TETRA_CSV))"
 	cd "$(ROOT)" && $(PYTHON) scripts/calculate_tetramer_frequencies.py
 
@@ -154,26 +154,23 @@ endef
 $(foreach i,$(TETRAMER_EXPERIMENT_INDICES),$(eval $(call tetramer_experiment_rule,$(i))))
 
 ifeq ($(strip $(EXPT)),0)
-torch_dataset: $(TETRA_CSV) $(ROOT)/scripts/build_torch_dataset.py \
+torch_dataset: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/build_torch_dataset.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
 		$(ROOT)/scripts/shared_utilities.py \
-		$(ROOT)/scripts/fit_classifier.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
 	@cd "$(ROOT)" && for i in $(HYENADNA_EXPERIMENT_INDICES); do \
 		$(PYTHON) scripts/build_torch_dataset.py --expt $$i; \
 	done
 else ifneq ($(strip $(EXPT)),)
-torch_dataset: $(TETRA_CSV) $(ROOT)/scripts/build_torch_dataset.py \
+torch_dataset: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/build_torch_dataset.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
 		$(ROOT)/scripts/shared_utilities.py \
-		$(ROOT)/scripts/fit_classifier.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_torch_dataset.py --expt $(EXPT)
 else
-torch_dataset: $(TETRA_CSV) $(ROOT)/scripts/build_torch_dataset.py \
+torch_dataset: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/build_torch_dataset.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
 		$(ROOT)/scripts/shared_utilities.py \
-		$(ROOT)/scripts/fit_classifier.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_torch_dataset.py
 endif
@@ -188,18 +185,18 @@ train_hyenadna: $(HYENADNA_EXPERIMENT_OUTPUT)
 		exit 2; \
 	fi
 else
-train_hyenadna: $(TETRA_CSV) $(ROOT)/scripts/train_hyenadna.py \
+train_hyenadna: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/train_hyenadna.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
-		$(ROOT)/scripts/fit_classifier.py \
+		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py --results-json $(EXPT_ARG)
 endif
 
 define train_hyenadna_experiment_rule
-$(word $(1),$(HYENADNA_EXPERIMENT_OUTPUTS)): $(TETRA_CSV) \
+$(word $(1),$(HYENADNA_EXPERIMENT_OUTPUTS)): $(DATA_CSVS) $(DATASETS_CSV) \
 		$(ROOT)/scripts/train_hyenadna.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
-		$(ROOT)/scripts/fit_classifier.py \
+		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml \
 		$(ROOT)/experiments.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py --expt $(1)

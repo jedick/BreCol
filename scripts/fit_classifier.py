@@ -35,15 +35,9 @@ from shared_utilities import (
     TEST,
     TRAIN,
     VAL,
-    add_split_column,
     binary_roc_auc_from_scores,
-    build_task_splits,
-    build_run_metadata,
-    load_tetramer_features,
-    load_run_split_map,
-    prepare_task_table,
+    build_run_task_table,
     require_binary_classes,
-    resolve_label_column,
     TETRAMERS,
 )
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -163,48 +157,15 @@ def _load_cap_csv(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     if df.empty:
         raise SystemExit("Input CSV has no data rows.")
-    required = {"Run", "sample_label"}
-    missing = sorted(required - set(df.columns))
-    if missing:
-        raise SystemExit(f"CSV missing required columns: {missing}")
-    feature_cols = [c for c in df.columns if c.startswith("cluster_")]
-    if not feature_cols:
+    if "Run" not in df.columns:
+        raise SystemExit("CSV missing required column: Run")
+    if not any(c.startswith("cluster_") for c in df.columns):
         raise SystemExit("CSV has no cluster feature columns (expected prefix 'cluster_').")
     if df["Run"].isna().any():
         raise SystemExit("Found empty Run values in CSV.")
-    if df["sample_label"].isna().any():
-        raise SystemExit("Found empty sample_label values in CSV.")
     return df
 
 
-def _validate_csv_splits(df: pd.DataFrame, expected: Dict[str, str]) -> None:
-    if "split" not in df.columns:
-        return
-    run_split_unique = df.loc[:, ["Run", "split"]].drop_duplicates()
-    split_counts = run_split_unique.groupby("Run")["split"].nunique()
-    bad = split_counts[split_counts > 1].index.tolist()
-    if bad:
-        raise SystemExit(
-            "A run has multiple split values in CSV. " f"Example runs: {bad[:5]}"
-        )
-    mismatches = []
-    for _, row in run_split_unique.iterrows():
-        run = str(row["Run"])
-        observed = str(row["split"]).strip()
-        expected_split = expected.get(run)
-        if expected_split is None:
-            mismatches.append((run, observed, "missing_in_expected"))
-            continue
-        if observed != expected_split:
-            mismatches.append((run, observed, expected_split))
-    if mismatches:
-        msg = ", ".join(
-            [f"{run}: csv={obs}, expected={exp}" for run, obs, exp in mismatches[:10]]
-        )
-        raise SystemExit(
-            "CSV split column does not match shared_utilities.py-derived splits. "
-            f"First mismatches: {msg}"
-        )
 
 
 # ----- Config loading -----
@@ -292,7 +253,6 @@ def _load_experiment_args(
         "features": features,
         "feat_index": feat,
         "csv": csv_path,
-        "label_column": config.get("label_column"),
         "model": str(config["model"]).strip(),
         "task": str(config["task"]).strip(),
         "random_state": int(config["random_state"]),
@@ -438,40 +398,55 @@ def _build_model_grids(args: argparse.Namespace) -> ModelGrids:
 # ----- Data loading and task splits -----
 
 
-def _load_tetramer_table(csv_path: Path, label_column_arg: Optional[str]) -> Tuple[pd.DataFrame, str]:
-    # Tetramer CSV is used for features only. Labels/splits are derived deterministically
-    # from `data/` study CSVs via shared_utilities.py, then merged by Run.
-    repo_root = Path(__file__).resolve().parent.parent
-    config_path = repo_root / "defaults.yaml"
-
-    feat_df = load_tetramer_features(csv_path)
-    meta = build_run_metadata(config_path=config_path)
-    label_column = resolve_label_column(meta.columns, label_column_arg)
-    meta = add_split_column(meta, config_path=config_path, split_column="split")
-    run_meta = meta.loc[:, ["Run", label_column, "study_name", "split"]].drop_duplicates(
-        subset=["Run"]
-    )
-    merged = feat_df.merge(run_meta, on="Run", how="left", validate="many_to_one")
-    if merged["split"].isna().any():
-        examples = (
-            merged.loc[merged["split"].isna(), "Run"].astype(str).unique().tolist()[:5]
-        )
+def _load_tetramer_features(csv_path: Path) -> pd.DataFrame:
+    """Load the tetramer feature CSV; return a table with Run and 256 tetramer columns."""
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        raise SystemExit("No data rows in tetramer CSV.")
+    required = {"Run", *TETRAMERS}
+    missing = sorted(required - set(df.columns))
+    if missing:
         raise SystemExit(
-            "Some Runs in tetramer_frequencies.csv were not assigned by shared split logic. "
-            f"Example Runs: {examples}"
+            f"Tetramer CSV is missing {len(missing)} required columns "
+            f"(first few: {missing[:5]!r})."
         )
-    return merged, label_column
+    out = df.copy()
+    out["Run"] = out["Run"].astype(str).str.strip()
+    if (out["Run"] == "").any():
+        raise SystemExit("Found empty 'Run' values in tetramer CSV.")
+    return out
+
+
+def _build_task_splits(
+    task_df: pd.DataFrame,
+    *,
+    feature_cols: Sequence[str],
+) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Build split → (X, y) matrices from a table that already has task_label and split."""
+    frames = {
+        TRAIN: task_df[task_df["split"] == TRAIN],
+        VAL: task_df[task_df["split"] == VAL],
+        TEST: task_df[task_df["split"] == TEST],
+        HOLDOUT: task_df[task_df["split"] == HOLDOUT],
+    }
+    for split_name in (TRAIN, VAL, TEST):
+        if frames[split_name].empty:
+            raise SystemExit(f"No {split_name} rows found after task filtering.")
+    return {
+        split_name: (
+            frame.loc[:, list(feature_cols)].to_numpy(dtype=np.float64, copy=False),
+            frame["task_label"].to_numpy(dtype=object),
+        )
+        for split_name, frame in frames.items()
+    }
 
 
 def _task_splits_from_table(
     df: pd.DataFrame,
     *,
-    label_column: str,
-    task: str,
     feature_cols: Sequence[str],
 ) -> TaskSplits:
-    task_df = prepare_task_table(df, label_column, task)
-    split_xy = build_task_splits(task_df, feature_cols=feature_cols, task=task)
+    split_xy = _build_task_splits(df, feature_cols=feature_cols)
     X_train, y_train = split_xy[TRAIN]
     X_val, y_val = split_xy[VAL]
     X_test, y_test = split_xy[TEST]
@@ -917,10 +892,6 @@ def _tune_model_on_validation(
 # ----- Evaluation and reporting -----
 
 
-def _binary_roc_auc_from_scores(y_true_obj: np.ndarray, y_score: np.ndarray) -> float:
-    return binary_roc_auc_from_scores(y_true_obj, y_score)
-
-
 def _evaluation_scores(pipe: Pipeline, X: np.ndarray) -> np.ndarray:
     clf = pipe.named_steps["clf"]
     if hasattr(clf, "predict_proba"):
@@ -938,11 +909,11 @@ def _evaluation_scores(pipe: Pipeline, X: np.ndarray) -> np.ndarray:
 def _evaluate_model(pipe: Pipeline, splits: TaskSplits) -> EvaluationResult:
     pipe.fit(splits.X_train, splits.y_train)
     test_scores = _evaluation_scores(pipe, splits.X_test)
-    test_auc = _binary_roc_auc_from_scores(splits.y_test, test_scores)
+    test_auc = binary_roc_auc_from_scores(splits.y_test, test_scores)
     holdout_auc = float("nan")
     if len(splits.y_holdout) > 0:
         hold_scores = _evaluation_scores(pipe, splits.X_holdout)
-        holdout_auc = _binary_roc_auc_from_scores(splits.y_holdout, hold_scores)
+        holdout_auc = binary_roc_auc_from_scores(splits.y_holdout, hold_scores)
     return EvaluationResult(test_auc=test_auc, holdout_auc=holdout_auc)
 
 
@@ -1053,7 +1024,6 @@ def _write_results_json(
     path: Path,
     *,
     args: argparse.Namespace,
-    label_column: str,
     n_components_grid: Sequence[int],
     tuning: TuningResult,
     evaluation: EvaluationResult,
@@ -1065,7 +1035,6 @@ def _write_results_json(
         "features": getattr(args, "features", ""),
         "feat_index": getattr(args, "feat_index", None),
         "csv": str(Path(args.csv).resolve()),
-        "label_column": label_column,
         "random_state": args.random_state,
         "no_scaler": args.no_scaler,
         "no_clr": args.no_clr,
@@ -1162,35 +1131,25 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
     )
     config_path = root / "defaults.yaml"
 
+    # Labels and splits come from study CSVs via shared_utilities; feature CSVs
+    # provide only the Run identifier and feature columns.
+    run_task_df = build_run_task_table(args.task, config_path=config_path)
+
     if args.features == "tetramer":
-        feature_df, label_column = _load_tetramer_table(args.csv, args.label_column)
+        feat_df = _load_tetramer_features(args.csv)
+        merged = run_task_df.merge(
+            feat_df[["Run"] + list(TETRAMERS)], on="Run", how="inner"
+        )
+        feature_cols = list(TETRAMERS)
     else:
-        expected = load_run_split_map(config_path=config_path)
         cap_df = _load_cap_csv(Path(args.csv))
-        _validate_csv_splits(cap_df, expected)
-        feature_df = cap_df
-        label_column = resolve_label_column(feature_df.columns, args.label_column)
-
-    feature_df = add_split_column(feature_df, config_path=config_path, split_column="split")
-    if args.features == "tetramer":
-        splits = _task_splits_from_table(
-            feature_df,
-            label_column=label_column,
-            task=args.task,
-            feature_cols=TETRAMERS,
+        feature_cols = [c for c in cap_df.columns if c.startswith("cluster_")]
+        merged = run_task_df.merge(
+            cap_df[["Run"] + feature_cols], on="Run", how="inner"
         )
-        n_features = len(TETRAMERS)
-    else:
-        task_df_preview = prepare_task_table(feature_df, label_column, args.task)
-        feature_cols = [c for c in task_df_preview.columns if c.startswith("cluster_")]
-        splits = _task_splits_from_table(
-            feature_df,
-            label_column=label_column,
-            task=args.task,
-            feature_cols=feature_cols,
-        )
-        n_features = len(feature_cols)
 
+    n_features = len(feature_cols)
+    splits = _task_splits_from_table(merged, feature_cols=feature_cols)
     require_binary_classes(splits.y_train, split_name="train split", task=args.task)
     require_binary_classes(splits.y_val, split_name="validation split", task=args.task)
     require_binary_classes(splits.y_test, split_name="test split", task=args.task)
@@ -1227,7 +1186,6 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
         _write_results_json(
             results_json_path,
             args=args,
-            label_column=label_column,
             n_components_grid=n_components_grid,
             tuning=tuning,
             evaluation=evaluation,

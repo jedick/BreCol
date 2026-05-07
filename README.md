@@ -43,7 +43,7 @@ TLDR:
 2. Run `make fit_tetramer EXPT=0` to generate results files in `results/tetramer`.
 3. Run `make fit_uc_cap FEAT=0 EXPT=0` to generate results files in `results/uc_cap`.
 4. Run `make torch_dataset EXPT=0 && make train_hyenadna EXPT=0` to generate HyenaDNA results files in `results/hyenadna`.
-5. Use `helper/table*.py` scripts to make manuscript tables from the results files.
+5. Use `helpers/table*.py` scripts to make manuscript tables from the results files.
 
 ---
 
@@ -146,7 +146,7 @@ Project execution:
 
 Inputs/outputs:
 - Torch dataset:
-  - Inputs: `outputs/tetramer_frequencies.csv`, `fasta/<study>/<Run>.fasta.gz`, and `train_hyenadna` settings from `defaults.yaml`/`experiments.yaml`.
+  - Inputs: study metadata in `data/**/*.csv` and `datasets.csv`, `fasta/<study>/<Run>.fasta.gz`, and `train_hyenadna` settings from `defaults.yaml`/`experiments.yaml`.
   - Outputs: `outputs/torch_dataset/<model>__<task>__sets<num_sets>__L<max_length>/meta.json` and per-run tensors under `runs/*.pt`.
 - HyenaDNA classifier:
   - Inputs: cached torch dataset and pretrained weights under `checkpoints/<model>/` (or download on demand).

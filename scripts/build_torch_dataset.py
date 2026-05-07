@@ -33,7 +33,7 @@ from hyenadna_fasta_data import (  # noqa: E402
     resolve_repo_path,
     run_to_tensors,
 )
-from shared_utilities import require_binary_classes, run_task_table_from_study_csvs
+from shared_utilities import build_run_task_table, require_binary_classes
 
 DATASET_SCHEMA = "hyenadna_torch_dataset_v1"
 DATASET_VERSION = 1
@@ -45,15 +45,6 @@ def _paths_cfg(defaults_path: Path) -> Dict[str, Any]:
     if not isinstance(paths, dict):
         raise SystemExit(f"{defaults_path} must define paths as a mapping.")
     return paths
-
-
-def _norm_label_arg(raw: object) -> Optional[str]:
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    if not s or s.lower() in ("null", "none"):
-        return None
-    return s
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -92,7 +83,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     model_name = str(merged["model"]).strip()
     num_sets = int(merged["num_sets"])
     max_length = model_max_length(model_name, merged.get("max_length"))
-    label_arg = _norm_label_arg(merged.get("label_column"))
 
     slug = cache_slug(model_name, task, num_sets, max_length)
     out_dir = torch_root / slug
@@ -111,11 +101,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    task_df, label_column = run_task_table_from_study_csvs(
-        config_path=defaults_path,
-        task=task,
-        label_column=label_arg,
-    )
+    task_df = build_run_task_table(task, config_path=defaults_path)
     y_train = task_df.loc[task_df["split"] == "train", "task_label"].to_numpy(dtype=object)
     y_val = task_df.loc[task_df["split"] == "val", "task_label"].to_numpy(dtype=object)
     y_test = task_df.loc[task_df["split"] == "test", "task_label"].to_numpy(dtype=object)
@@ -199,7 +185,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         "task": task,
         "num_sets": num_sets,
         "classes": class_names,
-        "label_column": label_column,
         "slug": slug,
         "runs": run_records,
         "skipped": skipped,
