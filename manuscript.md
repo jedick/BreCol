@@ -1,5 +1,21 @@
 # Cancer detection with gut microbiomes using a DNA language model
 
+## Introduction
+
+For `cancer_diagnosis` each dataset has two labels (cancer or healthy).
+The controlled experimental conditions within a given study allow the model to learn patterns in sequences that distinguish between cancer and healthy samples.
+Although these distinguishing patterns are small (e.g. changes in species abundance) they represent biological signal that may transfer to new datasets.
+
+For `cancer_type` each dataset has a single label (all breast or all colorectal),
+so the model inevitably learns study-level confounders rather than pure biological signal.
+These study-level differences impart large signals in the sequences (e.g. different species and regions of the 16S gene)
+that likely overwhelm the biological differences between cancer types.
+This is why we expect `cancer_type` to be the *easier* task for in-study test data but the *harder* task for holdout data from unseen studies.
+
+The first reads in a FASTA are more likely to carry consistent study-specific artifacts
+(adapter remnants, library prep signatures, quality patterns from the sequencer).
+A model trained on these reads could achieve artificially high holdout AUC if holdout studies share similar sequencing protocols with development studies.
+
 ## Methods
 
 ### Data sources

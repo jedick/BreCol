@@ -24,6 +24,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 from hyenadna import HyenaDNAPreTrainedModel
+from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
@@ -261,6 +262,19 @@ def run_level_scores(
     return np.asarray(y_true, dtype=object), np.asarray(y_score, dtype=np.float64)
 
 
+def run_level_weighted_f1_from_scores(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    *,
+    negative_label: str,
+    positive_label: str,
+) -> float:
+    if y_true.size == 0:
+        return float("nan")
+    y_pred = np.where(y_score >= 0.5, positive_label, negative_label)
+    return float(f1_score(y_true, y_pred, average="weighted"))
+
+
 def train_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -320,9 +334,6 @@ def _write_results_json(
     payload = {
         "script": Path(__file__).name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "task": merged["task"],
-        "model": merged["model"],
-        "results_json": str(path.resolve()),
         "config": dict(merged),
         "data": {
             "cache": dict(cache_info),
@@ -336,6 +347,30 @@ def _write_results_json(
             "final_train_loss": float(last_train_loss),
         },
     }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _training_log_path_from_results(path: Path) -> Path:
+    return path.with_name(f"{path.stem}_training.json")
+
+
+def _float_or_none(x: float) -> Optional[float]:
+    return float(x) if x == x else None
+
+
+def _write_training_log(path: Path, epoch_rows: Sequence[Mapping[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: List[Dict[str, object]] = []
+    for row in epoch_rows:
+        payload.append(
+            {
+                "epoch": int(row["epoch"]),
+                "train_loss": float(row["train_loss"]),
+                "val_f1_weighted": _float_or_none(float(row["val_f1_weighted"])),
+                "test_roc_auc": _float_or_none(float(row["test_roc_auc"])),
+                "holdout_roc_auc": _float_or_none(float(row["holdout_roc_auc"])),
+            }
+        )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -401,8 +436,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise SystemExit("No training runs found after shared split assignment.")
     enc.fit(y_train)
     class_names = [str(x) for x in enc.classes_.tolist()]
+    if len(class_names) < 2:
+        raise SystemExit("HyenaDNA training expects at least 2 task classes.")
 
+    neg_class_index = 0
     pos_class_index = 1
+    neg_label = class_names[neg_class_index]
     pos_label = class_names[pos_class_index]
     print(
         f"\nHyenaDNA train | task={task} model={model_name} | "
@@ -422,10 +461,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         by_split[r.split].append(r)
 
     train_entries = by_split["train"]
+    val_entries = by_split["val"]
     test_entries = by_split["test"]
     holdout_entries = by_split["holdout"]
     if not train_entries:
         raise SystemExit("No training runs in cache (split=train). Build dataset first.")
+    if not val_entries:
+        raise SystemExit("No validation runs in cache.")
     if not test_entries:
         raise SystemExit("No test runs in cache.")
 
@@ -482,9 +524,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     epochs = int(merged["epochs"])
     last_loss = 0.0
+    epoch_log: List[Dict[str, float]] = []
+    best_val_f1 = float("-inf")
+    best_epoch = 0
+    best_test_auc = float("nan")
+    best_holdout_auc = float("nan")
+    best_state: Optional[Dict[str, torch.Tensor]] = None
+
+    results_path = _results_json_out_path(
+        repo_root,
+        merged.get("results_json"),
+        task=task,
+    )
+    training_log_path: Optional[Path] = None
+    if results_path is not None:
+        training_log_path = _training_log_path_from_results(results_path)
+
     for ep in range(1, epochs + 1):
         print(f"\n--- Epoch {ep}/{epochs} ---", flush=True)
         last_loss = train_epoch(model, train_loader, opt, device)
+        val_true, val_score = run_level_scores(
+            model,
+            val_entries,
+            device,
+            aggregate=aggregate,
+            pos_class_index=pos_class_index,
+            requested_num_sets=num_sets,
+            requested_max_len=max_len,
+            cache_num_sets=cache_num_sets,
+            cache_max_len=cache_max_len,
+        )
+        val_f1 = run_level_weighted_f1_from_scores(
+            val_true,
+            val_score,
+            negative_label=neg_label,
+            positive_label=pos_label,
+        )
         test_auc = binary_roc_auc_from_scores(
             *run_level_scores(
                 model,
@@ -513,17 +588,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     cache_max_len=cache_max_len,
                 )
             )
+        epoch_log.append(
+            {
+                "epoch": int(ep),
+                "train_loss": float(last_loss),
+                "val_f1_weighted": float(val_f1),
+                "test_roc_auc": float(test_auc),
+                "holdout_roc_auc": float(hold_auc),
+            }
+        )
+        if training_log_path is not None:
+            _write_training_log(training_log_path, epoch_log)
+        if val_f1 > best_val_f1:
+            best_val_f1 = float(val_f1)
+            best_epoch = int(ep)
+            best_test_auc = float(test_auc)
+            best_holdout_auc = float(hold_auc)
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         print(
-            f"train_loss={last_loss:.6f}  test_roc_auc={test_auc:.6f}  "
-            f"holdout_roc_auc={hold_auc:.6f}  (run-level; logits={aggregate})",
+            f"train_loss={last_loss:.6f}  val_f1_weighted={val_f1:.6f}  "
+            f"test_roc_auc={test_auc:.6f}  holdout_roc_auc={hold_auc:.6f}  "
+            f"(run-level; logits={aggregate})",
             flush=True,
         )
 
-    results_path = _results_json_out_path(
-        repo_root,
-        merged.get("results_json"),
-        task=task,
-    )
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
     if results_path is not None:
         _write_results_json(
             results_path,
@@ -536,12 +627,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "train_max_length": max_len,
                 "n_cached_runs": len(all_records),
             },
-            test_auc=test_auc,
-            holdout_auc=hold_auc,
+            test_auc=best_test_auc,
+            holdout_auc=best_holdout_auc,
             last_train_loss=last_loss,
             epochs_ran=epochs,
         )
         print(f"\nWrote results JSON: {results_path}", flush=True)
+        if training_log_path is not None:
+            print(f"Wrote training log JSON: {training_log_path}", flush=True)
+        print(
+            f"Best epoch by val_f1_weighted: {best_epoch} "
+            f"(val_f1_weighted={best_val_f1:.6f})",
+            flush=True,
+        )
 
     return 0
 
