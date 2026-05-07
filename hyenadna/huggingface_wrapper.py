@@ -16,7 +16,7 @@ import json
 import subprocess
 import torch
 from transformers import PreTrainedModel
-from standalone_hyenadna import HyenaDNAModel
+from .standalone_hyenadna import HyenaDNAModel
 
 def inject_substring(orig_str):
     """Hack to handle matching keys between models trained with and without
@@ -92,6 +92,7 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
                         device='cpu',
                         use_head=False,
                         n_classes=2,
+                        head_pooling_mode="pool",
                       ):
         # first check if it is a local path
         pretrained_model_name_or_path = os.path.join(path, model_name)
@@ -108,7 +109,12 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
             if config is None:
                 config = json.load(open(os.path.join(pretrained_model_name_or_path, 'config.json')))
 
-        scratch_model = HyenaDNAModel(**config, use_head=use_head, n_classes=n_classes)  # the new model format
+        scratch_model = HyenaDNAModel(
+            **config,
+            use_head=use_head,
+            n_classes=n_classes,
+            head_pooling_mode=head_pooling_mode,
+        )
         loaded_ckpt = torch.load(
             os.path.join(pretrained_model_name_or_path, 'weights.ckpt'),
             map_location=torch.device(device),

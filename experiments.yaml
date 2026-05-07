@@ -41,6 +41,26 @@ fit_classifier:
         task: cancer_type
         model: random_forest
 
+train_hyenadna:
+  results_json_template: results/hyenadna/{name}.json
+  experiments:
+    - name: cancer_diagnosis_1k
+      overrides:
+        task: cancer_diagnosis
+        model: hyenadna-tiny-1k-seqlen
+    - name: cancer_type_1k
+      overrides:
+        task: cancer_type
+        model: hyenadna-tiny-1k-seqlen
+    - name: cancer_diagnosis_32k
+      overrides:
+        task: cancer_diagnosis
+        model: hyenadna-small-32k-seqlen
+    - name: cancer_type_32k
+      overrides:
+        task: cancer_type
+        model: hyenadna-small-32k-seqlen
+
 # Flat list merged shallowly over the defaults.yaml run_uc_cap_pipeline baseline (feature sets; --feat 1..N).
 run_uc_cap_pipeline:
   - { n_uc: 1000, n_clusters: 2000, n_cap: 5000 }

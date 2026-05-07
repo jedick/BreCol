@@ -42,7 +42,8 @@ TLDR:
 1. Install script dependencies from the repository root: `pip install -r requirements.txt`.
 2. Run `make fit_tetramer EXPT=0` to generate results files in `results/tetramer`.
 3. Run `make fit_uc_cap FEAT=0 EXPT=0` to generate results files in `results/uc_cap`.
-4. Use `helper/table*.py` scripts to make manuscript tables from the results files.
+4. Run `make torch_dataset EXPT=0 && make train_hyenadna EXPT=0` to generate HyenaDNA results files in `results/hyenadna`.
+5. Use `helper/table*.py` scripts to make manuscript tables from the results files.
 
 ---
 
@@ -64,6 +65,8 @@ See the table for an overview of all the steps and read below for details.
 | 4. Sequence cache | build_uc_cap_sequence_cache.py | `make sequence_cache` |
 | 5. UC/CAP pipeline | run_uc_cap_pipeline.py | `make run_uc_cap` |
 | 6. UC/CAP classifier | fit_classifier.py --uc_cap | `make fit_uc_cap` |
+| 7. HyenaDNA torch dataset | build_torch_dataset.py | `make torch_dataset` |
+| 8. HyenaDNA classifier | train_hyenadna.py | `make train_hyenadna` |
 
 - Use `make fit_tetramer EXPT=1` to run a single experiment
 - Use`make fit_tetramer EXPT=0` to run all experiments.
@@ -85,6 +88,8 @@ For example, run `make explain-run_uc_cap`; replace the part after `explain-` wi
 4. Sequence cache. Inputs: `outputs/<cancer>/<study>/<Run>.csv.xz`. Outputs: `outputs/uc_cap/sequence_counts_first_{n_max_per_run}_all_runs.parquet`.
 5. UC/CAP pipeline. Inputs: `defaults.yaml`, `experiments.yaml` (for `FEAT>=1` or `FEAT=0`), `outputs/uc_cap/sequence_counts_first_{n_max_per_run}_all_runs.parquet`. Outputs: `outputs/uc_cap/uc{n}_k{k}/cap{n}.csv` (baseline from `defaults.yaml`; further feature-set rows from `experiments.yaml`).
 6. UC/CAP classifier. Inputs: CAP CSVs under `outputs/uc_cap/`. Outputs: default `make fit_uc_cap` uses scratch JSON; Make-driven `FEAT`/`EXPT` sweeps write under `results/uc_cap/<FEAT>/` (see UC/CAP classifier subsection).
+7. HyenaDNA torch dataset. Inputs: `outputs/tetramer_frequencies.csv`, `fasta/<study>/<Run>.fasta.gz`, and `train_hyenadna` settings from `defaults.yaml`/`experiments.yaml`. Outputs: `outputs/torch_dataset/<model>__<task>__sets<num_sets>__L<max_length>/meta.json` and per-run tensors under `runs/*.pt`.
+8. HyenaDNA classifier. Inputs: cached torch dataset from step 7 and pretrained weights under `checkpoints/<model>/` (or download on demand). Outputs: default `make train_hyenadna` writes `results/scratch/train_hyenadna_<task>_<timestamp>.json`; experiment runs (`make train_hyenadna EXPT=N`) write under `results/hyenadna/{name}.json`.
 
 </details>
 
@@ -126,7 +131,13 @@ This stage takes the per-run tetramer count files and generates feature sets (cl
 HyenaDNA code is located under `hyenadna/`.
 Be sure to install the dependencies for HyenaDNA listed in `requirements.txt`.
 
+Source files:
 - `standalone_hyenadna.py` was downloaded from [HazyResearch/hyena-dna](https://github.com/HazyResearch/hyena-dna)
 - `huggingface_wrapper.py` and `inference_example.py` were extracted from the [HyenaDNA Colab Notebook](https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL)
 - Local modifications are summarized in the comments in each file.
 - To run the inference example: `cd hyenadna; python -c 'import inference_example as ex; ex.inference_single()'`
+
+Project execution:
+- Build cached tensors (default config): `make torch_dataset`
+- Train/evaluate HyenaDNA (default config): `make train_hyenadna`
+- Run a specific experiment row from `experiments.yaml`: `make torch_dataset EXPT=1 && make train_hyenadna EXPT=1`

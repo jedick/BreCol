@@ -4,6 +4,7 @@
 # Local modifications:
 #   - Create vocabulary dictionaries before super().__init__()
 #   - Add get_vocab() method - fixes NotImplementedError for inference_single()
+#   - Add head_pooling_mode parameter
 # Modified by: Jeffrey Dick
 
 # -*- coding: utf-8 -*-
@@ -881,6 +882,7 @@ class HyenaDNAModel(nn.Module):
                  resid_dropout: float = 0.0, embed_dropout: float = 0.1,
                  layer_norm_epsilon: float = 1e-5, initializer_cfg=None,residual_in_fp32=False,
                  pad_vocab_size_multiple: int = 1, use_head=False, n_classes: int = 2,
+                 head_pooling_mode: str = "pool",
                  device=None, dtype=None, **kwargs) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super().__init__()
@@ -906,7 +908,9 @@ class HyenaDNAModel(nn.Module):
         # we only need a head if doing classification, otherwise we'll use the
         # hidden states as embeddings
         if self.use_head:
-            self.head = SequenceDecoder(d_model=d_model, d_output=n_classes, l_output=0, mode='pool')
+            self.head = SequenceDecoder(
+                d_model=d_model, d_output=n_classes, l_output=0, mode=head_pooling_mode
+            )
 
         # Initialize weights and apply final processing
         self.apply(partial(_init_weights, n_layer=n_layer,

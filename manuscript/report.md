@@ -67,6 +67,19 @@ We counted cluster memberships within each run and normalized by the number of a
 These CAP vectors were then used as the feature matrix for supervised classification for both binary tasks
 (cancer versus healthy and breast versus colorectal), with the downstream classifier selected separately.
 
+### Classification using HyenaDNA sequence modeling
+
+We trained HyenaDNA directly on run-level sequence data to test an end-to-end sequence model.
+For each run, we read the FASTA file and split its sequences into a fixed number of non-overlapping sets.
+Each set was packed to the model length limit and tokenized at the DNA character level.
+Datasets were saved to disk so training runs could reuse cached tensors instead of rebuilding the dataset each time.
+
+We initialized HyenaDNA from pretrained weights, used its classification head, and selected model size (for example 1k or 32k context),
+pooling mode, learning rate, batch size, number of epochs, and whether to freeze the backbone through YAML configuration.
+Because each run can produce multiple sequence sets, training loss was computed across all valid sets from each run.
+For evaluation, we converted set-level outputs to one run-level prediction by aggregating logits across sets (mean or max).
+We then computed ROC AUC on the same test and holdout splits as used in the tetramer and UC/CAP analyses.
+
 ## Results
 
 We defined two binary classification tasks: cancer vs healthy (diagnosis) and breast vs colorectal cancer (cancer type).

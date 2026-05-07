@@ -27,6 +27,12 @@ TETRAMER_EXPERIMENT_INDICES := $(shell seq 1 $(words $(TETRAMER_EXPERIMENT_OUTPU
 # Select a single fit_tetramer output path by 1-based EXPT index.
 TETRAMER_EXPERIMENT_OUTPUT := $(if $(filter-out 0,$(strip $(EXPT))),$(word $(EXPT),$(TETRAMER_EXPERIMENT_OUTPUTS)),)
 
+# train_hyenadna / build_torch_dataset (experiments.yaml train_hyenadna; EXPT like fit_tetramer).
+HYENADNA_EXPERIMENT_OUTPUTS := $(shell $(PYTHON) -c "import yaml,pathlib; r=pathlib.Path('$(ROOT)'); cfg=yaml.safe_load((r/'experiments.yaml').read_text(encoding='utf-8')); sec=cfg.get('train_hyenadna') or {}; tpl=str(sec.get('results_json_template','results/hyenadna/{name}.json')); exps=sec.get('experiments') or []; print(' '.join(str((r/tpl.format(name=e['name'])).resolve()) for e in exps if isinstance(e,dict) and e.get('name')))")
+HYENADNA_EXPERIMENT_NAMES := $(shell $(PYTHON) -c "import yaml,pathlib; r=pathlib.Path('$(ROOT)'); cfg=yaml.safe_load((r/'experiments.yaml').read_text(encoding='utf-8')); exps=(cfg.get('train_hyenadna') or {}).get('experiments') or []; print(' '.join(str(e['name']) for e in exps if isinstance(e,dict) and e.get('name')))")
+HYENADNA_EXPERIMENT_INDICES := $(shell seq 1 $(words $(HYENADNA_EXPERIMENT_OUTPUTS)))
+HYENADNA_EXPERIMENT_OUTPUT := $(if $(filter-out 0,$(strip $(EXPT))),$(word $(EXPT),$(HYENADNA_EXPERIMENT_OUTPUTS)),)
+
 # CAP CSV outputs for each run_uc_cap_pipeline row in experiments.yaml (merged with defaults).
 UC_CAP_FEATURE_OUTPUTS := $(shell $(PYTHON) $(ROOT)/helpers/list_uc_cap_feature_outputs.py "$(ROOT)")
 UC_CAP_FEATURE_INDICES := $(shell seq 1 $(words $(UC_CAP_FEATURE_OUTPUTS)))
@@ -47,7 +53,8 @@ DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help download_data tetramer_frequencies sequence_cache fit_tetramer fit_uc_cap run_uc_cap explain explain-%
+.PHONY: help download_data tetramer_frequencies sequence_cache fit_tetramer fit_uc_cap run_uc_cap \
+	torch_dataset train_hyenadna explain explain-%
 
 help:
 	@echo "LM-cancer-detection Makefile (script defaults from defaults.yaml)"
@@ -82,6 +89,14 @@ help:
 	@echo "      Build the baseline CAP CSV (defaults.yaml) if needed; incremental vs inputs."
 	@echo "      Optional: FEAT=<n> builds that feature-set CAP (1-based experiments.yaml index)."
 	@echo "      Optional: FEAT=0 builds all configured UC/CAP pipeline feature sets incrementally."
+	@echo ""
+	@echo "  make torch_dataset"
+	@echo "      Run scripts/build_torch_dataset.py (FASTA → outputs/torch_dataset/...)."
+	@echo "      Optional: EXPT=<n> for experiments.yaml train_hyenadna row; EXPT=0 builds all rows."
+	@echo ""
+	@echo "  make train_hyenadna"
+	@echo "      Run scripts/train_hyenadna.py; needs a matching torch dataset cache."
+	@echo "      Optional: EXPT=<n> or EXPT=0 (all train_hyenadna experiments), same as fit_tetramer."
 	@echo ""
 	@echo "  make explain TARGET=<make_target>"
 	@echo "      Compact dependency/mtime explanation using make --trace."
@@ -137,6 +152,59 @@ $(word $(1),$(TETRAMER_EXPERIMENT_OUTPUTS)): $(TETRA_CSV) \
 endef
 
 $(foreach i,$(TETRAMER_EXPERIMENT_INDICES),$(eval $(call tetramer_experiment_rule,$(i))))
+
+ifeq ($(strip $(EXPT)),0)
+torch_dataset: $(TETRA_CSV) $(ROOT)/scripts/build_torch_dataset.py \
+		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/shared_splits.py \
+		$(ROOT)/scripts/fit_classifier.py \
+		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
+	@cd "$(ROOT)" && for i in $(HYENADNA_EXPERIMENT_INDICES); do \
+		$(PYTHON) scripts/build_torch_dataset.py --expt $$i; \
+	done
+else ifneq ($(strip $(EXPT)),)
+torch_dataset: $(TETRA_CSV) $(ROOT)/scripts/build_torch_dataset.py \
+		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/shared_splits.py \
+		$(ROOT)/scripts/fit_classifier.py \
+		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/build_torch_dataset.py --expt $(EXPT)
+else
+torch_dataset: $(TETRA_CSV) $(ROOT)/scripts/build_torch_dataset.py \
+		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/shared_splits.py \
+		$(ROOT)/scripts/fit_classifier.py \
+		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/build_torch_dataset.py
+endif
+
+ifeq ($(strip $(EXPT)),0)
+train_hyenadna: $(HYENADNA_EXPERIMENT_OUTPUTS)
+	@echo "Up to date: all train_hyenadna experiments"
+else ifneq ($(strip $(EXPT)),)
+train_hyenadna: $(HYENADNA_EXPERIMENT_OUTPUT)
+	@if test -z "$(HYENADNA_EXPERIMENT_OUTPUT)"; then \
+		echo "Invalid EXPT=$(EXPT). Use EXPT=0 for all, or EXPT=1..N from experiments.yaml train_hyenadna."; \
+		exit 2; \
+	fi
+else
+train_hyenadna: $(TETRA_CSV) $(ROOT)/scripts/train_hyenadna.py \
+		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/fit_classifier.py \
+		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py --results-json $(EXPT_ARG)
+endif
+
+define train_hyenadna_experiment_rule
+$(word $(1),$(HYENADNA_EXPERIMENT_OUTPUTS)): $(TETRA_CSV) \
+		$(ROOT)/scripts/train_hyenadna.py \
+		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/fit_classifier.py \
+		$(ROOT)/defaults.yaml \
+		$(ROOT)/experiments.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py --expt $(1)
+endef
+$(foreach i,$(HYENADNA_EXPERIMENT_INDICES),$(eval $(call train_hyenadna_experiment_rule,$(i))))
 
 ifeq ($(strip $(FEAT)),0)
 run_uc_cap: $(UC_CAP_FEATURE_OUTPUTS)

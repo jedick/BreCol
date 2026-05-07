@@ -10,6 +10,8 @@ paths:
   results_dir: results
   # Ephemeral / local experiment outputs (gitignored); finalized copies go under results/
   results_scratch_dir: results/scratch
+  # HyenaDNA tensor caches from scripts/build_torch_dataset.py (per model/task/num_sets/L).
+  torch_dataset_dir: outputs/torch_dataset
   datasets_csv: datasets.csv
   # Run-level tetramer frequency table (input for scripts/fit_classifier.py --tetramer).
   tetramer_frequencies_csv: outputs/tetramer_frequencies.csv
@@ -64,6 +66,42 @@ fit_classifier:
   # Validation metric to maximize during hyperparameter tuning.
   val_scoring: f1_weighted
   # Optional output path for metrics JSON; null disables JSON output (experiments may set via template).
+  results_json: null
+
+# HyenaDNA fine-tuning (scripts/train_hyenadna.py, scripts/build_torch_dataset.py).
+# Optional --expt overlays train_hyenadna.experiments in experiments.yaml (1-based index).
+train_hyenadna:
+  # Binary task: cancer_diagnosis or cancer_type (same label rules as fit_classifier).
+  task: cancer_diagnosis
+  # Pretrained checkpoint name under checkpoint_dir (see LongSafari/* on Hugging Face).
+  model: hyenadna-tiny-1k-seqlen
+  # Target label column; null = auto-detect sample_labels / sample_label (tetramer CSV).
+  label_column: null
+  # Non-overlapping sequence sets per Run (each set packed to max_length tokens).
+  num_sets: 5
+  # Max sequence length; null = use bundled default for model (e.g. 1024 / 32768).
+  max_length: null
+  # SequenceDecoder head mode in hyenadna/standalone_hyenadna.py: last, first, pool, sum.
+  head_pooling_mode: pool
+  # How to combine set-level logits into one prediction per Run at eval: mean or max.
+  run_logits_aggregate: mean
+  # Directory with downloaded HyenaDNA weights (see HyenaDNAPreTrainedModel.from_pretrained).
+  checkpoint_dir: checkpoints
+  # If true, git clone weights from Hugging Face when missing locally.
+  download_pretrained: false
+  # If true, only train the classification head.
+  freeze_backbone: false
+  # Optimization
+  epochs: 3
+  batch_size: 4
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  num_workers: 0
+  random_seed: 0
+  # Device: cuda, cpu, or null / auto for torch.cuda.is_available().
+  device: null
+  # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
+  # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template.
   results_json: null
 
 # build_uc_cap_sequence_cache.py — rows kept per run in the Parquet cache.
