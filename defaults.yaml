@@ -129,7 +129,7 @@ train_hyenadna:
   # If true, only train the classification head.
   freeze_backbone: false
   # Optimization
-  epochs: 10
+  epochs: 3
   batch_size: 8
   learning_rate: 1.0e-4
   weight_decay: 0.01

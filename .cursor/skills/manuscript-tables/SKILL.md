@@ -1,11 +1,12 @@
 ---
 name: manuscript-tables
 description: >-
-  Refreshes Table 1, 2, or 3 in manuscript/report.md from classifier JSON.
+  Refreshes Table 1, 2, 3, or 4 in manuscript.md from classifier JSON.
   User picks the table with a digit after the skill (e.g. /manuscript-tables 1):
-  1 = tetramer (table1_from_classifier.py), 2 = UC/CAP grid test AUC
-  (table2_uc_cap_from_classifier.py), 3 = UC/CAP triple test+holdout
-  (table3_uc_cap_from_classifier.py). Replace HTML only between the matching
+  1 = tetramer (table1_tetramer.py), 2 = UC/CAP grid test AUC
+  (table2_uc_cap.py), 3 = UC/CAP triple test+holdout
+  (table3_uc_cap.py), 4 = HyenaDNA cache/model grid (table4_hyenadna.py).
+  Replace HTML only between the matching
   <!-- classifier-table-N --> markers.
 ---
 
@@ -13,15 +14,16 @@ description: >-
 
 ## How to invoke
 
-The user selects **one** table with a digit **1**, **2**, or **3** after the skill (for example `/manuscript-tables 1`, `/manuscript-tables 2`, or “manuscript-tables **3**”). Follow **only** the matching section below for that run. Do not refresh other tables unless the user asks.
+The user selects **one** table with a digit **1**, **2**, **3**, or **4** after the skill (for example `/manuscript-tables 1`, `/manuscript-tables 2`, or “manuscript-tables **4**”). Follow **only** the matching section below for that run. Do not refresh other tables unless the user asks.
 
-| Digit | Table | Command | HTML markers in `manuscript/report.md` |
+| Digit | Table | Command | HTML markers in `manuscript.md` |
 | ---: | --- | --- | --- |
-| **1** | Tetramer classifiers | `python helpers/table1_from_classifier.py` | `<!-- classifier-table-1 -->` … `<!-- /classifier-table-1 -->` |
-| **2** | UC/CAP grid (test AUC only) | `python helpers/table2_uc_cap_from_classifier.py` | `<!-- classifier-table-2 -->` … `<!-- /classifier-table-2 -->` |
-| **3** | UC/CAP selected triple (test + holdout) | `python helpers/table3_uc_cap_from_classifier.py` | `<!-- classifier-table-3 -->` … `<!-- /classifier-table-3 -->` |
+| **1** | Tetramer classifiers | `python helpers/table1_tetramer.py` | `<!-- classifier-table-1 -->` … `<!-- /classifier-table-1 -->` |
+| **2** | UC/CAP grid (test AUC only) | `python helpers/table2_uc_cap.py` | `<!-- classifier-table-2 -->` … `<!-- /classifier-table-2 -->` |
+| **3** | UC/CAP selected triple (test + holdout) | `python helpers/table3_uc_cap.py` | `<!-- classifier-table-3 -->` … `<!-- /classifier-table-3 -->` |
+| **4** | HyenaDNA cache/model grid (test + holdout) | `python helpers/table4_hyenadna.py` | `<!-- classifier-table-4 -->` … `<!-- /classifier-table-4 -->` |
 
-If no digit is given, ask which table (1–3) to refresh, or whether to run all three in order (1 then 2 then 3).
+If no digit is given, ask which table (1–4) to refresh, or whether to run all four in order (1 then 2 then 3 then 4).
 
 All commands assume the **repository root** as the current working directory.
 
@@ -31,7 +33,7 @@ All commands assume the **repository root** as the current working directory.
 
 ## Goal
 
-Keep **Table 1** in `manuscript/report.md` in sync with **eight JSON files** under `results/tetramer/`:
+Keep **Table 1** in `manuscript.md` in sync with **eight JSON files** under `results/tetramer/`:
 
 - `cancer_diagnosis_{baseline,knn,svm,random_forest}.json`
 - `cancer_type_{baseline,knn,svm,random_forest}.json`
@@ -43,7 +45,7 @@ Keep **Table 1** in `manuscript/report.md` in sync with **eight JSON files** und
 1. From the **repository root**, run:
 
    ```bash
-   python helpers/table1_from_classifier.py
+   python helpers/table1_tetramer.py
    ```
 
    Optional overrides:
@@ -51,7 +53,7 @@ Keep **Table 1** in `manuscript/report.md` in sync with **eight JSON files** und
    - `--decimals N` (default: 3)
    - `--markdown` — pipe table (two-line header) instead of default **HTML** nested header table
 
-2. Open **`manuscript/report.md`**. Find the block between these markers:
+2. Open **`manuscript.md`**. Find the block between these markers:
 
    - `<!-- classifier-table-1 -->`
    - `<!-- /classifier-table-1 -->`
@@ -78,12 +80,12 @@ Sync **Table 2** with `results/uc_cap/<feat>/cancer_{diagnosis,type}_{knn,svm,ra
 1. From the repository root:
 
    ```bash
-   python helpers/table2_uc_cap_from_classifier.py
+   python helpers/table2_uc_cap.py
    ```
 
    Optional: `--uc-cap-dir`, `--decimals`.
 
-2. Replace lines between `<!-- classifier-table-2 -->` and `<!-- /classifier-table-2 -->` in `manuscript/report.md` with stdout.
+2. Replace lines between `<!-- classifier-table-2 -->` and `<!-- /classifier-table-2 -->` in `manuscript.md` with stdout.
 
 ---
 
@@ -98,12 +100,41 @@ Sync **Table 3** with KNN, SVM, and random forest JSON for one feature triple. D
 1. From the repository root:
 
    ```bash
-   python helpers/table3_uc_cap_from_classifier.py
+   python helpers/table3_uc_cap.py
    ```
 
    Optional: `--n-uc`, `--n-clusters`, `--n-cap`, `--uc-cap-dir`, `--decimals`.
 
-2. Replace lines between `<!-- classifier-table-3 -->` and `<!-- /classifier-table-3 -->` in `manuscript/report.md` with stdout.
+2. Replace lines between `<!-- classifier-table-3 -->` and `<!-- /classifier-table-3 -->` in `manuscript.md` with stdout.
+
+---
+
+# Manuscript Table 4 (HyenaDNA cache/model grid, test + holdout)
+
+## Goal
+
+Sync **Table 4** with HyenaDNA JSON metrics under `results/hyenadna/*/*.json`, using these six cache/model max-length rows in order:
+
+- 1k-1k
+- 2k-1k
+- 2k-2k
+- 4k-1k
+- 4k-2k
+- 4k-4k
+
+Columns are `max_length` (cache, model), then cancer diagnosis/test+holdout and cancer type/test+holdout AUC.
+
+## Steps
+
+1. From the repository root:
+
+   ```bash
+   python helpers/table4_hyenadna.py
+   ```
+
+   Optional: `--hyenadna-dir`, `--decimals`.
+
+2. Replace lines between `<!-- classifier-table-4 -->` and `<!-- /classifier-table-4 -->` in `manuscript.md` with stdout.
 
 ## Notes
 

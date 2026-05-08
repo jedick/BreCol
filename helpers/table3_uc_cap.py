@@ -5,7 +5,7 @@ Build Table 3 from UC/CAP classifier JSON for a single feature triple.
 Resolves ``results/uc_cap/<feat>/`` using ``experiments.yaml`` ``run_uc_cap_pipeline``
 rows merged over ``defaults.yaml`` (same ordering as ``helpers/list_uc_cap_feature_outputs.py``),
 then loads KNN, SVM, and random forest for both tasks and prints test and holdout ROC AUC
-as an HTML table (same nested header shape as ``helpers/table1_from_classifier.py``).
+as an HTML table (same nested header shape as ``helpers/table1_tetramer.py``).
 
 Default triple matches the manuscript: *n*<sub>UC</sub> = 2000, *K* = 2000, *n*<sub>CAP</sub> = 10000.
 """

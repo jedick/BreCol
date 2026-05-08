@@ -12,6 +12,7 @@ Config: defaults.yaml (train_hyenadna + paths) with optional experiments.yaml (-
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from collections import defaultdict
 from dataclasses import dataclass
@@ -248,6 +249,47 @@ def run_level_scores(
             y_true.append(e.task_label)
             y_score.append(float(prob))
     return np.asarray(y_true, dtype=object), np.asarray(y_score, dtype=np.float64)
+
+
+def run_level_prediction_rows(
+    entries: Sequence[RunRecord],
+    y_score: np.ndarray,
+    *,
+    negative_label: str,
+    positive_label: str,
+) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    if len(entries) != int(y_score.shape[0]):
+        raise SystemExit(
+            "Prediction row count mismatch while writing HyenaDNA split predictions."
+        )
+    for e, score in zip(entries, y_score):
+        pred = positive_label if float(score) >= 0.5 else negative_label
+        rows.append(
+            {
+                "Run": str(e.run),
+                "task_label": str(e.task_label),
+                "predicted_label": str(pred),
+            }
+        )
+    return rows
+
+
+def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["Run", "task_label", "predicted_label"], lineterminator="\n"
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "Run": str(row["Run"]),
+                    "task_label": str(row["task_label"]),
+                    "predicted_label": str(row["predicted_label"]),
+                }
+            )
 
 
 def run_level_weighted_f1_from_scores(
@@ -631,6 +673,47 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         model.load_state_dict(best_state)
 
     if results_path is not None:
+        _, test_score_best = run_level_scores(
+            model,
+            test_entries,
+            device,
+            aggregate=aggregate,
+            pos_class_index=pos_class_index,
+            requested_num_sets=num_sets,
+            requested_max_len=max_len,
+            cache_num_sets=cache_num_sets,
+            cache_max_len=cache_max_len,
+        )
+        hold_score_best = np.asarray([], dtype=np.float64)
+        if holdout_entries:
+            _, hold_score_best = run_level_scores(
+                model,
+                holdout_entries,
+                device,
+                aggregate=aggregate,
+                pos_class_index=pos_class_index,
+                requested_num_sets=num_sets,
+                requested_max_len=max_len,
+                cache_num_sets=cache_num_sets,
+                cache_max_len=cache_max_len,
+            )
+        test_pred_rows = run_level_prediction_rows(
+            test_entries,
+            test_score_best,
+            negative_label=neg_label,
+            positive_label=pos_label,
+        )
+        holdout_pred_rows = run_level_prediction_rows(
+            holdout_entries[: len(hold_score_best)],
+            hold_score_best,
+            negative_label=neg_label,
+            positive_label=pos_label,
+        )
+        test_pred_path = results_path.with_name(f"{results_path.stem}_test.csv")
+        holdout_pred_path = results_path.with_name(f"{results_path.stem}_holdout.csv")
+        _write_predictions_csv(test_pred_path, test_pred_rows)
+        _write_predictions_csv(holdout_pred_path, holdout_pred_rows)
+
         _write_results_json(
             results_path,
             merged=merged,
@@ -651,6 +734,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"\nWrote results JSON: {results_path}", flush=True)
         if training_log_path is not None:
             print(f"Wrote training log JSON: {training_log_path}", flush=True)
+        print(f"Wrote test predictions CSV: {test_pred_path}", flush=True)
+        print(f"Wrote holdout predictions CSV: {holdout_pred_path}", flush=True)
         print(
             f"Best epoch by val_f1_weighted: {best_epoch} "
             f"(val_f1_weighted={best_val_f1:.6f})",

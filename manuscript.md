@@ -230,6 +230,55 @@ For cancer diagnosis, SVM is the model with the best performance on holdout data
 For cancer type prediction, KNN is the only model that is on par with the baseline (majority-class) prediction.
 Both SVM and Random Forest show sub-baseline performance on cancer type holdout data even though they achieved perfect classification on the in-study test splits.
 
+### Classification with HyenaDNA
+
+We fine-tuned the 32k max-length HyenaDNA pre-trained model.
+Due to hardware limitations (16 GB GPU) we used smaller max lengths: 1024, 2048, and 4096 (1k, 2k, and 4k).
+For each run, we used five sets of sequences; each set fits into the configured max length.
+We took consecutive sequences from the beginning of the FASTA files without shuffling to build three run tensor caches for 1k, 2k, and 4k max length.
+Then, we took systematic samples for experimental runs, also using 1k, 2k, and 4k max length, from all available run tensor caches.
+For example, the 1k cache was ony used for a 1k experiment, but the 4k cache was used for 1k, 2k, and 4k experiments.
+This yielded six (1 + 2 + 3) cache-experiment combinations.
+When the experimental max length is shorter than the cache max length, the sets are more spaced-out (some sequences between sets are unused). 
+This way we investigated whether predictive performance is affected by sequence proximity.
+
+Table 4 lists the AUC values for each cache-experimental combination across tasks and splits (test or holdout).
+
+<!-- classifier-table-4 -->
+<table>
+<thead>
+<tr>
+<th colspan="2">max_length</th>
+<th colspan="2">Cancer diagnosis AUC</th>
+<th colspan="2">Cancer type AUC</th>
+</tr>
+<tr>
+<th>cache</th><th>model</th><th>Test</th><th>Holdout</th><th>Test</th><th>Holdout</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1k</td><td>1k</td><td>0.629</td><td>0.564</td><td>0.863</td><td>0.585</td>
+</tr>
+<tr>
+<td>2k</td><td>1k</td><td>0.643</td><td>0.519</td><td>0.941</td><td>0.573</td>
+</tr>
+<tr>
+<td>2k</td><td>2k</td><td>0.581</td><td>0.514</td><td>0.938</td><td>0.034</td>
+</tr>
+<tr>
+<td>4k</td><td>1k</td><td>0.636</td><td>0.535</td><td>0.953</td><td>0.621</td>
+</tr>
+<tr>
+<td>4k</td><td>2k</td><td>0.618</td><td>0.517</td><td>0.953</td><td>0.550</td>
+</tr>
+<tr>
+<td>4k</td><td>4k</td><td>0.592</td><td>0.504</td><td>0.924</td><td>0.600</td>
+</tr>
+</tbody>
+</table>
+<!-- /classifier-table-4 -->
+
 ## Discussion
 
 Scores are consistently lower on the holdout splits, emphasizing over-optimistic metrics computed from in-study test splits.

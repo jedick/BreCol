@@ -1,8 +1,11 @@
 fasta
 outputs
+checkpoints
 results/scratch/
 results/uc_cap/*/*baseline*
-checkpoints
+results/hyenadna/
+#results/hyenadna/*/*.csv
+#results/hyenadna/*/*training.json
 
 # Packaging artifacts (editable installs, builds)
 *.egg-info/

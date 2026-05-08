@@ -10,7 +10,7 @@ and for each feature index loads:
   cancer_type_{knn,svm,random_forest}.json
 
 using ``metrics.test.roc_auc`` only. Prints an HTML table to stdout (like
-``helpers/table1_from_classifier.py``).
+``helpers/table1_tetramer.py``).
 """
 
 from __future__ import annotations
