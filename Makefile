@@ -28,11 +28,42 @@ TETRAMER_EXPERIMENT_INDICES := $(shell seq 1 $(words $(TETRAMER_EXPERIMENT_OUTPU
 # Select a single fit_tetramer output path by 1-based EXPT index.
 TETRAMER_EXPERIMENT_OUTPUT := $(if $(filter-out 0,$(strip $(EXPT))),$(word $(EXPT),$(TETRAMER_EXPERIMENT_OUTPUTS)),)
 
-# train_hyenadna experiments (experiments.yaml train_hyenadna; EXPT like fit_tetramer).
-HYENADNA_EXPERIMENT_OUTPUTS := $(shell $(PYTHON) -c "import yaml,pathlib; r=pathlib.Path('$(ROOT)'); cfg=yaml.safe_load((r/'experiments.yaml').read_text(encoding='utf-8')); sec=cfg.get('train_hyenadna') or {}; tpl=str(sec.get('results_json_template','results/hyenadna/{name}.json')); exps=sec.get('experiments') or []; print(' '.join(str((r/tpl.format(name=e['name'])).resolve()) for e in exps if isinstance(e,dict) and e.get('name')))")
-HYENADNA_EXPERIMENT_NAMES := $(shell $(PYTHON) -c "import yaml,pathlib; r=pathlib.Path('$(ROOT)'); cfg=yaml.safe_load((r/'experiments.yaml').read_text(encoding='utf-8')); exps=(cfg.get('train_hyenadna') or {}).get('experiments') or []; print(' '.join(str(e['name']) for e in exps if isinstance(e,dict) and e.get('name')))")
+# HyenaDNA experiment JSON paths when building train_hyenadna (see block below; avoids int('') when train_hyenadna is not a goal).
+ifneq ($(filter run_tensors,$(MAKECMDGOALS)),)
+ifeq ($(strip $(CACHE)),)
+$(error run_tensors: specify CACHE=1..N matching experiments.yaml run_tensors.)
+endif
+ifeq ($(strip $(CACHE)),0)
+$(error run_tensors: CACHE=0 is not supported.)
+endif
+endif
+
+ifneq ($(filter train_hyenadna,$(MAKECMDGOALS)),)
+ifeq ($(strip $(CACHE)),)
+CACHE := 1
+endif
+ifeq ($(strip $(CACHE)),0)
+ifneq ($(strip $(EXPT)),0)
+$(error train_hyenadna: CACHE=0 requires EXPT=0.)
+endif
+endif
+ifeq ($(strip $(CACHE)),0)
+HYENADNA_EXPERIMENT_OUTPUTS :=
+HYENADNA_EXPERIMENT_INDICES :=
+HYENADNA_EXPERIMENT_OUTPUT :=
+CACHE_ARG :=
+else
+HYENADNA_EXPERIMENT_OUTPUTS := $(shell $(PYTHON) -c "import yaml, pathlib; r=pathlib.Path('$(ROOT)'); c=int('$(CACHE)'); cfg=yaml.safe_load((r/'experiments.yaml').read_text(encoding='utf-8')); sec=cfg.get('train_hyenadna') or {}; tpl=str(sec.get('results_json_template','results/hyenadna/{cache}/{name}.json')); exps=sec.get('experiments') or []; print(' '.join(str((r/tpl.format(name=e['name'], cache=c)).resolve()) for e in exps if isinstance(e,dict) and e.get('name')))")
 HYENADNA_EXPERIMENT_INDICES := $(shell seq 1 $(words $(HYENADNA_EXPERIMENT_OUTPUTS)))
 HYENADNA_EXPERIMENT_OUTPUT := $(if $(filter-out 0,$(strip $(EXPT))),$(word $(EXPT),$(HYENADNA_EXPERIMENT_OUTPUTS)),)
+CACHE_ARG := --cache $(CACHE)
+endif
+else
+HYENADNA_EXPERIMENT_OUTPUTS :=
+HYENADNA_EXPERIMENT_INDICES :=
+HYENADNA_EXPERIMENT_OUTPUT :=
+CACHE_ARG :=
+endif
 
 # CAP CSV outputs for each run_uc_cap_pipeline row in experiments.yaml (merged with defaults).
 UC_CAP_FEATURE_OUTPUTS := $(shell $(PYTHON) $(ROOT)/helpers/list_uc_cap_feature_outputs.py "$(ROOT)")
@@ -92,11 +123,11 @@ help:
 	@echo "      Optional: FEAT=0 builds all configured UC/CAP pipeline feature sets incrementally."
 	@echo ""
 	@echo "  make run_tensors"
-	@echo "      Run scripts/build_run_tensors.py (FASTA -> outputs/run_tensors/<Run>.pt)."
+	@echo "      Run scripts/build_run_tensors.py (requires CACHE=1..N; FASTA -> outputs/run_tensors/<CACHE>/)."
 	@echo ""
 	@echo "  make train_hyenadna"
-	@echo "      Run scripts/train_hyenadna.py; needs a matching torch dataset cache."
-	@echo "      Optional: EXPT=<n> or EXPT=0 (all train_hyenadna experiments), same as fit_tetramer."
+	@echo "      Default CACHE=1; experiment metrics -> results/hyenadna/<CACHE>/<name>.json."
+	@echo "      CACHE=0 EXPT=0 runs scripts/train_hyenadna_grid.py (allowed cache×experiment pairs)."
 	@echo ""
 	@echo "  make explain TARGET=<make_target>"
 	@echo "      Compact dependency/mtime explanation using make --trace."
@@ -154,11 +185,17 @@ $(foreach i,$(TETRAMER_EXPERIMENT_INDICES),$(eval $(call tetramer_experiment_rul
 
 run_tensors: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/build_run_tensors.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/hyenadna_tensor_cache.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/build_run_tensors.py
+	cd "$(ROOT)" && $(PYTHON) scripts/build_run_tensors.py --cache $(CACHE)
 
+ifeq ($(strip $(CACHE)),0)
 ifeq ($(strip $(EXPT)),0)
+train_hyenadna:
+	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna_grid.py
+endif
+else ifeq ($(strip $(EXPT)),0)
 train_hyenadna: $(HYENADNA_EXPERIMENT_OUTPUTS)
 	@echo "Up to date: all train_hyenadna experiments"
 else ifneq ($(strip $(EXPT)),)
@@ -170,19 +207,21 @@ train_hyenadna: $(HYENADNA_EXPERIMENT_OUTPUT)
 else
 train_hyenadna: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/train_hyenadna.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/hyenadna_tensor_cache.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py --results-json $(EXPT_ARG)
+	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py $(CACHE_ARG) --results-json $(EXPT_ARG)
 endif
 
 define train_hyenadna_experiment_rule
 $(word $(1),$(HYENADNA_EXPERIMENT_OUTPUTS)): $(DATA_CSVS) $(DATASETS_CSV) \
 		$(ROOT)/scripts/train_hyenadna.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/hyenadna_tensor_cache.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml \
 		$(ROOT)/experiments.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py --expt $(1)
+	cd "$(ROOT)" && $(PYTHON) scripts/train_hyenadna.py $(CACHE_ARG) --expt $(1)
 endef
 $(foreach i,$(HYENADNA_EXPERIMENT_INDICES),$(eval $(call train_hyenadna_experiment_rule,$(i))))
 
