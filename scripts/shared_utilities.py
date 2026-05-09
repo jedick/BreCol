@@ -50,16 +50,20 @@ RUN_PATTERN = re.compile(r"^(SRR|ERR|DRR)\d+$")
 # ---------------------------------------------------------------------------
 
 
-def _stratified_split_70_10_20(
+def _stratified_split(
     items: np.ndarray,
     labels: np.ndarray,
     random_state: int,
+    *,
+    train_fraction: float,
+    val_fraction: float,
+    test_fraction: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return stratified (train, val, test) item arrays in a 70/10/20 split."""
+    """Return stratified (train, val, test) arrays using configured fractions."""
     items_tv, items_test, labels_tv, _ = train_test_split(
-        items, labels, test_size=0.2, stratify=labels, random_state=random_state,
+        items, labels, test_size=test_fraction, stratify=labels, random_state=random_state,
     )
-    val_fraction_of_tv = 0.1 / 0.8
+    val_fraction_of_tv = val_fraction / (train_fraction + val_fraction)
     items_train, items_val, _, _ = train_test_split(
         items_tv, labels_tv, test_size=val_fraction_of_tv, stratify=labels_tv,
         random_state=random_state,
@@ -76,18 +80,40 @@ def _resolve_repo_path(raw: object) -> Path:
     return path if path.is_absolute() else _repo_root() / path
 
 
-def _load_split_config(config_path: Optional[Path] = None) -> Tuple[Path, int, Path]:
+def _load_split_config(
+    config_path: Optional[Path] = None,
+) -> Tuple[Path, int, Path, float, float, float]:
     cfg_path = config_path if config_path is not None else _repo_root() / "defaults.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     try:
         datasets_csv = _resolve_repo_path(cfg["paths"]["datasets_csv"])
-        random_state = int(cfg["shared_splits"]["random_state"])
         data_dir = _resolve_repo_path(cfg["paths"]["data_dir"])
+        shared_splits_cfg = cfg["shared_splits"]
+        random_state = int(shared_splits_cfg["random_state"])
+        train_fraction = float(shared_splits_cfg["train_fraction"])
+        val_fraction = float(shared_splits_cfg["val_fraction"])
+        test_fraction = float(shared_splits_cfg["test_fraction"])
     except (TypeError, KeyError, ValueError) as exc:
         raise SystemExit(
             f"Invalid shared split configuration in {cfg_path}: {exc}"
         ) from exc
-    return datasets_csv, random_state, data_dir
+    for name, value in (
+        ("train_fraction", train_fraction),
+        ("val_fraction", val_fraction),
+        ("test_fraction", test_fraction),
+    ):
+        if not 0.0 < value < 1.0:
+            raise SystemExit(
+                f"Invalid shared split configuration in {cfg_path}: {name} must be in (0, 1)."
+            )
+    fraction_sum = train_fraction + val_fraction + test_fraction
+    if not np.isclose(fraction_sum, 1.0, atol=1e-9):
+        raise SystemExit(
+            "Invalid shared split configuration in "
+            f"{cfg_path}: train_fraction + val_fraction + test_fraction must equal 1.0, "
+            f"got {fraction_sum:.12f}."
+        )
+    return datasets_csv, random_state, data_dir, train_fraction, val_fraction, test_fraction
 
 
 def _row_is_sample_used(row: Mapping[str, object]) -> bool:
@@ -212,10 +238,18 @@ def build_run_table(*, config_path: Optional[Path] = None) -> pd.DataFrame:
 
     Columns: Run, sample_label, study_name, cancer_type, split.
     Row order matches datasets.csv study order, then per-study CSV row order.
-    Split assignment is deterministic: stratified 70/10/20 over development runs,
-    with holdout studies assigned the 'holdout' split directly.
+    Split assignment is deterministic: stratified train/val/test over development
+    runs using defaults.yaml shared_splits fractions; holdout studies are assigned
+    the 'holdout' split directly.
     """
-    datasets_csv, random_state, data_dir = _load_split_config(config_path)
+    (
+        datasets_csv,
+        random_state,
+        data_dir,
+        train_fraction,
+        val_fraction,
+        test_fraction,
+    ) = _load_split_config(config_path)
     metadata = _run_metadata_from_study_csvs(datasets_csv, data_dir)
     datasets = _study_partitions(datasets_csv)
     run_table = metadata.merge(datasets, on="study_name", how="left")
@@ -237,10 +271,13 @@ def build_run_table(*, config_path: Optional[Path] = None) -> pd.DataFrame:
     if development.empty:
         raise SystemExit("No development runs found for shared split assignment.")
 
-    runs_train, runs_val, runs_test = _stratified_split_70_10_20(
+    runs_train, runs_val, runs_test = _stratified_split(
         development["Run"].to_numpy(dtype=object),
         development["sample_label"].to_numpy(dtype=object),
         random_state=random_state,
+        train_fraction=train_fraction,
+        val_fraction=val_fraction,
+        test_fraction=test_fraction,
     )
     for run in runs_train:
         split_map[str(run)] = TRAIN

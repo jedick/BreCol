@@ -54,6 +54,8 @@ directly. `Makefile` provides convenience targets for the common pipeline steps.
 The `datasets.csv` file identifies development and holdout studies in the
 `partition` column. Train/val/test splits are taken only from development studies,
 and metrics are calculated separately for test (development) and holdout studies.
+Split proportions are configured in `defaults.yaml` under `shared_splits`
+(`train_fraction`, `val_fraction`, `test_fraction`; currently 0.70/0.15/0.15).
 
 Start with `make download_data` to download the 16S rRNA gene sequence data from SRA and save the gz files under `fasta/`.
 See the table for an overview of all the steps and read below for details.

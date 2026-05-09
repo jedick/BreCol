@@ -34,7 +34,7 @@ All benign samples and non-fecal samples in some studies were kept in our data f
 
 We divided studies into two groups: studies reserved for external evaluation (holdout) and studies used for model development.
 Runs in holdout studies were excluded from the stratified development assignment.
-Among development studies only, we assigned each sequencing run to stratified training, validation, or test sets in a 70:10:20 ratio.
+Among development studies only, we assigned each sequencing run to stratified training, validation, or test sets in a 70:15:15 ratio.
 We defined those assignments in advance from version-controlled study lists and per-study sample tables,
 so they did not depend on the order in which derived feature files were later produced.
 

@@ -20,6 +20,9 @@ paths:
 # Canonical Run -> train/val/test/holdout assignment (scripts/shared_utilities.py).
 shared_splits:
   random_state: 0
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
 
 # Classifier training defaults (scripts/fit_classifier.py).
 # Optional --expt overlays fit_classifier.exeriments config (from experiments.yaml).
@@ -130,7 +133,7 @@ train_hyenadna:
   # If true, only train the classification head.
   freeze_backbone: false
   # Optimization
-  epochs: 1
+  epochs: 10
   # Batch size accepts a positive integer, or exactly 0.5 to train one run at a time
   # with two micro-passes over set slices [0:5] and [5:10] (requires num_sets: 10).
   batch_size: 8
