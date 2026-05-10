@@ -54,124 +54,212 @@ run_uc_cap_pipeline:
   
 train_hyenadna:
   results_json_template: results/hyenadna/{name}.json
+  # Current practical probe set (optimize for immediate use).
+  # Keep prior experiment rows for cumulative comparison across copied results.
   experiments:
-    - name: cancer_diagnosis_1k_5sets
-      overrides:
-        task: cancer_diagnosis
-        # Tradeoff max_length and batch_size to fit in 16GB GPU RAM
-        max_length: 1024
-        batch_size: 36
-    - name: cancer_type_1k_5sets
+    - name: ct_next6e_fp32_b6_sb_control_seed0
       overrides:
         task: cancer_type
-        max_length: 1024
-        batch_size: 36
-    - name: cancer_diagnosis_2k_5sets
-      overrides:
-        task: cancer_diagnosis
-        max_length: 2048
-        batch_size: 18
-    - name: cancer_type_2k_5sets
-      overrides:
-        task: cancer_type
-        max_length: 2048
-        batch_size: 18
-    - name: cancer_diagnosis_4k_5sets
-      overrides:
-        task: cancer_diagnosis
+        epochs: 6
         max_length: 4096
-        batch_size: 10
-    - name: cancer_type_4k_5sets
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+    - name: ct_next6e_fp32_b5_sb_control_seed0
       overrides:
         task: cancer_type
+        epochs: 6
         max_length: 4096
-        batch_size: 10
-    - name: cancer_diagnosis_8k_5sets
-      overrides:
-        task: cancer_diagnosis
-        max_length: 8192
+        num_sets: 5
         batch_size: 5
-        amp_dtype: bfloat16
-    - name: cancer_type_8k_5sets
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+    - name: ct_next6e_fp32_b6_sb_classwt_seed0
       overrides:
         task: cancer_type
-        max_length: 8192
-        batch_size: 5
-        amp_dtype: bfloat16
-    - name: cancer_diagnosis_16k_5sets
-      overrides:
-        task: cancer_diagnosis
-        max_length: 16384
-        batch_size: 2
-        amp_dtype: bfloat16
-    - name: cancer_type_16k_5sets
-      overrides:
-        task: cancer_type
-        max_length: 16384
-        batch_size: 2
-        amp_dtype: bfloat16
-    # For experiments with 10 sets, use reduced batch sizes to fit 16GB VRAM.
-    - name: cancer_diagnosis_1k_10sets
-      overrides:
-        task: cancer_diagnosis
-        num_sets: 10
-        max_length: 1024
-        batch_size: 18
-    - name: cancer_type_1k_10sets
-      overrides:
-        task: cancer_type
-        num_sets: 10
-        max_length: 1024
-        batch_size: 18
-    - name: cancer_diagnosis_2k_10sets
-      overrides:
-        task: cancer_diagnosis
-        num_sets: 10
-        max_length: 2048
-        batch_size: 10
-    - name: cancer_type_2k_10sets
-      overrides:
-        task: cancer_type
-        num_sets: 10
-        max_length: 2048
-        batch_size: 10
-    - name: cancer_diagnosis_4k_10sets
-      overrides:
-        task: cancer_diagnosis
-        num_sets: 10
+        epochs: 6
         max_length: 4096
-        batch_size: 5
-    - name: cancer_type_4k_10sets
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_next6e_fp32_b6_sb_classwt_seed1
       overrides:
         task: cancer_type
-        num_sets: 10
+        epochs: 6
         max_length: 4096
-        batch_size: 5
-    - name: cancer_diagnosis_8k_10sets
-      overrides:
-        task: cancer_diagnosis
-        num_sets: 10
-        max_length: 8192
-        batch_size: 2
-        amp_dtype: bfloat16
-    - name: cancer_type_8k_10sets
-      overrides:
-        task: cancer_type
-        num_sets: 10
-        max_length: 8192
-        batch_size: 2
-        amp_dtype: bfloat16
-    - name: cancer_diagnosis_16k_10sets
-      overrides:
-        task: cancer_diagnosis
-        num_sets: 10
-        max_length: 16384
-        batch_size: 1
-        amp_dtype: bfloat16
-    - name: cancer_type_16k_10sets
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 1
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_next6e_fp32_b6_sb_classwt_seed2
       overrides:
         task: cancer_type
-        num_sets: 10
-        max_length: 16384
-        batch_size: 1
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 2
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_next6e_ampbf16_b6_sb_classwt_seed0
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 0
+        amp: true
         amp_dtype: bfloat16
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_next10e_fp32_b6_sb_classwt_seed0
+      overrides:
+        task: cancer_type
+        epochs: 10
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_stab6e_fp32_b6_sb_classwt_lr5e5_seed0
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        learning_rate: 5.0e-5
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_stab6e_fp32_b6_sb_classwt_lowlr_warmup_seed0
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: warmup_cosine
+        warmup_epochs: 1
+        min_lr_ratio: 0.2
+        learning_rate: 5.0e-5
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_stab6e_fp32_b6_sb_classwt_lowlr_warmup_seed1
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: warmup_cosine
+        warmup_epochs: 1
+        min_lr_ratio: 0.2
+        learning_rate: 5.0e-5
+        random_seed: 1
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced
+    - name: ct_temp6e_fp32_b6_sb_sqrtwt_seed0
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced_sqrt
+    - name: ct_temp6e_fp32_b6_sb_sqrtwt_seed1
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 1
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced_sqrt
+    - name: ct_temp6e_fp32_b6_sb_sqrtwt_freeze2_blr01_seed0
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 0
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced_sqrt
+        freeze_backbone_epochs: 2
+        backbone_lr_mult: 0.1
+    - name: ct_temp6e_fp32_b6_sb_sqrtwt_freeze2_blr01_seed1
+      overrides:
+        task: cancer_type
+        epochs: 6
+        max_length: 4096
+        num_sets: 5
+        batch_size: 6
+        tuning_metric: val_roc_auc
+        train_sampler: study_balanced
+        lr_schedule: none
+        random_seed: 1
+        amp: false
+        grad_clip_norm: 1.0
+        class_weight: balanced_sqrt
+        freeze_backbone_epochs: 2
+        backbone_lr_mult: 0.1

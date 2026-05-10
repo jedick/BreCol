@@ -53,7 +53,7 @@ DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 .DEFAULT_GOAL := help
 
 .PHONY: help download_data tetramer_frequencies sequence_cache fit_tetramer fit_uc_cap run_uc_cap \
-	run_tensors train_hyenadna explain explain-%
+	run_tensors train_hyenadna audit_run_tensors explain explain-%
 
 help:
 	@echo "LM-cancer-detection Makefile (script defaults from defaults.yaml)"
@@ -91,6 +91,9 @@ help:
 	@echo ""
 	@echo "  make run_tensors"
 	@echo "      Run scripts/build_run_tensors.py once from defaults.yaml run_tensors settings."
+	@echo ""
+	@echo "  make audit_run_tensors"
+	@echo "      Summarize outputs/run_tensors/*.pt coverage/utilization under cache_audit/run_tensors/."
 	@echo ""
 	@echo "  make train_hyenadna"
 	@echo "      Run scripts/train_hyenadna.py against outputs/run_tensors/*.pt."
@@ -155,6 +158,11 @@ run_tensors: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/build_run_tensors.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_run_tensors.py
+
+audit_run_tensors: $(ROOT)/scripts/audit_run_tensors.py \
+		$(ROOT)/scripts/shared_utilities.py \
+		$(ROOT)/defaults.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/audit_run_tensors.py
 
 ifeq ($(strip $(EXPT)),0)
 train_hyenadna: $(HYENADNA_EXPERIMENT_OUTPUTS)

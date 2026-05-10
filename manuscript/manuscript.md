@@ -230,3 +230,11 @@ Comparing the holdout splits in Tables 1 and 3, UC/CAP shows an overall advantag
 Although SVM and random forest show near-perfect in-study test performance for cancer type prediction in both pipelines,
 only UC/CAP yields substantial improvements above baseline on holdout studies.
 This result illustrates the challenge of transferring learned patterns to new datasets and highlights SVM as the strongest model in our current set.
+
+The training stability problem on HyenaDNA is structural: cancer type prediction is dominated by study-level confounders
+(different sequencing protocols for breast vs. colorectal studies).
+HyenaDNA is expressive enough to memorize those confounders, while SVM+UC/CAP is constrained enough that it can't
+[nb. we need to explicitly check this - try smaller nUC in the range of HyenaDNA dataset sizes].
+The instability isn't just optimization noise; it's the model finding different study-identity shortcuts on different seeds
+and then collapsing on holdout studies with different protocols.
+The [appendix](appendix.md) outlines the hypotheses and experiments we undertook to address this problem.

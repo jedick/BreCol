@@ -6,6 +6,11 @@ Uses a pre-built feature-only per-run tensor cache under paths.run_tensors_dir/ 
 scripts/build_run_tensors.py, joins labels/splits from shared metadata at runtime, and reports
 run-level ROC-AUC on the test and holdout splits (one score per Run).
 
+Training logs (`*_training.json`) record validation ROC-AUC, validation study-macro ROC-AUC,
+validation CE loss, a fixed train-subset ROC-AUC, gradient norms (when clipping is enabled),
+optional per-study AUC on validation/holdout, and score moments by label. Checkpoints are
+selected by ``train_hyenadna.tuning_metric`` (default ``val_roc_auc``).
+
 Config: defaults.yaml (train_hyenadna + run_tensors + paths) with optional
 experiments.yaml train_hyenadna overrides (--expt).
 """
@@ -29,7 +34,9 @@ import yaml
 from hyenadna import HyenaDNAPreTrainedModel
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
-from torch.utils.data import DataLoader, Dataset
+from sklearn.utils.class_weight import compute_class_weight
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
 from shared_utilities import (
@@ -54,6 +61,7 @@ class RunRecord:
     split: str
     label: int
     task_label: str
+    study_name: str
     n_sets: int
     file: Path
 
@@ -88,20 +96,20 @@ def _build_records(
     *,
     label_encoder: LabelEncoder,
     requested_num_sets: int,
-) -> List[RunRecord]:
+) -> Tuple[List[RunRecord], int, Tuple[str, ...]]:
     rows = (
-        run_task_df.loc[:, ["Run", "split", "task_label"]]
+        run_task_df.loc[:, ["Run", "split", "task_label", "study_name"]]
         .drop_duplicates(subset=["Run"])
         .reset_index(drop=True)
     )
     out: List[RunRecord] = []
-    missing_files: List[str] = []
+    missing_runs: List[str] = []
 
     for _, row in rows.iterrows():
         run = str(row["Run"]).strip()
         pt_path = cache_root / f"{run}.pt"
         if not pt_path.is_file():
-            missing_files.append(run)
+            missing_runs.append(run)
             continue
         try:
             blob = torch.load(pt_path, map_location="cpu", weights_only=False)
@@ -116,18 +124,15 @@ def _build_records(
                 split=str(row["split"]),
                 label=int(label_encoder.transform([str(row["task_label"])])[0]),
                 task_label=str(row["task_label"]),
+                study_name=str(row["study_name"]).strip(),
                 n_sets=min(n_sets, requested_num_sets),
                 file=pt_path,
             )
         )
 
-    if missing_files:
-        ex = ", ".join(sorted(missing_files)[:5])
-        raise SystemExit(
-            "Missing run tensor files in torch cache. "
-            f"Example runs: {ex}. Run: python scripts/build_run_tensors.py"
-        )
-    return out
+    n_skipped_missing = len(missing_runs)
+    examples = tuple(sorted(missing_runs)[:5])
+    return out, n_skipped_missing, examples
 
 
 class RunTensorDataset(Dataset):
@@ -196,6 +201,8 @@ def training_loss(
     *,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
+    ce_weight: Optional[torch.Tensor],
+    label_smoothing: float,
 ) -> torch.Tensor:
     loss_sum, denom = training_loss_sum_and_count(
         model,
@@ -203,6 +210,8 @@ def training_loss(
         device,
         amp_enabled=amp_enabled,
         amp_dtype=amp_dtype,
+        ce_weight=ce_weight,
+        label_smoothing=label_smoothing,
     )
     if denom <= 0:
         raise SystemExit("Training batch has zero valid sets after masking.")
@@ -216,6 +225,8 @@ def training_loss_sum_and_count(
     *,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
+    ce_weight: Optional[torch.Tensor] = None,
+    label_smoothing: float = 0.0,
 ) -> Tuple[torch.Tensor, int]:
     input_ids = batch["input_ids"].to(device)
     bsz, n_set, seq_len = input_ids.shape
@@ -229,7 +240,16 @@ def training_loss_sum_and_count(
         flat_y = labels.unsqueeze(1).expand(bsz, n_set)[mask]
     if flat_logits.numel() == 0:
         return torch.zeros((), device=device), 0
-    return F.cross_entropy(flat_logits, flat_y, reduction="sum"), int(flat_y.shape[0])
+    ce_kw: Dict[str, object] = {"reduction": "sum"}
+    if ce_weight is not None:
+        # AMP can produce bf16/fp16 logits; class-weight tensor must match.
+        ce_kw["weight"] = ce_weight.to(
+            device=flat_logits.device,
+            dtype=flat_logits.dtype,
+        )
+    if label_smoothing > 0.0:
+        ce_kw["label_smoothing"] = float(label_smoothing)
+    return F.cross_entropy(flat_logits, flat_y, **ce_kw), int(flat_y.shape[0])
 
 
 def _slice_batch_sets(
@@ -358,8 +378,8 @@ def run_level_prediction_rows(
     *,
     negative_label: str,
     positive_label: str,
-) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
+) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
     if len(entries) != int(y_score.shape[0]):
         raise SystemExit(
             "Prediction row count mismatch while writing HyenaDNA split predictions."
@@ -371,16 +391,19 @@ def run_level_prediction_rows(
                 "Run": str(e.run),
                 "task_label": str(e.task_label),
                 "predicted_label": str(pred),
+                "positive_score": float(score),
             }
         )
     return rows
 
 
-def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, str]]) -> None:
+def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["Run", "task_label", "predicted_label"], lineterminator="\n"
+            f,
+            fieldnames=["Run", "task_label", "predicted_label", "positive_score"],
+            lineterminator="\n",
         )
         writer.writeheader()
         for row in rows:
@@ -389,6 +412,7 @@ def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, str]]) -> Non
                     "Run": str(row["Run"]),
                     "task_label": str(row["task_label"]),
                     "predicted_label": str(row["predicted_label"]),
+                    "positive_score": f"{float(row['positive_score']):.10f}",
                 }
             )
 
@@ -406,6 +430,280 @@ def run_level_weighted_f1_from_scores(
     return float(f1_score(y_true, y_pred, average="weighted"))
 
 
+def _study_sampler_weights(entries: Sequence[RunRecord]) -> torch.Tensor:
+    counts: Dict[str, int] = defaultdict(int)
+    for e in entries:
+        counts[e.study_name] += 1
+    w = [1.0 / counts[e.study_name] for e in entries]
+    return torch.tensor(w, dtype=torch.double)
+
+
+def _compute_ce_weight_tensor(
+    train_entries: Sequence[RunRecord],
+    *,
+    mode: str,
+    n_classes: int,
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    m = str(mode or "none").strip().lower()
+    if m in ("none", "null", ""):
+        return None
+    if m in ("balanced", "balanced_sqrt"):
+        y = np.array([e.label for e in train_entries], dtype=np.int64)
+        classes = np.arange(n_classes, dtype=np.int64)
+        cw = compute_class_weight(class_weight="balanced", classes=classes, y=y)
+        if m == "balanced_sqrt":
+            cw = np.sqrt(cw)
+            cw = cw / np.mean(cw)
+        t = torch.zeros(n_classes, dtype=torch.float32, device=device)
+        for i in range(n_classes):
+            t[i] = float(cw[i])
+        return t
+    raise SystemExit(
+        f"Unknown class_weight {mode!r} (use none, balanced, or balanced_sqrt)."
+    )
+
+
+def _eval_mean_ce_loss(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    *,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+    ce_weight: Optional[torch.Tensor],
+    label_smoothing: float,
+) -> float:
+    model.eval()
+    total = 0.0
+    count = 0
+    with torch.no_grad():
+        for batch in loader:
+            loss_sum, n = training_loss_sum_and_count(
+                model,
+                batch,
+                device,
+                amp_enabled=amp_enabled,
+                amp_dtype=amp_dtype,
+                ce_weight=ce_weight,
+                label_smoothing=label_smoothing,
+            )
+            total += float(loss_sum.item())
+            count += int(n)
+    return total / max(count, 1)
+
+
+def _make_optimizer(
+    model: torch.nn.Module,
+    *,
+    lr: float,
+    weight_decay: float,
+    backbone_lr_mult: Optional[float],
+) -> torch.optim.Optimizer:
+    backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
+    head_params = [p for p in model.head.parameters() if p.requires_grad]
+    groups: List[Dict[str, object]] = []
+    if backbone_params:
+        blr = lr * float(backbone_lr_mult) if backbone_lr_mult is not None else lr
+        groups.append({"params": backbone_params, "lr": blr})
+    if head_params:
+        groups.append({"params": head_params, "lr": lr})
+    if not groups:
+        raise SystemExit("No trainable parameters for optimizer.")
+    return torch.optim.AdamW(groups, weight_decay=float(weight_decay))
+
+
+def _set_backbone_requires_grad(model: torch.nn.Module, trainable: bool) -> None:
+    for p in model.backbone.parameters():
+        p.requires_grad = trainable
+    for p in model.head.parameters():
+        p.requires_grad = True
+
+
+def _make_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    *,
+    schedule: str,
+    epochs: int,
+    warmup_epochs: int,
+    base_lr: float,
+    min_lr_ratio: float,
+) -> Optional[Any]:
+    sched = str(schedule or "none").strip().lower()
+    if sched == "none":
+        return None
+    if sched == "warmup_cosine":
+        wu = max(int(warmup_epochs), 0)
+        if wu >= epochs:
+            raise SystemExit("warmup_epochs must be < epochs when using warmup_cosine.")
+        min_lr = float(base_lr) * float(min_lr_ratio)
+        rem = max(epochs - wu, 1)
+        cosine = CosineAnnealingLR(optimizer, T_max=rem, eta_min=min_lr)
+        if wu == 0:
+            return cosine
+        warmup = LinearLR(optimizer, start_factor=1e-8, end_factor=1.0, total_iters=wu)
+        return SequentialLR(optimizer, [warmup, cosine], milestones=[wu])
+    raise SystemExit(f"Unknown lr_schedule {schedule!r} (use none or warmup_cosine).")
+
+
+def _per_study_roc_dict(
+    entries: Sequence[RunRecord],
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+) -> Dict[str, Optional[float]]:
+    by_study: Dict[str, List[Tuple[object, float]]] = defaultdict(list)
+    for e, yt, ys in zip(entries, y_true, y_score):
+        by_study[e.study_name].append((yt, float(ys)))
+    out: Dict[str, Optional[float]] = {}
+    for study, pairs in by_study.items():
+        yt = np.array([p[0] for p in pairs], dtype=object)
+        ys = np.array([p[1] for p in pairs], dtype=np.float64)
+        auc = binary_roc_auc_from_scores(yt, ys)
+        out[study] = float(auc) if auc == auc else None
+    return out
+
+
+def _per_study_score_diagnostics(
+    entries: Sequence[RunRecord],
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    *,
+    negative_label: str,
+    positive_label: str,
+) -> Dict[str, Dict[str, object]]:
+    by_study: Dict[str, List[Tuple[object, float]]] = defaultdict(list)
+    for e, yt, ys in zip(entries, y_true, y_score):
+        by_study[e.study_name].append((yt, float(ys)))
+    out: Dict[str, Dict[str, object]] = {}
+    for study, pairs in by_study.items():
+        yt = np.array([p[0] for p in pairs], dtype=object)
+        ys = np.array([p[1] for p in pairs], dtype=np.float64)
+        y_pred = np.where(ys >= 0.5, positive_label, negative_label)
+        true_counts = {
+            str(lbl): int(np.sum(yt == lbl)) for lbl in (negative_label, positive_label)
+        }
+        pred_counts = {
+            str(lbl): int(np.sum(y_pred == lbl)) for lbl in (negative_label, positive_label)
+        }
+        out[study] = {
+            "n_runs": int(yt.size),
+            "true_label_counts": true_counts,
+            "predicted_label_counts": pred_counts,
+            "predicted_positive_rate": float(np.mean(y_pred == positive_label)),
+            "score_mean": float(np.mean(ys)),
+            "score_std": float(np.std(ys)),
+            "accuracy": float(np.mean(y_pred == yt)),
+        }
+    return out
+
+
+def _label_score_moments(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    *,
+    neg_label: str,
+    pos_label: str,
+) -> Dict[str, Dict[str, float]]:
+    y_true = np.asarray(y_true, dtype=object)
+    y_score = np.asarray(y_score, dtype=np.float64)
+    out: Dict[str, Dict[str, float]] = {}
+    for name, mask in (
+        (str(neg_label), y_true == neg_label),
+        (str(pos_label), y_true == pos_label),
+    ):
+        s = y_score[mask]
+        if s.size == 0:
+            out[name] = {"mean": float("nan"), "std": float("nan"), "n": 0.0}
+        else:
+            out[name] = {
+                "mean": float(np.mean(s)),
+                "std": float(np.std(s)),
+                "n": float(s.size),
+            }
+    return out
+
+
+def _study_macro_roc_auc(
+    per_study_auc: Mapping[str, Optional[float]],
+) -> Tuple[float, int]:
+    vals = [float(v) for v in per_study_auc.values() if v is not None and float(v) == float(v)]
+    if not vals:
+        return float("nan"), 0
+    return float(np.mean(vals)), int(len(vals))
+
+
+def _tuning_score(
+    val_f1: float,
+    val_auc: float,
+    val_study_macro_auc: float,
+    val_study_n_roc_eligible: int,
+    metric: str,
+) -> float:
+    m = str(metric).strip().lower()
+    if m in ("val_roc_auc", "roc_auc", "val_auc"):
+        v = float(val_auc)
+    elif m in (
+        "val_study_macro_roc_auc",
+        "study_macro_roc_auc",
+        "val_study_auc",
+    ):
+        # Some tasks/splits can have only single-class studies in validation, making
+        # per-study ROC undefined. Fall back to run-level val ROC in that case.
+        if int(val_study_n_roc_eligible) > 0 and float(val_study_macro_auc) == float(
+            val_study_macro_auc
+        ):
+            v = float(val_study_macro_auc)
+        else:
+            v = float(val_auc)
+    elif m in ("val_f1_weighted", "f1", "f1_weighted"):
+        v = float(val_f1)
+    else:
+        raise SystemExit(
+            "Unknown tuning_metric "
+            f"{metric!r} (use val_roc_auc, val_study_macro_roc_auc, or val_f1_weighted)."
+        )
+    return v if v == v else float("-inf")
+
+
+def _average_state_dicts(
+    states: Sequence[Mapping[str, torch.Tensor]],
+) -> Dict[str, torch.Tensor]:
+    if not states:
+        raise SystemExit("SWA requested but no weight snapshots were collected.")
+    keys = list(states[0].keys())
+    out: Dict[str, torch.Tensor] = {}
+    n = float(len(states))
+    for k in keys:
+        acc: Optional[torch.Tensor] = None
+        for sd in states:
+            t = sd[k].float()
+            acc = t if acc is None else acc + t
+        assert acc is not None
+        out[k] = (acc / n).to(states[0][k].dtype)
+    return out
+
+
+def _optimizer_step(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: Optional[torch.amp.GradScaler],
+    grad_clip_norm: Optional[float],
+) -> float:
+    grad_norm = float("nan")
+    if grad_clip_norm is not None:
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        grad_norm = float(
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
+        )
+    if scaler is not None:
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        optimizer.step()
+    return grad_norm
+
+
 def train_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -416,10 +714,14 @@ def train_epoch(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     scaler: Optional[torch.amp.GradScaler],
-) -> float:
+    ce_weight: Optional[torch.Tensor],
+    label_smoothing: float,
+    grad_clip_norm: Optional[float],
+) -> Tuple[float, float]:
     model.train()
     total = 0.0
-    n = 0
+    n_batches = 0
+    grad_norms: List[float] = []
     for batch in tqdm(loader, desc="Train", leave=False):
         if split_set_microbatch:
             first_half = _slice_batch_sets(batch, start=0, end=SET_SPLIT_INDEX)
@@ -437,6 +739,8 @@ def train_epoch(
                     device,
                     amp_enabled=amp_enabled,
                     amp_dtype=amp_dtype,
+                    ce_weight=ce_weight,
+                    label_smoothing=label_smoothing,
                 )
                 scaled_loss_1 = loss_sum_1 / float(denom)
                 if scaler is not None:
@@ -452,6 +756,8 @@ def train_epoch(
                     device,
                     amp_enabled=amp_enabled,
                     amp_dtype=amp_dtype,
+                    ce_weight=ce_weight,
+                    label_smoothing=label_smoothing,
                 )
                 scaled_loss_2 = loss_sum_2 / float(denom)
                 if scaler is not None:
@@ -460,11 +766,8 @@ def train_epoch(
                     scaled_loss_2.backward()
             else:
                 loss_sum_2 = torch.zeros((), device=device)
-            if scaler is not None:
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
+            gn = _optimizer_step(model, optimizer, scaler, grad_clip_norm)
+            grad_norms.append(gn)
             total += float((loss_sum_1 + loss_sum_2).item() / float(denom))
         else:
             loss = training_loss(
@@ -473,18 +776,21 @@ def train_epoch(
                 device,
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
+                ce_weight=ce_weight,
+                label_smoothing=label_smoothing,
             )
             optimizer.zero_grad(set_to_none=True)
             if scaler is not None:
                 scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
             else:
                 loss.backward()
-                optimizer.step()
+            gn = _optimizer_step(model, optimizer, scaler, grad_clip_norm)
+            grad_norms.append(gn)
             total += float(loss.item())
-        n += 1
-    return total / max(n, 1)
+        n_batches += 1
+    mean_loss = total / max(n_batches, 1)
+    mean_gn = sum(grad_norms) / len(grad_norms) if grad_norms else float("nan")
+    return mean_loss, mean_gn
 
 
 def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
@@ -521,7 +827,11 @@ def _write_results_json(
     test_auc: float,
     holdout_auc: float,
     best_epoch: int,
+    tuning_metric: str,
+    best_tuning_score: float,
     best_val_f1_weighted: float,
+    best_val_roc_auc: float,
+    best_val_study_macro_roc_auc: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -533,9 +843,14 @@ def _write_results_json(
         },
         "tuning": {
             "split": "validation",
-            "metric": "f1_weighted",
-            "score": _float_or_none(float(best_val_f1_weighted)),
+            "metric": str(tuning_metric),
+            "score": _float_or_none(float(best_tuning_score)),
             "best_epoch": int(best_epoch),
+            "val_f1_weighted_at_best": _float_or_none(float(best_val_f1_weighted)),
+            "val_roc_auc_at_best": _float_or_none(float(best_val_roc_auc)),
+            "val_study_macro_roc_auc_at_best": _float_or_none(
+                float(best_val_study_macro_roc_auc)
+            ),
         },
         "metrics": {
             "test": {"roc_auc": float(test_auc) if test_auc == test_auc else None},
@@ -560,10 +875,26 @@ def _write_training_log(path: Path, epoch_rows: Sequence[Mapping[str, object]]) 
         payload.append(
             {
                 "epoch": int(row["epoch"]),
+                "learning_rate": float(row["learning_rate"]),
                 "train_loss": float(row["train_loss"]),
+                "grad_norm_clip": _float_or_none(float(row["grad_norm_clip"])),
+                "val_loss": _float_or_none(float(row["val_loss"])),
                 "val_f1_weighted": _float_or_none(float(row["val_f1_weighted"])),
+                "val_roc_auc": _float_or_none(float(row["val_roc_auc"])),
+                "val_study_macro_roc_auc": _float_or_none(
+                    float(row["val_study_macro_roc_auc"])
+                ),
+                "val_study_n_roc_eligible": int(row["val_study_n_roc_eligible"]),
+                "val_per_study_roc_auc": dict(row["val_per_study_roc_auc"]),
+                "train_roc_auc": _float_or_none(float(row["train_roc_auc"])),
                 "test_roc_auc": _float_or_none(float(row["test_roc_auc"])),
                 "holdout_roc_auc": _float_or_none(float(row["holdout_roc_auc"])),
+                "holdout_per_study_roc_auc": dict(row["holdout_per_study_roc_auc"]),
+                "holdout_per_study_score_diagnostics": dict(
+                    row["holdout_per_study_score_diagnostics"]
+                ),
+                "val_score_by_label": dict(row["val_score_by_label"]),
+                "holdout_score_by_label": dict(row["holdout_score_by_label"]),
             }
         )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -578,7 +909,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     defaults_path = repo_root / "defaults.yaml"
     experiments_path = repo_root / "experiments.yaml"
 
-    merged, _exp_name, _tpl = merge_train_hyenadna_config(
+    merged, exp_name, _tpl = merge_train_hyenadna_config(
         defaults_path,
         experiments_path,
         expt=expt,
@@ -607,6 +938,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     cache_num_sets = int(run_tensors_cfg["num_sets"])
     cache_max_len = int(run_tensors_cfg["max_length"])
+    cache_seq_offset = int(run_tensors_cfg.get("seq_offset", 0))
+    cache_min_seqs = int(run_tensors_cfg.get("min_seqs", 0))
 
     task = str(merged["task"]).strip()
     model_name = str(merged["model"]).strip()
@@ -659,12 +992,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pos_class_index = 1
     neg_label = class_names[neg_class_index]
     pos_label = class_names[pos_class_index]
-    all_records = _build_records(
+    all_records, n_skipped_missing_cache, missing_cache_examples = _build_records(
         run_task_df,
         run_tensors_root,
         label_encoder=enc,
         requested_num_sets=num_sets,
     )
+    if n_skipped_missing_cache:
+        ex = ", ".join(missing_cache_examples)
+        print(
+            f"train_hyenadna: skipping {n_skipped_missing_cache} metadata run(s) with no "
+            f"{run_tensors_root.name}/*.pt tensor (examples: {ex}).",
+            flush=True,
+        )
     by_split: Dict[str, List[RunRecord]] = defaultdict(list)
     for r in all_records:
         by_split[r.split].append(r)
@@ -693,12 +1033,54 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         merged, device
     )
     amp_eval_enabled = amp_enabled
+    exp_label = str(exp_name).strip() if exp_name is not None else ""
+    if expt > 0 and exp_label:
+        print(f"\nExperiment: EXPT={expt} name={exp_label}", flush=True)
+    elif expt > 0:
+        print(f"\nExperiment: EXPT={expt}", flush=True)
+    else:
+        print("\nExperiment: EXPT=0 (defaults.yaml config)", flush=True)
     print(
         f"\nHyenaDNA train | task={task} model={model_name} | "
         f"positive_class={pos_label!r} (index {pos_class_index}) | "
         f"precision={'amp(' + amp_dtype_name + ')' if amp_enabled else 'fp32'}",
         flush=True,
     )
+
+    lr = float(merged["learning_rate"])
+    wd = float(merged["weight_decay"])
+    label_smoothing = float(merged.get("label_smoothing") or 0.0)
+    raw_blm = merged.get("backbone_lr_mult")
+    backbone_lr_mult: Optional[float] = (
+        None if raw_blm is None else float(raw_blm)
+    )
+    raw_gc = merged.get("grad_clip_norm")
+    grad_clip_norm: Optional[float] = None if raw_gc is None else float(raw_gc)
+    train_sampler = str(merged.get("train_sampler") or "random").strip().lower()
+    tuning_metric = str(merged.get("tuning_metric") or "val_roc_auc").strip()
+    ce_weight = _compute_ce_weight_tensor(
+        train_entries,
+        mode=str(merged.get("class_weight") or "none"),
+        n_classes=len(class_names),
+        device=device,
+    )
+    freeze_full = bool(merged.get("freeze_backbone"))
+    transition_n = int(merged.get("freeze_backbone_epochs") or 0)
+    swa_enabled = bool(merged.get("swa"))
+    swa_keep = int(merged.get("swa_epochs") or 0)
+    train_subset_n = min(
+        int(merged.get("train_eval_subset_size") or 200),
+        len(train_entries),
+    )
+    rng_idx = np.random.RandomState(seed).permutation(len(train_entries))[
+        :train_subset_n
+    ]
+    train_eval_entries = [train_entries[int(i)] for i in rng_idx]
+
+    head_arch = str(merged.get("head_arch") or "linear").strip().lower()
+    raw_hh = merged.get("head_hidden")
+    head_hidden = int(raw_hh) if raw_hh is not None else None
+    head_dropout = float(merged.get("head_dropout") or 0.0)
 
     train_ds = RunTensorDataset(
         train_entries,
@@ -707,10 +1089,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         cache_num_sets=cache_num_sets,
         cache_max_len=cache_max_len,
     )
+    sampler: Optional[WeightedRandomSampler] = None
+    shuffle = True
+    if train_sampler == "study_balanced":
+        sampler = WeightedRandomSampler(
+            _study_sampler_weights(train_entries),
+            num_samples=len(train_entries),
+            replacement=True,
+        )
+        shuffle = False
+    elif train_sampler != "random":
+        raise SystemExit(
+            f"Unknown train_sampler {train_sampler!r} (use random or study_balanced)."
+        )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=loader_batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
+        num_workers=int(merged["num_workers"]),
+        collate_fn=collate_batch,
+        pin_memory=device.type == "cuda",
+    )
+
+    val_ds = RunTensorDataset(
+        val_entries,
+        requested_num_sets=num_sets,
+        requested_max_len=max_len,
+        cache_num_sets=cache_num_sets,
+        cache_max_len=cache_max_len,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=loader_batch_size,
+        shuffle=False,
         num_workers=int(merged["num_workers"]),
         collate_fn=collate_batch,
         pin_memory=device.type == "cuda",
@@ -726,32 +1139,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         use_head=True,
         n_classes=len(class_names),
         head_pooling_mode=head_mode,
+        head_arch=head_arch,
+        head_hidden=head_hidden if head_arch == "mlp" else None,
+        head_dropout=head_dropout,
     )
     model = model.to(device)
 
-    if bool(merged["freeze_backbone"]):
-        for p in model.backbone.parameters():
-            p.requires_grad = False
-        for p in model.head.parameters():
-            p.requires_grad = True
-
-    opt = torch.optim.AdamW(
-        (p for p in model.parameters() if p.requires_grad),
-        lr=float(merged["learning_rate"]),
-        weight_decay=float(merged["weight_decay"]),
-    )
     scaler: Optional[torch.amp.GradScaler] = None
     if amp_enabled and amp_use_grad_scaler:
         scaler = torch.amp.GradScaler("cuda")
 
     epochs = int(merged["epochs"])
-    last_loss = 0.0
-    epoch_log: List[Dict[str, float]] = []
-    best_val_f1 = float("-inf")
+    epoch_log: List[Dict[str, object]] = []
+    best_tuning_score = float("-inf")
     best_epoch = 0
+    best_val_f1 = float("nan")
+    best_val_roc_auc = float("nan")
+    best_val_study_macro_roc_auc = float("nan")
     best_test_auc = float("nan")
     best_holdout_auc = float("nan")
     best_state: Optional[Dict[str, torch.Tensor]] = None
+    swa_snapshots: List[Dict[str, torch.Tensor]] = []
+
+    opt: Optional[torch.optim.Optimizer] = None
+    scheduler: Optional[Any] = None
 
     results_path = _results_json_out_path(
         repo_root,
@@ -762,9 +1173,67 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if results_path is not None:
         training_log_path = _training_log_path_from_results(results_path)
 
+    schedule_key = str(merged.get("lr_schedule") or "none").strip().lower()
+    warmup_epochs_cfg = int(merged.get("warmup_epochs") or 0)
+    min_lr_ratio_cfg = float(merged.get("min_lr_ratio") or 0.1)
+    tuning_metric_key = tuning_metric.strip().lower()
+    warned_study_macro_fallback = False
+
     for ep in range(1, epochs + 1):
         print(f"\n--- Epoch {ep}/{epochs} ---", flush=True)
-        last_loss = train_epoch(
+
+        if freeze_full:
+            _set_backbone_requires_grad(model, False)
+        elif transition_n > 0:
+            _set_backbone_requires_grad(model, ep > transition_n)
+        else:
+            _set_backbone_requires_grad(model, True)
+
+        if ep == 1 or (transition_n > 0 and ep == transition_n + 1):
+            if freeze_full:
+                opt = _make_optimizer(
+                    model, lr=lr, weight_decay=wd, backbone_lr_mult=None
+                )
+                scheduler = None
+            elif transition_n > 0 and ep <= transition_n:
+                opt = _make_optimizer(
+                    model, lr=lr, weight_decay=wd, backbone_lr_mult=None
+                )
+                scheduler = None
+            elif transition_n > 0 and ep == transition_n + 1:
+                opt = _make_optimizer(
+                    model,
+                    lr=lr,
+                    weight_decay=wd,
+                    backbone_lr_mult=backbone_lr_mult,
+                )
+                rem_epochs = max(epochs - transition_n, 1)
+                scheduler = _make_lr_scheduler(
+                    opt,
+                    schedule=schedule_key,
+                    epochs=rem_epochs,
+                    warmup_epochs=min(warmup_epochs_cfg, max(rem_epochs - 1, 0)),
+                    base_lr=lr,
+                    min_lr_ratio=min_lr_ratio_cfg,
+                )
+            else:
+                opt = _make_optimizer(
+                    model,
+                    lr=lr,
+                    weight_decay=wd,
+                    backbone_lr_mult=backbone_lr_mult,
+                )
+                scheduler = _make_lr_scheduler(
+                    opt,
+                    schedule=schedule_key,
+                    epochs=epochs,
+                    warmup_epochs=warmup_epochs_cfg,
+                    base_lr=lr,
+                    min_lr_ratio=min_lr_ratio_cfg,
+                )
+
+        assert opt is not None
+        last_loss, batch_grad_norm = train_epoch(
             model,
             train_loader,
             opt,
@@ -773,7 +1242,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             scaler=scaler,
+            ce_weight=ce_weight,
+            label_smoothing=label_smoothing,
+            grad_clip_norm=grad_clip_norm,
         )
+
+        val_loss = _eval_mean_ce_loss(
+            model,
+            val_loader,
+            device,
+            amp_enabled=amp_eval_enabled,
+            amp_dtype=amp_dtype,
+            ce_weight=ce_weight,
+            label_smoothing=label_smoothing,
+        )
+
         val_true, val_score = run_level_scores(
             model,
             val_entries,
@@ -793,67 +1276,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             negative_label=neg_label,
             positive_label=pos_label,
         )
-        test_auc = binary_roc_auc_from_scores(
-            *run_level_scores(
-                model,
-                test_entries,
-                device,
-                aggregate=aggregate,
-                pos_class_index=pos_class_index,
-                requested_num_sets=num_sets,
-                requested_max_len=max_len,
-                cache_num_sets=cache_num_sets,
-                cache_max_len=cache_max_len,
-                amp_eval_enabled=amp_eval_enabled,
-                amp_dtype=amp_dtype,
-            )
-        )
-        hold_auc = float("nan")
-        if holdout_entries:
-            hold_auc = binary_roc_auc_from_scores(
-                *run_level_scores(
-                    model,
-                    holdout_entries,
-                    device,
-                    aggregate=aggregate,
-                    pos_class_index=pos_class_index,
-                    requested_num_sets=num_sets,
-                    requested_max_len=max_len,
-                    cache_num_sets=cache_num_sets,
-                    cache_max_len=cache_max_len,
-                    amp_eval_enabled=amp_eval_enabled,
-                    amp_dtype=amp_dtype,
-                )
-            )
-        epoch_log.append(
-            {
-                "epoch": int(ep),
-                "train_loss": float(last_loss),
-                "val_f1_weighted": float(val_f1),
-                "test_roc_auc": float(test_auc),
-                "holdout_roc_auc": float(hold_auc),
-            }
-        )
-        if training_log_path is not None:
-            _write_training_log(training_log_path, epoch_log)
-        if val_f1 > best_val_f1:
-            best_val_f1 = float(val_f1)
-            best_epoch = int(ep)
-            best_test_auc = float(test_auc)
-            best_holdout_auc = float(hold_auc)
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        print(
-            f"train_loss={last_loss:.6f}  val_f1_weighted={val_f1:.6f}  "
-            f"test_roc_auc={test_auc:.6f}  holdout_roc_auc={hold_auc:.6f}  "
-            f"(run-level; logits={aggregate})",
-            flush=True,
-        )
+        val_auc = binary_roc_auc_from_scores(val_true, val_score)
+        val_ps = _per_study_roc_dict(val_entries, val_true, val_score)
+        val_study_macro_auc, val_study_n_roc_eligible = _study_macro_roc_auc(val_ps)
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
+        train_true, train_score = run_level_scores(
+            model,
+            train_eval_entries,
+            device,
+            aggregate=aggregate,
+            pos_class_index=pos_class_index,
+            requested_num_sets=num_sets,
+            requested_max_len=max_len,
+            cache_num_sets=cache_num_sets,
+            cache_max_len=cache_max_len,
+            amp_eval_enabled=amp_eval_enabled,
+            amp_dtype=amp_dtype,
+        )
+        train_auc = binary_roc_auc_from_scores(train_true, train_score)
 
-    if results_path is not None:
-        _, test_score_best = run_level_scores(
+        test_true, test_score_m = run_level_scores(
             model,
             test_entries,
             device,
@@ -866,9 +1308,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_eval_enabled=amp_eval_enabled,
             amp_dtype=amp_dtype,
         )
-        hold_score_best = np.asarray([], dtype=np.float64)
+        test_auc = binary_roc_auc_from_scores(test_true, test_score_m)
+
+        hold_true: np.ndarray = np.asarray([], dtype=object)
+        hold_score_m = np.asarray([], dtype=np.float64)
+        hold_auc = float("nan")
         if holdout_entries:
-            _, hold_score_best = run_level_scores(
+            hold_true, hold_score_m = run_level_scores(
                 model,
                 holdout_entries,
                 device,
@@ -881,6 +1327,145 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 amp_eval_enabled=amp_eval_enabled,
                 amp_dtype=amp_dtype,
             )
+            hold_auc = binary_roc_auc_from_scores(hold_true, hold_score_m)
+
+        hold_ps = _per_study_roc_dict(holdout_entries, hold_true, hold_score_m)
+        hold_ps_diag = _per_study_score_diagnostics(
+            holdout_entries,
+            hold_true,
+            hold_score_m,
+            negative_label=neg_label,
+            positive_label=pos_label,
+        )
+        val_by_label = _label_score_moments(
+            val_true,
+            val_score,
+            neg_label=neg_label,
+            pos_label=pos_label,
+        )
+        hold_by_label = _label_score_moments(
+            hold_true,
+            hold_score_m,
+            neg_label=neg_label,
+            pos_label=pos_label,
+        )
+
+        lr_log = float(opt.param_groups[0]["lr"])
+        if (
+            tuning_metric_key
+            in ("val_study_macro_roc_auc", "study_macro_roc_auc", "val_study_auc")
+            and val_study_n_roc_eligible == 0
+            and not warned_study_macro_fallback
+        ):
+            print(
+                "tuning_metric=val_study_macro_roc_auc has zero ROC-eligible validation "
+                "studies this run; falling back to val_roc_auc for checkpoint selection.",
+                flush=True,
+            )
+            warned_study_macro_fallback = True
+        ts = _tuning_score(
+            val_f1,
+            val_auc,
+            val_study_macro_auc,
+            val_study_n_roc_eligible,
+            tuning_metric,
+        )
+        epoch_log.append(
+            {
+                "epoch": int(ep),
+                "learning_rate": lr_log,
+                "train_loss": float(last_loss),
+                "grad_norm_clip": float(batch_grad_norm),
+                "val_loss": float(val_loss),
+                "val_f1_weighted": float(val_f1),
+                "val_roc_auc": float(val_auc),
+                "val_study_macro_roc_auc": float(val_study_macro_auc),
+                "val_study_n_roc_eligible": int(val_study_n_roc_eligible),
+                "val_per_study_roc_auc": val_ps,
+                "train_roc_auc": float(train_auc),
+                "test_roc_auc": float(test_auc),
+                "holdout_roc_auc": float(hold_auc),
+                "holdout_per_study_roc_auc": hold_ps,
+                "holdout_per_study_score_diagnostics": hold_ps_diag,
+                "val_score_by_label": val_by_label,
+                "holdout_score_by_label": hold_by_label,
+            }
+        )
+        if training_log_path is not None:
+            _write_training_log(training_log_path, epoch_log)
+
+        if ts > best_tuning_score:
+            best_tuning_score = float(ts)
+            best_epoch = int(ep)
+            best_val_f1 = float(val_f1)
+            best_val_roc_auc = float(val_auc)
+            best_val_study_macro_roc_auc = float(val_study_macro_auc)
+            best_test_auc = float(test_auc)
+            best_holdout_auc = float(hold_auc)
+            best_state = {
+                k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+            }
+
+        if swa_enabled and swa_keep > 0 and ep > epochs - swa_keep:
+            swa_snapshots.append(
+                {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            )
+
+        if scheduler is not None:
+            scheduler.step()
+
+        print(
+            f"train_loss={last_loss:.6f}  val_loss={val_loss:.6f}  "
+            f"val_roc_auc={val_auc:.6f}  val_f1_weighted={val_f1:.6f}  "
+            f"val_study_macro_roc_auc={val_study_macro_auc:.6f}  "
+            f"train_roc_auc(subset)={train_auc:.6f}  "
+            f"test_roc_auc={test_auc:.6f}  holdout_roc_auc={hold_auc:.6f}  "
+            f"grad_norm={batch_grad_norm:.6f}  (run-level; logits={aggregate})",
+            flush=True,
+        )
+
+    use_swa = swa_enabled and bool(swa_snapshots)
+    if use_swa:
+        model.load_state_dict(_average_state_dicts(swa_snapshots))
+    elif best_state is not None:
+        model.load_state_dict(best_state)
+
+    if results_path is not None:
+        test_true_final, test_score_best = run_level_scores(
+            model,
+            test_entries,
+            device,
+            aggregate=aggregate,
+            pos_class_index=pos_class_index,
+            requested_num_sets=num_sets,
+            requested_max_len=max_len,
+            cache_num_sets=cache_num_sets,
+            cache_max_len=cache_max_len,
+            amp_eval_enabled=amp_eval_enabled,
+            amp_dtype=amp_dtype,
+        )
+        final_test_auc = binary_roc_auc_from_scores(test_true_final, test_score_best)
+        hold_score_best = np.asarray([], dtype=np.float64)
+        final_holdout_auc = float("nan")
+        if holdout_entries:
+            hold_true_final, hold_score_best = run_level_scores(
+                model,
+                holdout_entries,
+                device,
+                aggregate=aggregate,
+                pos_class_index=pos_class_index,
+                requested_num_sets=num_sets,
+                requested_max_len=max_len,
+                cache_num_sets=cache_num_sets,
+                cache_max_len=cache_max_len,
+                amp_eval_enabled=amp_eval_enabled,
+                amp_dtype=amp_dtype,
+            )
+            final_holdout_auc = binary_roc_auc_from_scores(
+                hold_true_final,
+                hold_score_best,
+            )
+
         test_pred_rows = run_level_prediction_rows(
             test_entries,
             test_score_best,
@@ -905,18 +1490,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "dir": str(run_tensors_root),
                 "run_tensors_num_sets": cache_num_sets,
                 "run_tensors_max_length": cache_max_len,
-                "train_num_sets": num_sets,
-                "train_max_length": max_len,
+                "run_tensors_seq_offset": cache_seq_offset,
+                "run_tensors_min_seqs": cache_min_seqs,
                 "n_cached_runs": len(all_records),
             },
-            test_auc=best_test_auc,
-            holdout_auc=best_holdout_auc,
+            test_auc=final_test_auc,
+            holdout_auc=final_holdout_auc,
             best_epoch=best_epoch,
+            tuning_metric=tuning_metric,
+            best_tuning_score=best_tuning_score,
             best_val_f1_weighted=best_val_f1,
+            best_val_roc_auc=best_val_roc_auc,
+            best_val_study_macro_roc_auc=best_val_study_macro_roc_auc,
+        )
+        tail = (
+            f"SWA last {swa_keep} epochs"
+            if use_swa
+            else f"best epoch by {tuning_metric}"
         )
         print(
-            f"Best epoch by val_f1_weighted: {best_epoch} "
-            f"(val_f1_weighted={best_val_f1:.6f})\n",
+            f"Final eval ({tail}): best_epoch={best_epoch} "
+            f"test_roc_auc={final_test_auc:.6f} holdout_roc_auc={final_holdout_auc:.6f}\n",
             flush=True,
         )
 
