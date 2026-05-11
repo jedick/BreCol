@@ -51,6 +51,13 @@ run_uc_cap_pipeline:
   - { n_uc: 2000, n_clusters: 2000, n_cap: 10000 }
   - { n_uc: 1000, n_clusters: 5000, n_cap: 10000 }
   - { n_uc: 2000, n_clusters: 5000, n_cap: 10000 }
+
+extract_embeddings:
+  - { num_sets: 5, max_length: 1024 }
+  - { num_sets: 5, max_length: 2048 }
+  - { num_sets: 5, max_length: 4096 }
+  - { num_sets: 5, max_length: 8192 }
+  - { num_sets: 5, max_length: 16384 }
   
 train_hyenadna:
   results_json_template: results/hyenadna/{name}.json

@@ -86,6 +86,13 @@ def fmt_mtime(path_like: str, repo_root: Path) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def path_exists(path_like: str, repo_root: Path) -> bool:
+    p = Path(path_like)
+    if not p.is_absolute():
+        p = repo_root / p
+    return p.exists()
+
+
 def is_newer(child: str, parent: str, repo_root: Path) -> bool | None:
     c = Path(child)
     p = Path(parent)
@@ -180,6 +187,33 @@ def main() -> None:
         root = requested_abs
     else:
         root = next(iter(edges.keys()))
+
+    # If the requested root is an alias target (no backing file) that points to a
+    # single concrete prerequisite, pivot to that prerequisite for more useful mtime
+    # relation output (e.g. run_tensors -> outputs/run_tensors).
+    if (
+        root == requested
+        and not path_exists(root, repo_root)
+        and len(edges.get(root, [])) == 1
+        and path_exists(edges[root][0], repo_root)
+    ):
+        root = edges[root][0]
+    elif (
+        root == requested
+        and not path_exists(root, repo_root)
+        and not edges.get(root)
+        and reasons.get(root, "").startswith("target does not exist")
+    ):
+        dep_nodes = {dep for dep_list in edges.values() for dep in dep_list}
+        concrete_roots = [
+            t
+            for t in edges.keys()
+            if t not in dep_nodes
+            and t != root
+            and not reasons.get(t, "").startswith("target is .PHONY")
+        ]
+        if len(concrete_roots) == 1:
+            root = concrete_roots[0]
 
     # For phony roots, pivot to concrete rebuilt targets so the recursive chain is visible.
     if reasons.get(root, "").startswith("target is .PHONY") and not edges.get(root):

@@ -16,6 +16,8 @@ paths:
   uc_cap_root: outputs/uc_cap
   # Feature-only per-run HyenaDNA tensors from scripts/build_run_tensors.py.
   run_tensors_dir: outputs/run_tensors
+  # Consolidated frozen HyenaDNA embedding features from scripts/extract_embeddings.py.
+  embeddings_dir: outputs/embeddings
 
 # Canonical Run -> train/val/test/holdout assignment (scripts/shared_utilities.py).
 shared_splits:
@@ -197,4 +199,22 @@ train_hyenadna:
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
   # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template.
   results_json: null
+
+# Frozen HyenaDNA feature extraction (scripts/extract_embeddings.py).
+# Produces one consolidated CSV per feature set in paths.embeddings_dir.
+extract_embeddings:
+  # Pretrained checkpoint name under checkpoint_dir (same model family as train_hyenadna).
+  model: hyenadna-small-32k-seqlen
+  # Number of run tensor set rows to include in embedding extraction.
+  num_sets: 5
+  # Max sequence length; null = model default (must be <= run_tensors.max_length).
+  max_length: 1024
+  # Pooling mode is fixed to pool for frozen embedding extraction.
+  head_pooling_mode: pool
+  # Optional checkpoint source override; defaults to train_hyenadna.checkpoint_dir when null.
+  checkpoint_dir: null
+  # Optional download override; defaults to train_hyenadna.download_pretrained when null.
+  download_pretrained: null
+  # Device: cuda, cpu, or null / auto for torch.cuda.is_available().
+  device: null
 

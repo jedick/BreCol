@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -309,6 +310,8 @@ def _build_tensor_cache(
         ),
         flush=True,
     )
+    # Makefile tracks run_tensors directory mtime as the cache target signal.
+    os.utime(run_tensors_root, None)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

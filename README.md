@@ -53,8 +53,10 @@ See the list for a quick overview of the steps and read below for details.
 6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/uc_cap` (about 40 min / 100GB RAM).
 7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/uc_cap` (about 2 hr).
 8. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (about 15 min).
-9. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 16 hr).
-10. Use `helpers/table*.py` and `helpers/figure*py` scripts to make manuscript tables and figures from the results files.
+9. Frozen embeddings: `make extract_embeddings FEAT=0` builds consolidated embedding feature CSVs in `outputs/embeddings`.
+10. Embedding classifier: `make fit_embeddings FEAT=1 EXPT=1` fits the selected embedding feature set with the selected `fit_classifier` experiment.
+11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 16 hr).
+12. Use `helpers/table*.py` and `helpers/figure*py` scripts to make manuscript tables and figures from the results files.
 
 Notes:
 
@@ -134,14 +136,16 @@ Source files:
 - To run the inference example: `cd hyenadna; python -c 'import inference_example as ex; ex.inference_single()'`
 
 Project execution:
-- Build cached tensors: `make run_tensors` builds a single run-level tensor cache from `defaults.yaml` `run_tensors`.
+- Build cached tensors: `make run_tensors` reads FASTA files and saves run-level tensors to `outputs/run_tensors/<Run>.pt`.
+- Build frozen embedding features: `make extract_embeddings FEAT=0` writes consolidated CSV feature tables to `outputs/embeddings`.
+- Fit classical models on frozen embeddings: `make fit_embeddings FEAT=N EXPT=M` uses selected feature set and classifier experiment row.
 - Train/evaluate HyenaDNA: `make train_hyenadna` uses defaults from `defaults.yaml`.
 - Experiments: `make train_hyenadna EXPT=0` runs every `train_hyenadna` experiment in `experiments.yaml`.
 
 Inputs/outputs:
-- Run tensors:
-  - Inputs: FASTA files and `run_tensors` configuration from `defaults.yaml`.
-  - Outputs: one run tensor file per run at `outputs/run_tensors/<Run>.pt`.
+- Frozen embedding feature extraction:
+  - Inputs: cached run tensors and pretrained HyenaDNA weights.
+  - Outputs: one consolidated CSV per feature set at `outputs/embeddings/{num_sets}sets_{max_length}L.csv`.
 - HyenaDNA classifier:
   - Inputs: cached run tensors, run labels/splits from `scripts/shared_utilities.py`, and pretrained weights under `checkpoints/<model>/` (or download on demand).
   - Outputs:

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Train a classifier on run-level tetramer frequencies or UC/CAP cluster features.
+Train a classifier on run-level tetramer frequencies, UC/CAP cluster features,
+or frozen HyenaDNA embeddings.
 
 Modes (mutually exclusive):
   --tetramer   Inputs: paths.tetramer_frequencies_csv (256 ACGT tetramer columns).
   --uc_cap     Inputs: CAP CSV from run_uc_cap_pipeline (cluster_* columns).
+  --embeddings Inputs: consolidated CSV from extract_embeddings (embed_* columns).
 
 Both modes use scripts/shared_utilities.py for train/val/test/holdout, support the same
 model families and hyperparameter grids from defaults.yaml (section fit_classifier), and
 optional experiment overlays from experiments.yaml (fit_classifier.experiments).
 
-UC/CAP mode:
+UC/CAP and embeddings modes:
   --feat N   1-based index into experiments.yaml run_uc_cap_pipeline (merged over the
-             defaults.yaml baseline). Omit --feat to use the baseline-only merged config.
+             defaults.yaml baseline) for --uc_cap, or into experiments.yaml
+             extract_embeddings for --embeddings. Omit --feat to use baseline-only config.
 """
 
 from __future__ import annotations
@@ -151,6 +154,47 @@ def _cap_csv_path(repo_root: Path, paths_cfg: Mapping[str, Any], merged: Dict[st
     return repo_root / uc_root / f"uc{n_uc}_k{n_clusters}" / f"{stem}.csv"
 
 
+def _merge_extract_embeddings_row(
+    defaults_cfg: Mapping[str, Any],
+    experiments_cfg: Mapping[str, Any],
+    *,
+    feat: Optional[int],
+) -> Dict[str, Any]:
+    baseline = defaults_cfg.get("extract_embeddings")
+    if not isinstance(baseline, dict):
+        raise SystemExit("defaults.yaml extract_embeddings must be a mapping")
+    merged = dict(baseline)
+    if feat is None:
+        return merged
+    if feat < 1:
+        raise SystemExit("--feat must be >= 1 when provided.")
+    rows = experiments_cfg.get("extract_embeddings") or []
+    if not isinstance(rows, list):
+        raise SystemExit("experiments.yaml extract_embeddings must be a list")
+    if feat > len(rows):
+        raise SystemExit(
+            f"--feat {feat} is out of range. experiments.yaml defines {len(rows)} embedding rows."
+        )
+    row = rows[feat - 1]
+    if not isinstance(row, dict):
+        raise SystemExit("experiments.yaml extract_embeddings entries must be mappings")
+    return {**merged, **row}
+
+
+def _embeddings_feature_tag(merged: Mapping[str, Any]) -> str:
+    return f"{int(merged['num_sets'])}sets_{int(merged['max_length'])}L"
+
+
+def _embeddings_csv_path(
+    repo_root: Path,
+    paths_cfg: Mapping[str, Any],
+    merged: Mapping[str, Any],
+) -> Path:
+    embeddings_dir = str(paths_cfg["embeddings_dir"]).strip()
+    tag = _embeddings_feature_tag(merged)
+    return repo_root / embeddings_dir / f"{tag}.csv"
+
+
 def _load_cap_csv(csv_path: Path) -> pd.DataFrame:
     if not csv_path.is_file():
         raise SystemExit(f"CSV not found: {csv_path}")
@@ -163,6 +207,21 @@ def _load_cap_csv(csv_path: Path) -> pd.DataFrame:
         raise SystemExit("CSV has no cluster feature columns (expected prefix 'cluster_').")
     if df["Run"].isna().any():
         raise SystemExit("Found empty Run values in CSV.")
+    return df
+
+
+def _load_embeddings_csv(csv_path: Path) -> pd.DataFrame:
+    if not csv_path.is_file():
+        raise SystemExit(f"CSV not found: {csv_path}")
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        raise SystemExit("Input embeddings CSV has no data rows.")
+    if "Run" not in df.columns:
+        raise SystemExit("Embeddings CSV missing required column: Run")
+    if not any(c.startswith("embed_") for c in df.columns):
+        raise SystemExit("Embeddings CSV has no embed_* feature columns.")
+    if df["Run"].isna().any():
+        raise SystemExit("Found empty Run values in embeddings CSV.")
     return df
 
 
@@ -245,9 +304,17 @@ def _load_experiment_args(
 
     if features == "tetramer":
         csv_path = root / str(paths_cfg["tetramer_frequencies_csv"]).strip()
-    else:
+    elif features == "uc_cap":
         merged_uc = _merge_uc_cap_row(defaults_cfg, experiments_cfg, feat=feat)
         csv_path = _cap_csv_path(root, paths_cfg, merged_uc)
+    else:
+        merged_embeddings = _merge_extract_embeddings_row(defaults_cfg, experiments_cfg, feat=feat)
+        csv_path = _embeddings_csv_path(root, paths_cfg, merged_embeddings)
+
+    use_scaler = bool(config["use_scaler"])
+    use_clr = bool(config["use_clr"])
+    if features == "embeddings":
+        use_clr = False
 
     args_dict: Dict[str, Any] = {
         "features": features,
@@ -257,8 +324,8 @@ def _load_experiment_args(
         "task": str(config["task"]).strip(),
         "random_state": int(config["random_state"]),
         "scoring": str(config["val_scoring"]).strip(),
-        "no_scaler": not bool(config["use_scaler"]),
-        "no_clr": not bool(config["use_clr"]),
+        "no_scaler": not use_scaler,
+        "no_clr": not use_clr,
         "clr_pseudocount": float(config["clr_pseudocount"]),
         "pca_min_variance": float(config["pca_min_variance"]),
         "n_neighbors": str(config["n_neighbors_grid"]).strip(),
@@ -294,6 +361,9 @@ def _print_experiment_line(args: argparse.Namespace) -> None:
     if features == "uc_cap":
         fi = "baseline" if feat is None else str(feat)
         print(_prefixed(prefix, f"UC/CAP feature set: {fi}"), flush=True)
+    elif features == "embeddings":
+        fi = "baseline" if feat is None else str(feat)
+        print(_prefixed(prefix, f"Embeddings feature set: {fi}"), flush=True)
 
 
 def _validate_basic_args(args: argparse.Namespace) -> None:
@@ -507,7 +577,7 @@ def build_pca_n_components_grid(
     pseudocount: float,
     use_scaler: bool,
     min_explained_variance: float,
-    pca_random_state: int,
+    random_state: int,
 ) -> List[int]:
     """PCA component counts meeting ``min_explained_variance`` on the training fold.
 
@@ -529,7 +599,7 @@ def build_pca_n_components_grid(
         use_scaler=use_scaler,
     )
     pca_full = PCA(
-        n_components=max_comp, svd_solver="full", random_state=pca_random_state
+        n_components=max_comp, svd_solver="full", random_state=random_state
     )
     pca_full.fit(z_train)
     csum = np.cumsum(pca_full.explained_variance_ratio_)
@@ -564,7 +634,7 @@ def make_pipeline(
     pseudocount: float,
     use_scaler: bool,
     pca_n_components: Optional[int],
-    pca_random_state: int,
+    random_state: int,
 ) -> Pipeline:
     steps: List[Tuple[str, object]] = []
     if use_clr:
@@ -578,23 +648,23 @@ def make_pipeline(
                 PCA(
                     n_components=pca_n_components,
                     svd_solver="full",
-                    random_state=pca_random_state,
+                    random_state=random_state,
                 ),
             )
         )
     if model == "knn":
         steps.append(("clf", KNeighborsClassifier()))
     elif model == "random_forest":
-        steps.append(("clf", RandomForestClassifier(random_state=pca_random_state)))
+        steps.append(("clf", RandomForestClassifier(random_state=random_state)))
     elif model == "logistic_regression":
         steps.append(
-            ("clf", LogisticRegression(random_state=pca_random_state, max_iter=1000))
+            ("clf", LogisticRegression(random_state=random_state, max_iter=1000))
         )
     elif model == "svm":
         steps.append(
             (
                 "clf",
-                SVC(random_state=pca_random_state),
+                SVC(random_state=random_state),
             )
         )
     elif model == "baseline":
@@ -1105,7 +1175,7 @@ def _build_pca_grid(args: argparse.Namespace, splits: TaskSplits) -> List[int]:
         pseudocount=args.clr_pseudocount,
         use_scaler=use_scaler,
         min_explained_variance=args.pca_min_variance,
-        pca_random_state=args.random_state,
+        random_state=args.random_state,
     )
     print(
         _prefixed(
@@ -1141,11 +1211,17 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
             feat_df[["Run"] + list(TETRAMERS)], on="Run", how="inner"
         )
         feature_cols = list(TETRAMERS)
-    else:
+    elif args.features == "uc_cap":
         cap_df = _load_cap_csv(Path(args.csv))
         feature_cols = [c for c in cap_df.columns if c.startswith("cluster_")]
         merged = run_task_df.merge(
             cap_df[["Run"] + feature_cols], on="Run", how="inner"
+        )
+    else:
+        embed_df = _load_embeddings_csv(Path(args.csv))
+        feature_cols = [c for c in embed_df.columns if c.startswith("embed_")]
+        merged = run_task_df.merge(
+            embed_df[["Run"] + feature_cols], on="Run", how="inner"
         )
 
     n_features = len(feature_cols)
@@ -1163,7 +1239,7 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
         pseudocount=args.clr_pseudocount,
         use_scaler=not args.no_scaler,
         pca_n_components=(n_components_grid[0] if n_components_grid else None),
-        pca_random_state=args.random_state,
+        random_state=args.random_state,
     )
     tuning = _tune_model_on_validation(
         pipe,
@@ -1199,6 +1275,7 @@ def _parse_main_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     mx = parser.add_mutually_exclusive_group(required=True)
     mx.add_argument("--tetramer", action="store_true", help="Use tetramer frequency features.")
     mx.add_argument("--uc_cap", action="store_true", help="Use UC/CAP cluster features.")
+    mx.add_argument("--embeddings", action="store_true", help="Use frozen HyenaDNA embeddings.")
     parser.add_argument(
         "--expt",
         type=int,
@@ -1212,8 +1289,11 @@ def _parse_main_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         "--feat",
         type=int,
         default=None,
-        help="UC/CAP only: 1-based feature-set index (experiments.yaml run_uc_cap_pipeline). "
-        "Omit for baseline-only merged config from defaults.yaml.",
+        help=(
+            "1-based feature-set index. For --uc_cap: experiments.yaml run_uc_cap_pipeline. "
+            "For --embeddings: experiments.yaml extract_embeddings. "
+            "Omit for baseline-only merged config from defaults.yaml."
+        ),
     )
     parser.add_argument(
         "--results-json",
@@ -1233,8 +1313,8 @@ def _parse_main_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
             "--expt must be a positive integer (1-based experiment index), or omit for defaults."
         )
     if args.tetramer and args.feat is not None:
-        raise SystemExit("--feat is only valid with --uc_cap.")
-    if args.uc_cap and args.feat is not None and args.feat < 1:
+        raise SystemExit("--feat is not valid with --tetramer.")
+    if (args.uc_cap or args.embeddings) and args.feat is not None and args.feat < 1:
         raise SystemExit("--feat must be >= 1 when provided.")
     return args
 
@@ -1243,7 +1323,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     cli = _parse_main_argv(argv)
     expt = int(cli.expt) if cli.expt is not None else 0
-    features = "tetramer" if cli.tetramer else "uc_cap"
+    if cli.tetramer:
+        features = "tetramer"
+    elif cli.uc_cap:
+        features = "uc_cap"
+    else:
+        features = "embeddings"
     if hasattr(cli, "results_json"):
         results_json_cli: Optional[str] = cli.results_json
     else:
