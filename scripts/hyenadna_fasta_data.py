@@ -84,16 +84,6 @@ def merge_train_hyenadna_config(
             f"--expt {expt} requires experiments.yaml with a train_hyenadna.experiments list."
         )
 
-    if (
-        expt != 0
-        and experiment_name
-        and template
-        and defaults.get("results_json") in (None, "null")
-    ):
-        defaults["results_json"] = template.format(
-            name=experiment_name,
-        )
-
     return defaults, experiment_name, template
 
 

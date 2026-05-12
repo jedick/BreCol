@@ -140,7 +140,8 @@ Project execution:
 - Build frozen embedding features: `make extract_embeddings FEAT=0` writes consolidated CSV feature tables to `outputs/embeddings`.
 - Fit classical models on frozen embeddings: `make fit_embeddings FEAT=N EXPT=M` uses selected feature set and classifier experiment row.
 - Train/evaluate HyenaDNA: `make train_hyenadna` uses defaults from `defaults.yaml`.
-- Experiments: `make train_hyenadna EXPT=0` runs every `train_hyenadna` experiment in `experiments.yaml`.
+- Experiments: `make train_hyenadna EXPT=N` runs the selected `train_hyenadna` experiment row from `experiments.yaml`.
+  If an experiment override uses comma-separated grids (for example seeds and/or `max_length`), the training script runs the full grid.
 
 Inputs/outputs:
 - Frozen embedding feature extraction:
@@ -150,4 +151,5 @@ Inputs/outputs:
   - Inputs: cached run tensors, run labels/splits from `scripts/shared_utilities.py`, and pretrained weights under `checkpoints/<model>/` (or download on demand).
   - Outputs:
       - Default `make train_hyenadna` writes `results/scratch/train_hyenadna_<task>_<timestamp>.json`.
-      - Experiment runs (`make train_hyenadna EXPT=N`) write under `results/hyenadna/{name}.json`.
+      - Experiment runs (`make train_hyenadna EXPT=N`) write under the `train_hyenadna.results_json_template` path in `experiments.yaml` (for example `results/hyenadna/{name}_{max_length/1024}k_s{seed}.json`).
+      - Existing JSON outputs are skipped per `(experiment, seed, max_length)` combination.

@@ -249,13 +249,67 @@ Holdout trajectories remain noisy from epoch to epoch under both DANN and no-DAN
 Multi-seed comparisons at \(10^{-5}\) still show holdout variation, so we report DANN as a helpful inductive bias in this setting, not as a guarantee of stable curves.
 
 We consolidate these HyenaDNA cancer-type ablations (best recipe, higher learning rate, DANN off, class-weighting and study-balance variants,
-baseline architecture choices, and related controls) in **Table (TBD: HyenaDNA DANN / ablation grid)**.
+baseline architecture choices, and related controls) in **Table 4**.
+
+<!-- classifier-table-4 -->
+<table>
+<thead>
+<tr>
+<th>Ablation</th><th>Best epoch (per seed)</th><th>Test AUC</th><th>Holdout AUC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Best recipe (baseline)</td><td>10, 10, 9</td><td>0.961 ± 0.003</td><td>0.625 ± 0.074</td>
+</tr>
+<tr>
+<td>Mixed-precision training in float16 (instead of bfloat16)</td><td>10, 7, 9</td><td>0.955 ± 0.018</td><td>0.592 ± 0.097</td>
+</tr>
+<tr>
+<td>Full-precision training (no mixed precision)</td><td>9, 7, 9</td><td>0.961 ± 0.006</td><td>0.627 ± 0.077</td>
+</tr>
+<tr>
+<td>Higher learning rate (10<sup>−4</sup> instead of 10<sup>−5</sup>)</td><td>10, 9, 9</td><td>0.962 ± 0.024</td><td>0.341 ± 0.111</td>
+</tr>
+<tr>
+<td>No gradient clipping</td><td>10, 7, 9</td><td>0.954 ± 0.025</td><td>0.647 ± 0.031</td>
+</tr>
+<tr>
+<td>Random training sampler (no study-balanced sampling)</td><td>10, 10, 4</td><td>0.924 ± 0.007</td><td>0.528 ± 0.046</td>
+</tr>
+<tr>
+<td>No class weighting</td><td>10, 10, 10</td><td>0.975 ± 0.005</td><td>0.611 ± 0.017</td>
+</tr>
+<tr>
+<td>Multilayer perceptron classification head (instead of linear)</td><td>7, 9, 9</td><td>0.935 ± 0.012</td><td>0.568 ± 0.028</td>
+</tr>
+<tr>
+<td>Tune by validation F1 (instead of validation AUC)</td><td>10, 8, 9</td><td>0.956 ± 0.005</td><td>0.636 ± 0.052</td>
+</tr>
+<tr>
+<td>No domain adversarial delay (study head active from epoch 1)</td><td>10, 10, 9</td><td>0.963 ± 0.008</td><td>0.626 ± 0.089</td>
+</tr>
+<tr>
+<td>No study discriminator warm-up</td><td>10, 10, 9</td><td>0.961 ± 0.004</td><td>0.622 ± 0.080</td>
+</tr>
+<tr>
+<td>No domain adversarial training</td><td>10, 8, 8</td><td>0.965 ± 0.006</td><td>0.658 ± 0.041</td>
+</tr>
+</tbody>
+</table>
+<!-- /classifier-table-4 -->
+
+On this three-seed grid the no-DANN ablation reaches the highest mean holdout AUC (0.658 ± 0.041), slightly above the best-recipe baseline (0.625 ± 0.074), and dropping gradient clipping also nudges holdout AUC up to 0.647 ± 0.031.
+In contrast, the higher learning rate collapses holdout AUC to 0.341 ± 0.111, while replacing study-balanced sampling with random sampling and switching the linear head to a multilayer perceptron each remove roughly 0.06–0.10 from holdout AUC relative to the baseline.
+We read the no-DANN and no-clipping gains as suggestive rather than definitive given the seed-to-seed variation in the baseline.
+
+Not in ablation table:
+We verified that AMP dtype (float16 or float32 (i.e., no AMP)) and turning off the DANN delay or warm-up schedule did not move holdout AUC outside seed variance.
 
 **TODOs**
 
-1. Populate the HyenaDNA DANN / ablation table from finalized JSON metrics (including at least two seeds where applicable).
-2. After the ablation grid is set, re-run the sequence-set length axis (1k, 2k, 4k, 8k, 16k) under the chosen training recipe for a direct comparison to Figure 2.
-3. Revisit `cancer_diagnosis` with the same adversarial idea if resources allow.
+1. Re-run the sequence-set length axis (1k, 2k, 4k, 8k, 16k) under the chosen training recipe for a direct comparison to Figure 2.
+2. Revisit `cancer_diagnosis` with the same adversarial idea if resources allow.
    Label structure differs from cancer type (within-study cancer vs. healthy), so transfer behavior may not mirror the cancer-type experiments.
 
 ## Discussion
@@ -283,6 +337,13 @@ HyenaDNA is expressive enough to memorize those confounders, while SVM+UC/CAP is
 The instability isn't just optimization noise; it's the model finding different study-identity shortcuts on different seeds
 and then collapsing on holdout studies with different protocols.
 The [appendix](appendix.md) outlines the hypotheses and experiments we undertook to address this problem.
+
+### Structural differences between tasks
+
+A `cancer_diagnosis` sample has the same two labels as a `cancer_type` sample (a clinical label and a study id), but **the structural relationship between them is different**:
+
+- For `cancer_type`, study and cancer type are tightly entangled — most studies contribute one cancer type, so a study head that predicts well is also predicting label-correlated content. DANN's penalty on "predict the study" partially overlaps with "predict the label," which is why the cancer-type effect is so weight-sensitive.
+- For `cancer_diagnosis`, every included study has *both* classes by construction (within-study cancer vs healthy). Study identity is in principle **decoupled from the label**, so DANN's adversarial signal is much cleaner: it asks the trunk to drop study-specific batch/protocol artefacts without removing label content. That's the textbook setting where GRL works best.
 
 ## References
 

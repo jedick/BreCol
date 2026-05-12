@@ -27,6 +27,8 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import subprocess
+import sys
 from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -982,10 +984,63 @@ def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
             "as train_hyenadna_<task>_<utc>.json. Omit entirely to use YAML only."
         ),
     )
+    parser.add_argument(
+        "--override-random-seed",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--override-max-length",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--child-run",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.expt is not None and args.expt < 0:
         raise SystemExit("--expt must be >= 0.")
     return args
+
+
+def _parse_int_grid(raw: object) -> Optional[List[int]]:
+    if isinstance(raw, int):
+        return [int(raw)]
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        parts = [p.strip() for p in text.split(",")]
+        if len(parts) <= 1:
+            return None
+        try:
+            return [int(p) for p in parts if p]
+        except ValueError as exc:
+            raise SystemExit(
+                f"Grid override values must be comma-separated integers; got {raw!r}."
+            ) from exc
+    return None
+
+
+def _format_hyenadna_results_template(
+    template: str,
+    *,
+    name: str,
+    seed: int,
+    max_length: int,
+) -> str:
+    max_length_k = int(max_length) // 1024
+    text = str(template).replace("{max_length/1024}", "{max_length_k}")
+    return text.format(
+        name=name,
+        seed=int(seed),
+        max_length=int(max_length),
+        max_length_k=int(max_length_k),
+    )
 
 
 def _write_results_json(
@@ -1092,10 +1147,101 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if hasattr(cli, "results_json"):
         rj = cli.results_json
-        if rj == "":
+        if rj == "" and expt > 0 and not cli.child_run:
+            # Makefile passes --results-json for the default no-EXPT workflow.
+            # For experiment runs, leave output path selection to experiment/template logic.
+            pass
+        elif rj == "":
             merged = {**merged, "results_json": ""}
         else:
             merged = {**merged, "results_json": rj}
+    if cli.override_random_seed is not None:
+        merged = {**merged, "random_seed": int(cli.override_random_seed)}
+    if cli.override_max_length is not None:
+        merged = {**merged, "max_length": int(cli.override_max_length)}
+
+    if expt > 0 and not cli.child_run:
+        experiments_cfg = yaml.safe_load(experiments_path.read_text(encoding="utf-8")) or {}
+        train_section = experiments_cfg.get("train_hyenadna") or {}
+        if not isinstance(train_section, dict):
+            raise SystemExit("experiments.yaml train_hyenadna must be a mapping when present.")
+        expts = train_section.get("experiments") or []
+        if not isinstance(expts, list) or expt > len(expts):
+            raise SystemExit(
+                f"--expt {expt} out of range; experiments.yaml has {len(expts) if isinstance(expts, list) else 0} rows."
+            )
+        row = expts[expt - 1]
+        if not isinstance(row, dict):
+            raise SystemExit("train_hyenadna experiment entry must be a mapping.")
+        overrides = row.get("overrides") or {}
+        if not isinstance(overrides, dict):
+            raise SystemExit("train_hyenadna experiment overrides must be a mapping.")
+
+        seed_grid = _parse_int_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
+        max_len_grid = _parse_int_grid(overrides.get("max_length"))
+        if max_len_grid is None:
+            max_len_grid = [int(model_max_length(str(merged["model"]).strip(), merged.get("max_length")))]
+
+        if len(seed_grid) > 1 or len(max_len_grid) > 1:
+            template = _tpl if isinstance(_tpl, str) and _tpl.strip() else None
+            if template is None:
+                raise SystemExit(
+                    "Grid experiment requires train_hyenadna.results_json_template in experiments.yaml."
+                )
+            if not exp_name:
+                raise SystemExit("Grid experiment requires a non-empty train_hyenadna experiment name.")
+            if hasattr(cli, "results_json") and str(cli.results_json) != "":
+                raise SystemExit(
+                    "--results-json cannot be used with multi-run train_hyenadna grid experiments."
+                )
+
+            total = int(len(seed_grid) * len(max_len_grid))
+            completed = 0
+            skipped = 0
+            print(
+                f"Running EXPT={expt} grid: {len(seed_grid)} seed(s) x {len(max_len_grid)} max_length value(s) = {total} run(s).",
+                flush=True,
+            )
+            for seed in seed_grid:
+                for max_length in max_len_grid:
+                    out_rel = _format_hyenadna_results_template(
+                        template,
+                        name=str(exp_name),
+                        seed=int(seed),
+                        max_length=int(max_length),
+                    )
+                    out_path = resolve_repo_path(repo_root, out_rel)
+                    if out_path.is_file():
+                        skipped += 1
+                        print(
+                            f"Skipping EXPT={expt} seed={seed} max_length={max_length}: {out_path} already exists.",
+                            flush=True,
+                        )
+                        continue
+                    cmd = [
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "--expt",
+                        str(expt),
+                        "--child-run",
+                        "--override-random-seed",
+                        str(seed),
+                        "--override-max-length",
+                        str(max_length),
+                        "--results-json",
+                        str(out_path),
+                    ]
+                    print(
+                        f"Launching EXPT={expt} seed={seed} max_length={max_length} -> {out_path}",
+                        flush=True,
+                    )
+                    subprocess.run(cmd, check=True, cwd=str(repo_root))
+                    completed += 1
+            print(
+                f"Finished EXPT={expt} grid: launched={completed}, skipped_existing={skipped}, total={total}.",
+                flush=True,
+            )
+            return 0
 
     defaults_cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8")) or {}
     if not isinstance(defaults_cfg, dict):
@@ -1212,6 +1358,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     seed = int(merged["random_seed"])
     torch.manual_seed(seed)
     np.random.seed(seed)
+
+    if (
+        expt > 0
+        and exp_name
+        and isinstance(_tpl, str)
+        and _tpl.strip()
+        and merged.get("results_json") in (None, "null")
+    ):
+        merged = {
+            **merged,
+            "results_json": _format_hyenadna_results_template(
+                _tpl,
+                name=str(exp_name),
+                seed=seed,
+                max_length=max_len,
+            ),
+        }
 
     device_s = str(merged.get("device") or "").strip().lower()
     if not device_s or device_s == "auto":
@@ -1651,18 +1814,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if scheduler is not None:
             scheduler.step()
 
-        print(
-            f"train_loss={last_loss:.6f}  val_loss={val_loss:.6f}  val_roc_auc={val_auc:.6f}  "
-            f"test_roc_auc={test_auc:.6f}  holdout_roc_auc={hold_auc:.6f}  "
-            f"grad_norm={batch_grad_norm:.6f}  (run-level; logits={aggregate})"
-            + (
-                f"  train_study_ce={train_study_ce:.4f}  val_study_ce={val_study_ce:.4f}  "
-                f"val_study_acc={val_study_acc:.4f}"
-                if study_adv_enabled
-                else ""
-            ),
-            flush=True,
+        fields = [
+            f"train_loss={last_loss:.4f}",
+            f"val_loss={val_loss:.4f}",
+        ]
+        if study_adv_enabled:
+            fields.append(f"val_study_acc={val_study_acc:.4f}")
+        fields.extend(
+            [
+                f"val_roc_auc={val_auc:.4f}",
+                f"test_roc_auc={test_auc:.4f}",
+                f"holdout_roc_auc={hold_auc:.4f}",
+            ]
         )
+        print("  ".join(fields), flush=True)
 
     use_swa = swa_enabled and bool(swa_snapshots)
     if use_swa:
@@ -1750,7 +1915,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         print(
             f"Final eval ({tail}): best_epoch={best_epoch} "
-            f"test_roc_auc={final_test_auc:.6f} holdout_roc_auc={final_holdout_auc:.6f}\n",
+            f"test_roc_auc={final_test_auc:.4f} holdout_roc_auc={final_holdout_auc:.4f}\n",
             flush=True,
         )
 
