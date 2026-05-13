@@ -60,71 +60,65 @@ extract_embeddings:
   - { num_sets: 5, max_length: 16384 }
   
 train_hyenadna:
-  results_json_template: results/hyenadna/{name}_{max_length/1024}k_s{seed}.json
+  results_json_template: results/hyenadna/{task_abbrv}_{name}_{max_length/1024}k_s{seed}.json
   experiments:
-    # Except as noted, each ct_* experiment takes about 13 minutes to run all seeds (using ca. 15000MiB GPU memory)
-    - name: ct_best_recipe  # 1
+    # Timings to run 3 seeds over 10 epochs for 5 sets and 2048 max_length
+    #   (with batch_size=20 uses ca. 15000 MiB GPU memory):
+    #   - about 26 minutes for cd_* experiments
+    #   - about 13 minutes for ct_* experiments
+    # Estimated total time for 10 experiments with 4 seeds and 20 epochs:
+    #   10 * (26 + 13) * 4/3 * 20/10 = 1040 minutes (17.3 hours)
+    - name: best_recipe  # 1
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
-    - name: ct_amp_float16  # 2
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
+    - name: high_lr  # 2
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
-        amp_dtype: float16
-    - name: ct_no_amp  # 3 (ca. 21 minutes)
-      overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
-        amp: false
-        batch_size: 12
-    - name: ct_high_lr  # 4
-      overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
         learning_rate: 1.0e-4
-    - name: ct_no_grad_clip  # 5
+    - name: no_grad_clip  # 3
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
         grad_clip_norm: null
-    - name: ct_no_study_balanced  # 6
+    - name: no_study_balanced  # 4
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
         train_sampler: random
-    - name: ct_no_class_weight  # 7
+    - name: no_class_weight  # 5
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
         class_weight: none
-    - name: ct_head_arch_mlp  # 8
+    - name: head_arch_mlp  # 6
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
         head_arch: mlp
-    - name: ct_tuning_val_f1  # 9
+    - name: tuning_val_f1  # 7
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
         tuning_metric: val_f1_weighted
-    - name: ct_no_adv_delay  # 10
+    - name: lr_schedule  # 8
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
-        study_adv_delay_epochs: 0
-    - name: ct_no_disc_warmup  # 11
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
+        lr_schedule: warmup_cosine
+    - name: hi_adv_weight  # 9
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
-        study_disc_warmup_epochs: 0
-    - name: ct_no_dann  # 12
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
+        study_adv_weight: 0.3
+    - name: no_dann  # 10
       overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
+        task: "cancer_diagnosis,cancer_type"
+        random_seed: "0,1,2,3"
         study_adv: false
-    - name: ct_max_length
-      overrides:
-        task: cancer_type
-        random_seed: "0,1,2"
-        max_length: "1024,2048,4096"
+#    - name: max_length
+#      overrides:
+#        task: "cancer_diagnosis,cancer_type"
+#        max_length: "1024,2048,4096"
+#        random_seed: "0,1,2,3,4"

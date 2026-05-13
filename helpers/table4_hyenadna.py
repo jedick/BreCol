@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """
-Build Table 4 (HyenaDNA cancer-type ablations) from JSON metrics under
-``results/hyenadna/``.
+Build Table 4 (HyenaDNA ablations) from JSON metrics under ``results/hyenadna/``.
 
-Reads experiments 1..12 from ``experiments.yaml`` ``train_hyenadna.experiments``
-(0-based indices 0..11) and, for each one, aggregates over all available random
-seeds (files named ``{name}_<L>k_s<seed>.json``).
+Reads ``experiments.yaml`` ``train_hyenadna.experiments`` and aggregates
+``metrics.test.roc_auc`` / ``metrics.holdout.roc_auc`` from per-seed files:
+``{task_abbrv}_{name}_<L>k_s<seed>.json``.
 
-Output is an HTML table with one row per ablation, in experiment order:
+Output is an HTML table with one row per ablation and grouped metric columns:
 
-  | Ablation (plain English) | Best epoch (per seed) | Test AUC | Holdout AUC |
-
-* ``Best epoch`` lists the validation-selected best epoch per seed (from
-  ``tuning.best_epoch``).
-* ``Test AUC`` and ``Holdout AUC`` show ``mean ± standard deviation`` of
-  ``metrics.test.roc_auc`` / ``metrics.holdout.roc_auc`` across seeds.
+  | Ablation | Cancer diagnosis (Median epoch/Test/Holdout AUC) | Cancer type (Median epoch/Test/Holdout AUC) |
 """
 
 from __future__ import annotations
@@ -27,31 +21,32 @@ import re
 import statistics
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
 
 
-# Plain-English row labels for experiments 1..12 in experiments.yaml.
+# Plain-English row labels for train_hyenadna.experiments in experiments.yaml.
 # Descriptions may contain HTML (e.g. <sup>) and are intentionally not escaped
-# when rendered into the <td>. Update this mapping whenever experiments.yaml
-# rows 1..12 are reordered or renamed.
+# when rendered into the <td>.
 ABLATION_DESCRIPTIONS: Dict[str, str] = {
-    "ct_best_recipe": "Best recipe (baseline)",
-    "ct_amp_float16": "Mixed-precision training in float16 (instead of bfloat16)",
-    "ct_no_amp": "Full-precision training (no mixed precision)",
-    "ct_high_lr": "Higher learning rate (10<sup>\u22124</sup> instead of 10<sup>\u22125</sup>)",
-    "ct_no_grad_clip": "No gradient clipping",
-    "ct_no_study_balanced": "Random training sampler (no study-balanced sampling)",
-    "ct_no_class_weight": "No class weighting",
-    "ct_head_arch_mlp": "Multilayer perceptron classification head (instead of linear)",
-    "ct_tuning_val_f1": "Tune by validation F1 (instead of validation AUC)",
-    "ct_no_adv_delay": "No domain adversarial delay (study head active from epoch 1)",
-    "ct_no_disc_warmup": "No study discriminator warm-up",
-    "ct_no_dann": "No domain adversarial training",
+    "best_recipe": "Best recipe (baseline)",
+    "high_lr": "Higher learning rate (10<sup>\u22124</sup> instead of 10<sup>\u22125</sup>)",
+    "no_grad_clip": "No gradient clipping",
+    "no_study_balanced": "Random training sampler (no study-balanced sampling)",
+    "no_class_weight": "No class weighting",
+    "head_arch_mlp": "Multilayer perceptron classification head (instead of linear)",
+    "tuning_val_f1": "Tune by validation weighted F1 (instead of validation ROC AUC)",
+    "lr_schedule": "Warmup + cosine learning-rate schedule",
+    "hi_adv_weight": "Higher study adversarial weight (0.3 instead of baseline)",
+    "no_dann": "No domain adversarial training",
 }
 ABLATION_ORDER: Tuple[str, ...] = tuple(ABLATION_DESCRIPTIONS.keys())
 N_ABLATIONS: int = len(ABLATION_ORDER)
+TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
+    ("cd", "Cancer diagnosis"),
+    ("ct", "Cancer type"),
+)
 
 
 def _load_yaml(path: Path) -> dict:
@@ -67,8 +62,28 @@ def _train_hyenadna_base(repo_root: Path) -> dict:
     return dict(sec)
 
 
-def _experiments_1_to_12(repo_root: Path) -> List[Tuple[str, int]]:
-    """Return (name, max_length) for experiments 1..12 (1-based) in order."""
+def _parse_seed_spec(raw: object) -> Set[int]:
+    if raw is None:
+        return set()
+    if isinstance(raw, int):
+        return {raw}
+    txt = str(raw).strip()
+    if not txt:
+        return set()
+    seeds: Set[int] = set()
+    for token in txt.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            seeds.add(int(token))
+        except ValueError as exc:
+            raise SystemExit(f"random_seed contains non-integer value {token!r}: {exc}")
+    return seeds
+
+
+def _experiments(repo_root: Path) -> List[Dict[str, object]]:
+    """Return metadata for HyenaDNA ablations in experiments.yaml order."""
     base = _train_hyenadna_base(repo_root)
     exp_cfg = _load_yaml(repo_root / "experiments.yaml").get("train_hyenadna") or {}
     rows = exp_cfg.get("experiments") or []
@@ -78,7 +93,7 @@ def _experiments_1_to_12(repo_root: Path) -> List[Tuple[str, int]]:
             "experiments.yaml train_hyenadna.experiments must list at least "
             f"{N_ABLATIONS} entries; got {n_got}."
         )
-    out: List[Tuple[str, int]] = []
+    out: List[Dict[str, object]] = []
     for idx in range(N_ABLATIONS):
         row = rows[idx]
         if not isinstance(row, dict):
@@ -100,7 +115,14 @@ def _experiments_1_to_12(repo_root: Path) -> List[Tuple[str, int]]:
             raise SystemExit(
                 f"{name}: cannot resolve max_length from defaults+overrides ({exc})."
             )
-        out.append((name, max_length))
+        expected_seeds = _parse_seed_spec(merged.get("random_seed"))
+        out.append(
+            {
+                "name": name,
+                "max_length": max_length,
+                "expected_seeds": expected_seeds,
+            }
+        )
     return out
 
 
@@ -117,10 +139,10 @@ _SEED_RE = re.compile(r"_s(\d+)\.json$")
 
 
 def _seed_files(
-    hyenadna_dir: Path, name: str, max_length: int
+    hyenadna_dir: Path, task_abbrv: str, name: str, max_length: int
 ) -> List[Tuple[int, Path]]:
     tok = _len_token(max_length)
-    candidates = sorted(hyenadna_dir.glob(f"{name}_{tok}_s*.json"))
+    candidates = sorted(hyenadna_dir.glob(f"{task_abbrv}_{name}_{tok}_s*.json"))
     out: List[Tuple[int, Path]] = []
     for p in candidates:
         m = _SEED_RE.search(p.name)
@@ -175,39 +197,55 @@ def _fmt_mean_std(values: List[float], *, decimals: int) -> str:
     return f"{mean:.{decimals}f} \u00b1 {std:.{decimals}f}"
 
 
-def _fmt_epochs(values: List[int]) -> str:
+def _fmt_median_epoch(values: List[int]) -> str:
     if not values:
-        return "\u2014"
-    return ", ".join(str(v) for v in values)
+        return "\u2014"  # em dash
+    med = statistics.median(values)
+    if float(med).is_integer():
+        return str(int(med))
+    return f"{med:.1f}"
 
 
 def collect_rows(
     hyenadna_dir: Path,
-    experiments: List[Tuple[str, int]],
+    experiments: List[Dict[str, object]],
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     missing: List[str] = []
-    for name, max_length in experiments:
-        files = _seed_files(hyenadna_dir, name, max_length)
-        if not files:
-            missing.append(f"{name} ({_len_token(max_length)})")
-            continue
-        epochs: List[int] = []
-        test_aucs: List[float] = []
-        hold_aucs: List[float] = []
-        for _seed, path in files:
-            ep, t, h = _read_metrics(path)
-            epochs.append(ep)
-            test_aucs.append(t)
-            hold_aucs.append(h)
+    for exp in experiments:
+        name = str(exp["name"])
+        max_length = int(exp["max_length"])
+        expected_seeds = set(exp["expected_seeds"])
+        task_metrics: Dict[str, Dict[str, List[float]]] = {}
+        for task_abbrv, _task_heading in TASK_COLUMNS:
+            files = _seed_files(hyenadna_dir, task_abbrv, name, max_length)
+            if not files:
+                missing.append(f"{task_abbrv}_{name} ({_len_token(max_length)})")
+                continue
+            found_seeds = {seed for seed, _path in files}
+            if expected_seeds and found_seeds != expected_seeds:
+                raise SystemExit(
+                    f"{task_abbrv}_{name}: expected seeds {sorted(expected_seeds)} "
+                    f"from experiments.yaml, found {sorted(found_seeds)}."
+                )
+            best_epochs: List[int] = []
+            test_aucs: List[float] = []
+            hold_aucs: List[float] = []
+            for _seed, path in files:
+                ep, t, h = _read_metrics(path)
+                best_epochs.append(ep)
+                test_aucs.append(t)
+                hold_aucs.append(h)
+            task_metrics[task_abbrv] = {
+                "best_epochs": best_epochs,
+                "test_aucs": test_aucs,
+                "hold_aucs": hold_aucs,
+            }
         rows.append(
             {
                 "name": name,
                 "description": ABLATION_DESCRIPTIONS[name],
-                "epochs": epochs,
-                "test_aucs": test_aucs,
-                "hold_aucs": hold_aucs,
-                "n_seeds": len(files),
+                "task_metrics": task_metrics,
             }
         )
     if missing:
@@ -228,8 +266,15 @@ def format_table_html(
     thead = (
         "<thead>\n"
         "<tr>\n"
-        "<th>Ablation</th>"
-        "<th>Best epoch (per seed)</th>"
+        "<th rowspan='2'>Ablation</th>"
+        "<th colspan='3'>Cancer diagnosis</th>"
+        "<th colspan='3'>Cancer type</th>\n"
+        "</tr>\n"
+        "<tr>\n"
+        "<th>Median best epoch</th>"
+        "<th>Test AUC</th>"
+        "<th>Holdout AUC</th>"
+        "<th>Median best epoch</th>"
         "<th>Test AUC</th>"
         "<th>Holdout AUC</th>\n"
         "</tr>\n"
@@ -238,14 +283,29 @@ def format_table_html(
     body_rows: List[str] = []
     for row in rows:
         desc = row["description"]  # raw HTML allowed (e.g. <sup>)
-        ep_cell = html.escape(_fmt_epochs(row["epochs"]))
-        test_cell = html.escape(_fmt_mean_std(row["test_aucs"], decimals=decimals))
-        hold_cell = html.escape(_fmt_mean_std(row["hold_aucs"], decimals=decimals))
+        task_metrics = row["task_metrics"]
+        cd_med_ep = html.escape(_fmt_median_epoch(task_metrics["cd"]["best_epochs"]))
+        cd_test = html.escape(
+            _fmt_mean_std(task_metrics["cd"]["test_aucs"], decimals=decimals)
+        )
+        cd_hold = html.escape(
+            _fmt_mean_std(task_metrics["cd"]["hold_aucs"], decimals=decimals)
+        )
+        ct_med_ep = html.escape(_fmt_median_epoch(task_metrics["ct"]["best_epochs"]))
+        ct_test = html.escape(
+            _fmt_mean_std(task_metrics["ct"]["test_aucs"], decimals=decimals)
+        )
+        ct_hold = html.escape(
+            _fmt_mean_std(task_metrics["ct"]["hold_aucs"], decimals=decimals)
+        )
         body_rows.append(
             f"<tr>\n<td>{desc}</td>"
-            f"<td>{ep_cell}</td>"
-            f"<td>{test_cell}</td>"
-            f"<td>{hold_cell}</td>\n</tr>"
+            f"<td>{cd_med_ep}</td>"
+            f"<td>{cd_test}</td>"
+            f"<td>{cd_hold}</td>"
+            f"<td>{ct_med_ep}</td>"
+            f"<td>{ct_test}</td>"
+            f"<td>{ct_hold}</td>\n</tr>"
         )
     tbody = "<tbody>\n" + "\n".join(body_rows) + "\n</tbody>\n"
     return f"<table>\n{thead}{tbody}</table>\n"
@@ -271,7 +331,7 @@ def main() -> int:
     if not hyenadna_dir.is_dir():
         raise SystemExit(f"Not a directory: {hyenadna_dir}")
 
-    experiments = _experiments_1_to_12(repo_root)
+    experiments = _experiments(repo_root)
     rows = collect_rows(hyenadna_dir, experiments)
     print(format_table_html(rows, decimals=args.decimals), end="", flush=True)
     return 0

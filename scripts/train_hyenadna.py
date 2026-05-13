@@ -64,6 +64,19 @@ HALF_BATCH_SIZE = 0.5
 SET_SPLIT_INDEX = 5
 STUDY_IGNORE_INDEX = -100
 
+_HYENADNA_TASK_GRID_VALUES = frozenset({"cancer_diagnosis", "cancer_type"})
+
+
+def _task_abbrv(task: str) -> str:
+    t = str(task).strip()
+    if t == "cancer_diagnosis":
+        return "cd"
+    if t == "cancer_type":
+        return "ct"
+    raise SystemExit(
+        f"Unknown task {task!r} for results path (expected cancer_diagnosis or cancer_type)."
+    )
+
 
 def _resolve_study_adv_phase(
     epoch_1based: int,
@@ -997,6 +1010,12 @@ def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--override-task",
+        type=str,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--child-run",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -1026,9 +1045,30 @@ def _parse_int_grid(raw: object) -> Optional[List[int]]:
     return None
 
 
+def _parse_task_grid(raw: object) -> Optional[List[str]]:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+        if len(parts) <= 1:
+            return None
+        bad = [p for p in parts if p not in _HYENADNA_TASK_GRID_VALUES]
+        if bad:
+            raise SystemExit(
+                "train_hyenadna task grid must list only cancer_diagnosis and/or "
+                f"cancer_type; unknown value(s): {bad!r}."
+            )
+        return parts
+    return None
+
+
 def _format_hyenadna_results_template(
     template: str,
     *,
+    task: str,
     name: str,
     seed: int,
     max_length: int,
@@ -1036,6 +1076,8 @@ def _format_hyenadna_results_template(
     max_length_k = int(max_length) // 1024
     text = str(template).replace("{max_length/1024}", "{max_length_k}")
     return text.format(
+        task=str(task).strip(),
+        task_abbrv=_task_abbrv(task),
         name=name,
         seed=int(seed),
         max_length=int(max_length),
@@ -1155,6 +1197,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             merged = {**merged, "results_json": ""}
         else:
             merged = {**merged, "results_json": rj}
+    if cli.override_task is not None:
+        merged = {**merged, "task": str(cli.override_task).strip()}
     if cli.override_random_seed is not None:
         merged = {**merged, "random_seed": int(cli.override_random_seed)}
     if cli.override_max_length is not None:
@@ -1177,12 +1221,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not isinstance(overrides, dict):
             raise SystemExit("train_hyenadna experiment overrides must be a mapping.")
 
+        task_grid = _parse_task_grid(overrides.get("task")) or [str(merged["task"]).strip()]
         seed_grid = _parse_int_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
         max_len_grid = _parse_int_grid(overrides.get("max_length"))
         if max_len_grid is None:
             max_len_grid = [int(model_max_length(str(merged["model"]).strip(), merged.get("max_length")))]
 
-        if len(seed_grid) > 1 or len(max_len_grid) > 1:
+        if len(task_grid) > 1 or len(seed_grid) > 1 or len(max_len_grid) > 1:
             template = _tpl if isinstance(_tpl, str) and _tpl.strip() else None
             if template is None:
                 raise SystemExit(
@@ -1195,48 +1240,56 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "--results-json cannot be used with multi-run train_hyenadna grid experiments."
                 )
 
-            total = int(len(seed_grid) * len(max_len_grid))
+            total = int(len(task_grid) * len(max_len_grid) * len(seed_grid))
             completed = 0
             skipped = 0
             print(
-                f"Running EXPT={expt} grid: {len(seed_grid)} seed(s) x {len(max_len_grid)} max_length value(s) = {total} run(s).",
+                f"Running EXPT={expt} grid: {len(task_grid)} task(s) x {len(max_len_grid)} "
+                f"max_length x {len(seed_grid)} seed(s) = {total} run(s) "
+                "(outer: task, inner: seed).",
                 flush=True,
             )
-            for seed in seed_grid:
+            for task_v in task_grid:
                 for max_length in max_len_grid:
-                    out_rel = _format_hyenadna_results_template(
-                        template,
-                        name=str(exp_name),
-                        seed=int(seed),
-                        max_length=int(max_length),
-                    )
-                    out_path = resolve_repo_path(repo_root, out_rel)
-                    if out_path.is_file():
-                        skipped += 1
+                    for seed in seed_grid:
+                        out_rel = _format_hyenadna_results_template(
+                            template,
+                            task=str(task_v),
+                            name=str(exp_name),
+                            seed=int(seed),
+                            max_length=int(max_length),
+                        )
+                        out_path = resolve_repo_path(repo_root, out_rel)
+                        if out_path.is_file():
+                            skipped += 1
+                            print(
+                                f"Skipping EXPT={expt} task={task_v} seed={seed} "
+                                f"max_length={max_length}: {out_path} already exists.",
+                                flush=True,
+                            )
+                            continue
+                        cmd = [
+                            sys.executable,
+                            str(Path(__file__).resolve()),
+                            "--expt",
+                            str(expt),
+                            "--child-run",
+                            "--override-task",
+                            str(task_v),
+                            "--override-random-seed",
+                            str(seed),
+                            "--override-max-length",
+                            str(max_length),
+                            "--results-json",
+                            str(out_path),
+                        ]
                         print(
-                            f"Skipping EXPT={expt} seed={seed} max_length={max_length}: {out_path} already exists.",
+                            f"Launching EXPT={expt} task={task_v} seed={seed} "
+                            f"max_length={max_length} -> {out_path}",
                             flush=True,
                         )
-                        continue
-                    cmd = [
-                        sys.executable,
-                        str(Path(__file__).resolve()),
-                        "--expt",
-                        str(expt),
-                        "--child-run",
-                        "--override-random-seed",
-                        str(seed),
-                        "--override-max-length",
-                        str(max_length),
-                        "--results-json",
-                        str(out_path),
-                    ]
-                    print(
-                        f"Launching EXPT={expt} seed={seed} max_length={max_length} -> {out_path}",
-                        flush=True,
-                    )
-                    subprocess.run(cmd, check=True, cwd=str(repo_root))
-                    completed += 1
+                        subprocess.run(cmd, check=True, cwd=str(repo_root))
+                        completed += 1
             print(
                 f"Finished EXPT={expt} grid: launched={completed}, skipped_existing={skipped}, total={total}.",
                 flush=True,
@@ -1370,6 +1423,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             **merged,
             "results_json": _format_hyenadna_results_template(
                 _tpl,
+                task=str(task).strip(),
                 name=str(exp_name),
                 seed=seed,
                 max_length=max_len,

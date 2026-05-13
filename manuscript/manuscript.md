@@ -255,45 +255,42 @@ baseline architecture choices, and related controls) in **Table 4**.
 <table>
 <thead>
 <tr>
-<th>Ablation</th><th>Best epoch (per seed)</th><th>Test AUC</th><th>Holdout AUC</th>
+<th rowspan='2'>Ablation</th><th colspan='3'>Cancer diagnosis</th><th colspan='3'>Cancer type</th>
+</tr>
+<tr>
+<th>Median best epoch</th><th>Test AUC</th><th>Holdout AUC</th><th>Median best epoch</th><th>Test AUC</th><th>Holdout AUC</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Best recipe (baseline)</td><td>10, 10, 9</td><td>0.961 ± 0.003</td><td>0.625 ± 0.074</td>
+<td>Best recipe (baseline)</td><td>13.5</td><td>0.620 ± 0.021</td><td>0.555 ± 0.021</td><td>19.5</td><td>0.976 ± 0.006</td><td>0.606 ± 0.056</td>
 </tr>
 <tr>
-<td>Mixed-precision training in float16 (instead of bfloat16)</td><td>10, 7, 9</td><td>0.955 ± 0.018</td><td>0.592 ± 0.097</td>
+<td>Higher learning rate (10<sup>−4</sup> instead of 10<sup>−5</sup>)</td><td>9.5</td><td>0.608 ± 0.040</td><td>0.514 ± 0.051</td><td>15.5</td><td>0.966 ± 0.014</td><td>0.310 ± 0.078</td>
 </tr>
 <tr>
-<td>Full-precision training (no mixed precision)</td><td>9, 7, 9</td><td>0.961 ± 0.006</td><td>0.627 ± 0.077</td>
+<td>No gradient clipping</td><td>15.5</td><td>0.628 ± 0.030</td><td>0.551 ± 0.005</td><td>20</td><td>0.980 ± 0.007</td><td>0.602 ± 0.089</td>
 </tr>
 <tr>
-<td>Higher learning rate (10<sup>−4</sup> instead of 10<sup>−5</sup>)</td><td>10, 9, 9</td><td>0.962 ± 0.024</td><td>0.341 ± 0.111</td>
+<td>Random training sampler (no study-balanced sampling)</td><td>16</td><td>0.661 ± 0.011</td><td>0.543 ± 0.053</td><td>20</td><td>0.956 ± 0.007</td><td>0.575 ± 0.045</td>
 </tr>
 <tr>
-<td>No gradient clipping</td><td>10, 7, 9</td><td>0.954 ± 0.025</td><td>0.647 ± 0.031</td>
+<td>No class weighting</td><td>14.5</td><td>0.623 ± 0.019</td><td>0.542 ± 0.021</td><td>19</td><td>0.985 ± 0.003</td><td>0.627 ± 0.025</td>
 </tr>
 <tr>
-<td>Random training sampler (no study-balanced sampling)</td><td>10, 10, 4</td><td>0.924 ± 0.007</td><td>0.528 ± 0.046</td>
+<td>Multilayer perceptron classification head (instead of linear)</td><td>13.5</td><td>0.624 ± 0.008</td><td>0.541 ± 0.056</td><td>19.5</td><td>0.968 ± 0.011</td><td>0.529 ± 0.039</td>
 </tr>
 <tr>
-<td>No class weighting</td><td>10, 10, 10</td><td>0.975 ± 0.005</td><td>0.611 ± 0.017</td>
+<td>Tune by validation weighted F1 (instead of validation ROC AUC)</td><td>13.5</td><td>0.618 ± 0.025</td><td>0.552 ± 0.019</td><td>18</td><td>0.972 ± 0.012</td><td>0.612 ± 0.051</td>
 </tr>
 <tr>
-<td>Multilayer perceptron classification head (instead of linear)</td><td>7, 9, 9</td><td>0.935 ± 0.012</td><td>0.568 ± 0.028</td>
+<td>Warmup + cosine learning-rate schedule</td><td>17</td><td>0.641 ± 0.004</td><td>0.517 ± 0.015</td><td>15.5</td><td>0.958 ± 0.021</td><td>0.586 ± 0.090</td>
 </tr>
 <tr>
-<td>Tune by validation F1 (instead of validation AUC)</td><td>10, 8, 9</td><td>0.956 ± 0.005</td><td>0.636 ± 0.052</td>
+<td>Higher study adversarial weight (0.3 instead of baseline)</td><td>14.5</td><td>0.632 ± 0.018</td><td>0.548 ± 0.030</td><td>18.5</td><td>0.975 ± 0.003</td><td>0.620 ± 0.039</td>
 </tr>
 <tr>
-<td>No domain adversarial delay (study head active from epoch 1)</td><td>10, 10, 9</td><td>0.963 ± 0.008</td><td>0.626 ± 0.089</td>
-</tr>
-<tr>
-<td>No study discriminator warm-up</td><td>10, 10, 9</td><td>0.961 ± 0.004</td><td>0.622 ± 0.080</td>
-</tr>
-<tr>
-<td>No domain adversarial training</td><td>10, 8, 8</td><td>0.965 ± 0.006</td><td>0.658 ± 0.041</td>
+<td>No domain adversarial training</td><td>17</td><td>0.630 ± 0.016</td><td>0.516 ± 0.055</td><td>19.5</td><td>0.981 ± 0.005</td><td>0.583 ± 0.019</td>
 </tr>
 </tbody>
 </table>
@@ -303,8 +300,11 @@ On this three-seed grid the no-DANN ablation reaches the highest mean holdout AU
 In contrast, the higher learning rate collapses holdout AUC to 0.341 ± 0.111, while replacing study-balanced sampling with random sampling and switching the linear head to a multilayer perceptron each remove roughly 0.06–0.10 from holdout AUC relative to the baseline.
 We read the no-DANN and no-clipping gains as suggestive rather than definitive given the seed-to-seed variation in the baseline.
 
-Not in ablation table:
-We verified that AMP dtype (float16 or float32 (i.e., no AMP)) and turning off the DANN delay or warm-up schedule did not move holdout AUC outside seed variance.
+A practical rule of thumb is that the best epoch should sit comfortably inside the schedule, roughly the middle two thirds.
+TODO: Is this where our experiments land?
+
+Results not listed in ablation table:
+- We verified that AMP dtype (float16 or float32 (i.e., no AMP)) and turning off the DANN delay or warm-up schedule did not move holdout AUC outside seed variance.
 
 **TODOs**
 
