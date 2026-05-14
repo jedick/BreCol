@@ -17,15 +17,19 @@ For each column, AUC is read from ``results/hyenadna/<name>_training.json`` at t
 epoch that maximizes ``val_f1_weighted`` among rows with ``epoch`` ≤ the column
 cap (10 or 20). Ties break toward a later epoch.
 
-Experiment names still come from ``experiments.yaml`` ``train_hyenadna.experiments``
+Experiment names come from ``experiments.yaml`` ``train_hyenadna.experiments``
 merged with ``defaults.yaml`` ``train_hyenadna`` (single num_sets grid, typically 5).
+
+Writes ``manuscript/figure2_hyenadna.png`` and ``manuscript/figure2_hyenadna.svg``.
+
+Run from the repository root: ``python helpers/figure2_hyenadna.py``
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
@@ -44,6 +48,9 @@ EPOCH_COLUMNS: List[Tuple[int, str]] = [
 
 LENGTHS_BP: Tuple[int, ...] = (1024, 2048, 4096, 8192, 16384)
 X_LABELS: Tuple[str, ...] = ("1k", "2k", "4k", "8k", "16k")
+
+OUTPUT_PNG = Path("manuscript") / "figure2_hyenadna.png"
+OUTPUT_SVG = Path("manuscript") / "figure2_hyenadna.svg"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -241,30 +248,7 @@ def build_plot(
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--hyenadna-dir",
-        type=Path,
-        default=repo_root / "results" / "hyenadna",
-        help="Directory with HyenaDNA *_training.json logs (default: results/hyenadna).",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=repo_root / "figures" / "figure2_hyenadna.png",
-        help="Output PNG path (default: figures/figure2_hyenadna.png).",
-    )
-    parser.add_argument(
-        "--svg-output",
-        type=Path,
-        default=repo_root / "figures" / "figure2_hyenadna.svg",
-        help="Output SVG path (default: figures/figure2_hyenadna.svg).",
-    )
-    args = parser.parse_args()
-
-    hyenadna_dir = args.hyenadna_dir.expanduser().resolve()
-    output_path = args.output.expanduser()
-    svg_output_path = args.svg_output.expanduser()
+    hyenadna_dir = repo_root / "results" / "hyenadna"
     if not hyenadna_dir.is_dir():
         raise SystemExit(f"Not a directory: {hyenadna_dir}")
 
@@ -272,10 +256,12 @@ def main() -> int:
     _grid_complete(grid)
 
     series = collect_series(hyenadna_dir, grid)
-    build_plot(series, output_path=output_path)
-    build_plot(series, output_path=svg_output_path)
-    print(output_path)
-    print(svg_output_path)
+    png_path = repo_root / OUTPUT_PNG
+    svg_path = repo_root / OUTPUT_SVG
+    build_plot(series, output_path=png_path)
+    build_plot(series, output_path=svg_path)
+    print(png_path)
+    print(svg_path)
     return 0
 
 

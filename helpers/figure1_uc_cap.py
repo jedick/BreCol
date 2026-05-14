@@ -2,22 +2,16 @@
 """
 Build Figure 1: UC/CAP feature-set stability across test vs holdout AUC.
 
-Layout:
-- 2x2 subplots
-- rows = task (cancer diagnosis, cancer type)
-- columns = model (SVM, Random Forest)
-- x-axis = UC/CAP feature set index (1..N from experiments.yaml run_uc_cap_pipeline)
-- y-axis = ROC AUC
+Writes ``manuscript/figure1_uc_cap.png`` and ``manuscript/figure1_uc_cap.svg`` from
+JSON metrics under ``results/uc_cap/<feat_index>/``.
 
-Each subplot draws:
-- test split: thin dashed line with markers
-- holdout split: solid bold line with markers
+Run from the repository root: ``python helpers/figure1_uc_cap.py``
 """
 
 from __future__ import annotations
 
-import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -33,6 +27,9 @@ MODELS: List[Tuple[str, str]] = [
     ("svm", "SVM"),
     ("random_forest", "Random Forest"),
 ]
+
+OUTPUT_PNG = Path("manuscript") / "figure1_uc_cap.png"
+OUTPUT_SVG = Path("manuscript") / "figure1_uc_cap.svg"
 
 
 def _load_yaml(path: Path) -> Dict:
@@ -142,39 +139,18 @@ def build_plot(
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--uc-cap-dir",
-        type=Path,
-        default=repo_root / "results" / "uc_cap",
-        help="Directory containing FEAT-indexed UC/CAP result subdirectories (default: results/uc_cap).",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=repo_root / "figures" / "figure1_uc_cap.png",
-        help="Output figure path (default: figures/figure1_uc_cap.png).",
-    )
-    parser.add_argument(
-        "--svg-output",
-        type=Path,
-        default=repo_root / "figures" / "figure1_uc_cap.svg",
-        help="Optional SVG output path (default: figures/figure1_uc_cap.svg).",
-    )
-    args = parser.parse_args()
-
-    uc_cap_dir = args.uc_cap_dir.expanduser()
-    output_path = args.output.expanduser()
-    svg_output_path = args.svg_output.expanduser()
+    uc_cap_dir = repo_root / "results" / "uc_cap"
     if not uc_cap_dir.is_dir():
         raise SystemExit(f"Not a directory: {uc_cap_dir}")
 
     n_features = _feature_count(repo_root)
     series = collect_series(uc_cap_dir, n_features=n_features)
-    build_plot(series, n_features=n_features, output_path=output_path)
-    build_plot(series, n_features=n_features, output_path=svg_output_path)
-    print(output_path)
-    print(svg_output_path)
+    png_path = repo_root / OUTPUT_PNG
+    svg_path = repo_root / OUTPUT_SVG
+    build_plot(series, n_features=n_features, output_path=png_path)
+    build_plot(series, n_features=n_features, output_path=svg_path)
+    print(png_path)
+    print(svg_path)
     return 0
 
 

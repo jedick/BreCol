@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Build Table 3 from UC/CAP classifier JSON for a single feature triple.
+Build Table 4 (UC/CAP classifiers, selected feature triple) as HTML under
+manuscript/table4_uc_cap.html.
 
 Resolves ``results/uc_cap/<feat>/`` using ``experiments.yaml`` ``run_uc_cap_pipeline``
 rows merged over ``defaults.yaml`` (same ordering as ``helpers/list_uc_cap_feature_outputs.py``),
-then loads KNN, SVM, and random forest for both tasks and prints test and holdout ROC AUC
-as an HTML table (same nested header shape as ``helpers/table1_tetramer.py``).
+then loads KNN, SVM, and random forest for both tasks.
 
-Default triple matches the manuscript feature set 8:
-*n*<sub>UC</sub> = 2000, *K* = 5000, *n*<sub>CAP</sub> = 10000.
+The manuscript triple is fixed: *n*<sub>UC</sub> = 2000, *K* = 5000, *n*<sub>CAP</sub> = 10000.
+
+Run from the repository root: ``python helpers/table4_uc_cap.py``
 """
 
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import math
@@ -38,6 +38,12 @@ TASK_HEADER = {
     "cancer_diagnosis": "Cancer diagnosis AUC",
     "cancer_type": "Cancer type AUC",
 }
+
+N_UC = 2000
+N_CLUSTERS = 5000
+N_CAP = 10000
+DECIMALS = 3
+OUTPUT_REL = Path("manuscript") / "table4_uc_cap.html"
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -155,49 +161,26 @@ def format_table_html(
 
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--uc-cap-dir",
-        type=Path,
-        default=root / "results" / "uc_cap",
-        help="Parent directory with per-feat subdirs (default: results/uc_cap).",
-    )
-    p.add_argument("--n-uc", type=int, default=2000, help="UC sequence budget (default: 2000).")
-    p.add_argument(
-        "--n-clusters",
-        type=int,
-        default=5000,
-        help="K-means K (default: 5000).",
-    )
-    p.add_argument(
-        "--n-cap",
-        type=int,
-        default=10000,
-        help="CAP sequences per run (default: 10000).",
-    )
-    p.add_argument(
-        "--decimals",
-        type=int,
-        default=3,
-        help="Decimal places for AUC values (default: 3, same as Table 1).",
-    )
-    args = p.parse_args()
-    uc_cap_dir = args.uc_cap_dir.expanduser()
+    uc_cap_dir = root / "results" / "uc_cap"
     if not uc_cap_dir.is_dir():
         raise SystemExit(f"Not a directory: {uc_cap_dir}")
 
     feat_idx = resolve_feat_index(
         root,
-        n_uc=args.n_uc,
-        n_clusters=args.n_clusters,
-        n_cap=args.n_cap,
+        n_uc=N_UC,
+        n_clusters=N_CLUSTERS,
+        n_cap=N_CAP,
     )
     sub = uc_cap_dir / str(feat_idx)
     if not sub.is_dir():
         raise SystemExit(f"Missing UC/CAP results directory: {sub}")
 
     metrics = _load_metrics_uc_cap(sub)
-    print(format_table_html(metrics, decimals=args.decimals), end="", flush=True)
+    text = format_table_html(metrics, decimals=DECIMALS)
+    out_path = root / OUTPUT_REL
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding="utf-8")
+    print(out_path)
     return 0
 
 

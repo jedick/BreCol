@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Build Table 1 from tetramer classifier JSON metrics under results/tetramer/.
+Build Table 2 (tetramer classifiers) as HTML under manuscript/table2_tetramer.html.
 
-Expects eight files named {task}_{model}.json (e.g. cancer_diagnosis_knn.json),
-as written by scripts/fit_classifier.py: tasks cancer_diagnosis and
-cancer_type; models baseline, knn, svm, and random_forest. Each file must have
-``metrics.test.roc_auc`` and ``metrics.holdout.roc_auc``.
+Reads eight JSON files under results/tetramer/ named {task}_{model}.json
+(e.g. cancer_diagnosis_knn.json), as written by scripts/fit_classifier.py:
+tasks cancer_diagnosis and cancer_type; models baseline, knn, svm, and
+random_forest. Each file must have metrics.test.roc_auc and
+metrics.holdout.roc_auc.
 
-By default prints an HTML table with nested headers (task × test/holdout).
-Use --markdown for a GitHub-flavored pipe table with a two-line header.
+Run from the repository root: ``python helpers/table2_tetramer.py``
 """
 
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import math
@@ -35,6 +34,9 @@ TASK_HEADER = {
     "cancer_diagnosis": "Cancer diagnosis AUC",
     "cancer_type": "Cancer type AUC",
 }
+
+DECIMALS = 3
+OUTPUT_REL = Path("manuscript") / "table2_tetramer.html"
 
 
 def _load_metrics(
@@ -115,60 +117,18 @@ def format_table_html(
     return f"<table>\n{thead}{tbody}</table>\n"
 
 
-def format_table_markdown(
-    metrics: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]],
-    *,
-    decimals: int,
-) -> str:
-    """Pipe table: duplicate task labels on row 1 (no colspan in GFM)."""
-    d1 = TASK_HEADER["cancer_diagnosis"]
-    d2 = TASK_HEADER["cancer_type"]
-    row1 = f"| | {d1} | {d1} | {d2} | {d2} |"
-    row2 = "| Model | Test | Holdout | Test | Holdout |"
-    sep = "| :--- | ---: | ---: | ---: | ---: |"
-    lines = [row1, row2, sep]
-    for model in MODELS:
-        label = ROW_LABELS[model]
-        vals = []
-        for task in TASKS:
-            test_v, hold_v = metrics[(task, model)]
-            vals.append(_fmt_cell(test_v, decimals=decimals))
-            vals.append(_fmt_cell(hold_v, decimals=decimals))
-        lines.append(f"| {label} | " + " | ".join(vals) + " |")
-    return "\n".join(lines) + "\n"
-
-
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--tetramer-dir",
-        type=Path,
-        default=root / "results" / "tetramer",
-        help="Directory with {task}_{model}.json files (default: results/tetramer).",
-    )
-    p.add_argument(
-        "--decimals",
-        type=int,
-        default=3,
-        help="Decimal places for AUC values (default: 3).",
-    )
-    p.add_argument(
-        "--markdown",
-        action="store_true",
-        help="Emit a pipe Markdown table instead of HTML.",
-    )
-    args = p.parse_args()
-    tetramer_dir: Path = args.tetramer_dir.expanduser()
+    tetramer_dir = root / "results" / "tetramer"
     if not tetramer_dir.is_dir():
         raise SystemExit(f"Not a directory: {tetramer_dir}")
 
     metrics = _load_metrics(tetramer_dir)
-    if args.markdown:
-        text = format_table_markdown(metrics, decimals=args.decimals)
-    else:
-        text = format_table_html(metrics, decimals=args.decimals)
-    print(text, end="", flush=True)
+    text = format_table_html(metrics, decimals=DECIMALS)
+    out_path = root / OUTPUT_REL
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding="utf-8")
+    print(out_path)
     return 0
 
 

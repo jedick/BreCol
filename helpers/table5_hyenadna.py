@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """
-Build Table 4 (HyenaDNA ablations) from JSON metrics under ``results/hyenadna/``.
+Build Table 5 (HyenaDNA ablations) as HTML under manuscript/table5_hyenadna.html.
 
 Reads ``experiments.yaml`` ``train_hyenadna.experiments`` and aggregates
 ``metrics.test.roc_auc`` / ``metrics.holdout.roc_auc`` from per-seed files:
-``{task_abbrv}_{name}_<L>k_s<seed>.json``.
+``{task_abbrv}_{name}_<L>k_s<seed>.json`` under ``results/hyenadna/``.
 
-Output is an HTML table with one row per ablation and grouped metric columns:
-
-  | Ablation | Cancer diagnosis (Median epoch/Test/Holdout AUC) | Cancer type (Median epoch/Test/Holdout AUC) |
+Run from the repository root: ``python helpers/table5_hyenadna.py``
 """
 
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import math
@@ -47,6 +44,9 @@ TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("cd", "Cancer diagnosis"),
     ("ct", "Cancer type"),
 )
+
+DECIMALS = 3
+OUTPUT_REL = Path("manuscript") / "table5_hyenadna.html"
 
 
 def _load_yaml(path: Path) -> dict:
@@ -313,27 +313,17 @@ def format_table_html(
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--hyenadna-dir",
-        type=Path,
-        default=repo_root / "results" / "hyenadna",
-        help="Directory with {name}_<L>k_s<seed>.json files (default: results/hyenadna).",
-    )
-    p.add_argument(
-        "--decimals",
-        type=int,
-        default=3,
-        help="Decimal places for AUC mean/std (default: 3).",
-    )
-    args = p.parse_args()
-    hyenadna_dir = args.hyenadna_dir.expanduser()
+    hyenadna_dir = repo_root / "results" / "hyenadna"
     if not hyenadna_dir.is_dir():
         raise SystemExit(f"Not a directory: {hyenadna_dir}")
 
     experiments = _experiments(repo_root)
     rows = collect_rows(hyenadna_dir, experiments)
-    print(format_table_html(rows, decimals=args.decimals), end="", flush=True)
+    text = format_table_html(rows, decimals=DECIMALS)
+    out_path = repo_root / OUTPUT_REL
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding="utf-8")
+    print(out_path)
     return 0
 
 

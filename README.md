@@ -47,16 +47,17 @@ See the list for a quick overview of the steps and read below for details.
 
 1. Installation: `pip install -r requirements.txt` installs dependencies including the local `hyenadna` package in editable mode.
 2. Download data: `make download_data` downloads 16S sequences from SRA (about 9 GB on disk).
-3. Tetramer pipeline: `make tetramer_counts` then `make tetramer_frequencies` (sequence-level counting is CPU-heavy; run-level percentages go to `outputs/tetramer_frequencies.csv`).
-4. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (about 6 min).
-5. Sequence cache: `make sequence_cache` generates a Parquet file with tetramer counts for the first 10000 sequences in each run.
-6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/uc_cap` (about 40 min / 100GB RAM).
-7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/uc_cap` (about 2 hr).
-8. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (about 15 min).
-9. Frozen embeddings: `make extract_embeddings FEAT=0` builds consolidated embedding feature CSVs in `outputs/embeddings`.
-10. Embedding classifier: `make fit_embeddings FEAT=1 EXPT=1` fits the selected embedding feature set with the selected `fit_classifier` experiment.
-11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 16 hr).
-12. Use `helpers/table*.py` and `helpers/figure*py` scripts to make manuscript tables and figures from the results files.
+3. Tetramer counts: `make -j4 tetramer_counts` (sequence-level tetramer counting and xzipping output files is CPU-heavy; 5+ hours and 5+ GB on disk).
+4. Tetramer frequencies: `make tetramer_frequencies` (aggregates tetramer counts to run-level percentages, saved in `outputs/tetramer_frequencies.csv`).
+5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (about 6 min).
+6. Sequence cache: `make sequence_cache` generates a Parquet file with tetramer counts for the first 10000 sequences in each run.
+7. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/uc_cap` (about 40 min / 100GB RAM).
+8. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/uc_cap` (about 2 hr).
+9. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (about 15 min).
+10. Frozen embeddings: `make extract_embeddings FEAT=0` builds consolidated embedding feature CSVs in `outputs/embeddings`.
+11. Embedding classifier: `make fit_embeddings FEAT=1 EXPT=1` fits the selected embedding feature set with the selected `fit_classifier` experiment.
+12. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 16 hr).
+13. Run `helpers/table*.py` and `helpers/figure*.py` from the repo root to refresh `manuscript/table*.html` and `manuscript/figure*` (PNG+SVG) from `results/` JSON and training logs.
 
 Notes:
 
@@ -65,7 +66,8 @@ Notes:
 - `FEAT=0` is used to build all feature sets for the UC/CAP pipeline.
   Use e.g. `FEAT=1` or `EXPT=1` for a single feature set or experiment.
 - Steps 5 and 6 (sequence cache and UC/CAP pipeline) are the most memory-hungry steps.
-- Use the Cursor skill `/manuscript-tables 1` (or 3, 4) to execute a table helper and insert the HTML table in `manuscript.md`.
+- Use the Cursor skill `/manuscript` (for example `table 1`, `figure 1`, `all tables`, `figures`) to rerun helpers;
+  they overwrite the fixed `manuscript/table*.html` and `manuscript/figure*` assets.
 
 If you want to see why Make would rebuild a target (including recursive prerequisite chains), use `make explain-<target>`.
 For example, run `make explain-run_uc_cap FEAT=0`; replace the part after `explain-` with any Make target name.

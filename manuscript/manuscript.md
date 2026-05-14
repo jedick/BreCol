@@ -146,37 +146,9 @@ The sections are for different features used for classification: tetramer freque
 
 ### Tetramer-based classifiers
 
-Table 1 summarizes ROC AUC on the test and holdout splits for each task for four models: a majority-class baseline, K nearest neighbors (KNN), a support vector machine (SVM), and random forest.
+Table 2 summarizes ROC AUC on the test and holdout splits for each task for four models: a majority-class baseline, K nearest neighbors (KNN), a support vector machine (SVM), and random forest.
 
-<!-- classifier-table-1 -->
-<table>
-<thead>
-<tr>
-<th rowspan="2">Model</th>
-<th colspan="2">Cancer diagnosis AUC</th>
-<th colspan="2">Cancer type AUC</th>
-</tr>
-<tr>
-<th>Test</th><th>Holdout</th><th>Test</th><th>Holdout</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Majority class</td><td>0.500</td><td>0.500</td><td>0.500</td><td>0.500</td>
-</tr>
-<tr>
-<td>KNN</td><td>0.652</td><td>0.563</td><td>0.959</td><td>0.407</td>
-</tr>
-<tr>
-<td>SVM</td><td>0.725</td><td>0.596</td><td>1.000</td><td>0.484</td>
-</tr>
-<tr>
-<td>Random Forest</td><td>0.701</td><td>0.541</td><td>0.986</td><td>0.532</td>
-</tr>
-</tbody>
-</table>
-
-<!-- /classifier-table-1 -->
+Numeric values for Table 2: [table2_tetramer.html](table2_tetramer.html).
 
 For both tasks, all models outperform the majority-class baseline on the test split, especially for the cancer type prediction task.
 The picture looks different on the holdout split.
@@ -185,7 +157,7 @@ While SVM is the model with the best performance across tasks in the test split,
 
 ### UC/CAP-based classifiers
 
-We explored different settings for *n*<sub>UC</sub> (number of sequences from each run used to build unsupervised clusters), *K* (number of clusters retained), and *n*<sub>CAP</sub> (number of sequences from each run assigned to cluster centroids), summarized in Table 2.
+We explored different settings for *n*<sub>UC</sub> (number of sequences from each run used to build unsupervised clusters), *K* (number of clusters retained), and *n*<sub>CAP</sub> (number of sequences from each run assigned to cluster centroids), summarized in Table 3.
 
 | Feature set | *n*UC | *K* | *n*CAP |
 |-|-|-|-|
@@ -202,36 +174,11 @@ For cancer diagnosis, SVM shows higher test and holdout AUC than random forest a
 For cancer type prediction, both models show near-perfect in-study test performance, but holdout values drop sharply, especially for random forest.
 Even with these drops, holdout AUC remains generally stable across feature sets, with SVM showing greater stability than random forest.
 
-![Figure 1. UC/CAP feature-set stability for SVM and random forest across tasks.](figures/figure1_uc_cap.svg)
+![Figure 1. UC/CAP feature-set stability for SVM and random forest across tasks.](figure1_uc_cap.svg)
 
-Table 3 lists AUC values for each model across tasks and splits (test and holdout) for the UC/CAP feature set with *n*<sub>UC</sub> = 2000, *K* = 5000, and *n*<sub>CAP</sub> = 10000.
+Table 4 lists AUC values for each model across tasks and splits (test and holdout) for the UC/CAP feature set with *n*<sub>UC</sub> = 2000, *K* = 5000, and *n*<sub>CAP</sub> = 10000.
 
-<!-- classifier-table-3 -->
-<table>
-<thead>
-<tr>
-<th rowspan="2">Model</th>
-<th colspan="2">Cancer diagnosis AUC</th>
-<th colspan="2">Cancer type AUC</th>
-</tr>
-<tr>
-<th>Test</th><th>Holdout</th><th>Test</th><th>Holdout</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>KNN</td><td>0.719</td><td>0.571</td><td>0.998</td><td>0.500</td>
-</tr>
-<tr>
-<td>SVM</td><td>0.769</td><td>0.664</td><td>1.000</td><td>0.783</td>
-</tr>
-<tr>
-<td>Random Forest</td><td>0.710</td><td>0.527</td><td>1.000</td><td>0.634</td>
-</tr>
-</tbody>
-</table>
-
-<!-- /classifier-table-3 -->
+Numeric values for Table 4: [table4_uc_cap.html](table4_uc_cap.html).
 
 For cancer diagnosis, SVM has the best holdout performance.
 For cancer type prediction, SVM has the best holdout performance, and random forest also scores above baseline.
@@ -253,7 +200,7 @@ Holdout performance is generally weaker than test performance, and the curves ar
 Increasing the number of bases modeled per set does not reliably improve generalization in these runs.
 Training trajectories and validation metrics can also vary substantially between configurations, so we treat this section as a first end-to-end baseline that we expect to revise with additional data cleaning and model training choices.
 
-![Figure 2. HyenaDNA set-length stability across tasks and number of sets.](figures/figure2_hyenadna.svg)
+![Figure 2. HyenaDNA set-length stability across tasks and number of sets.](figure2_hyenadna.svg)
 
 ### Improving stability with domain adversarial training
 
@@ -291,52 +238,9 @@ Holdout trajectories remain noisy from epoch to epoch under both DANN and no-DAN
 Multi-seed comparisons at \(10^{-5}\) still show holdout variation, so we report DANN as a helpful inductive bias in this setting, not as a guarantee of stable curves.
 
 We consolidate these HyenaDNA cancer-type ablations (best recipe, higher learning rate, DANN off, class-weighting and study-balance variants,
-baseline architecture choices, and related controls) in **Table 4**.
+baseline architecture choices, and related controls) in Table 5.
 
-<!-- classifier-table-4 -->
-<table>
-<thead>
-<tr>
-<th rowspan='2'>Ablation</th><th colspan='3'>Cancer diagnosis</th><th colspan='3'>Cancer type</th>
-</tr>
-<tr>
-<th>Median best epoch</th><th>Test AUC</th><th>Holdout AUC</th><th>Median best epoch</th><th>Test AUC</th><th>Holdout AUC</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Best recipe (baseline)</td><td>13.5</td><td>0.620 ± 0.021</td><td>0.555 ± 0.021</td><td>19.5</td><td>0.976 ± 0.006</td><td>0.606 ± 0.056</td>
-</tr>
-<tr>
-<td>Higher learning rate (10<sup>−4</sup> instead of 10<sup>−5</sup>)</td><td>9.5</td><td>0.608 ± 0.040</td><td>0.514 ± 0.051</td><td>15.5</td><td>0.966 ± 0.014</td><td>0.310 ± 0.078</td>
-</tr>
-<tr>
-<td>No gradient clipping</td><td>15.5</td><td>0.628 ± 0.030</td><td>0.551 ± 0.005</td><td>20</td><td>0.980 ± 0.007</td><td>0.602 ± 0.089</td>
-</tr>
-<tr>
-<td>Random training sampler (no study-balanced sampling)</td><td>16</td><td>0.661 ± 0.011</td><td>0.543 ± 0.053</td><td>20</td><td>0.956 ± 0.007</td><td>0.575 ± 0.045</td>
-</tr>
-<tr>
-<td>No class weighting</td><td>14.5</td><td>0.623 ± 0.019</td><td>0.542 ± 0.021</td><td>19</td><td>0.985 ± 0.003</td><td>0.627 ± 0.025</td>
-</tr>
-<tr>
-<td>Multilayer perceptron classification head (instead of linear)</td><td>13.5</td><td>0.624 ± 0.008</td><td>0.541 ± 0.056</td><td>19.5</td><td>0.968 ± 0.011</td><td>0.529 ± 0.039</td>
-</tr>
-<tr>
-<td>Tune by validation weighted F1 (instead of validation ROC AUC)</td><td>13.5</td><td>0.618 ± 0.025</td><td>0.552 ± 0.019</td><td>18</td><td>0.972 ± 0.012</td><td>0.612 ± 0.051</td>
-</tr>
-<tr>
-<td>Warmup + cosine learning-rate schedule</td><td>17</td><td>0.641 ± 0.004</td><td>0.517 ± 0.015</td><td>15.5</td><td>0.958 ± 0.021</td><td>0.586 ± 0.090</td>
-</tr>
-<tr>
-<td>Higher study adversarial weight (0.3 instead of baseline)</td><td>14.5</td><td>0.632 ± 0.018</td><td>0.548 ± 0.030</td><td>18.5</td><td>0.975 ± 0.003</td><td>0.620 ± 0.039</td>
-</tr>
-<tr>
-<td>No domain adversarial training</td><td>17</td><td>0.630 ± 0.016</td><td>0.516 ± 0.055</td><td>19.5</td><td>0.981 ± 0.005</td><td>0.583 ± 0.019</td>
-</tr>
-</tbody>
-</table>
-<!-- /classifier-table-4 -->
+Numeric values for Table 5: [table5_hyenadna.html](table5_hyenadna.html).
 
 On this three-seed grid the no-DANN ablation reaches the highest mean holdout AUC (0.658 ± 0.041), slightly above the best-recipe baseline (0.625 ± 0.074), and dropping gradient clipping also nudges holdout AUC up to 0.647 ± 0.031.
 In contrast, the higher learning rate collapses holdout AUC to 0.341 ± 0.111, while replacing study-balanced sampling with random sampling and switching the linear head to a multilayer perceptron each remove roughly 0.06–0.10 from holdout AUC relative to the baseline.
@@ -368,7 +272,7 @@ cancer type prediction has a huge performance drop for holdout data from studies
 On the other hand, the performance is lower in the holdout split but often remains above baseline for cancer diagnosis,
 suggesting that the models learned biological differences between cancer and healthy samples that transfer to new studies.
 
-Comparing the holdout splits in Tables 1 and 3, UC/CAP shows an overall advantage over run-level tetramer frequencies, most clearly for cancer type and for SVM.
+Comparing the holdout splits in Tables 2 and 4, UC/CAP shows an overall advantage over run-level tetramer frequencies, most clearly for cancer type and for SVM.
 Although SVM and random forest show near-perfect in-study test performance for cancer type prediction in both pipelines,
 only UC/CAP yields substantial improvements above baseline on holdout studies.
 This result illustrates the challenge of transferring learned patterns to new datasets and highlights SVM as the strongest model in our current set.
