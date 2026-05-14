@@ -1,0 +1,61 @@
+Run,BioSample,SampleName,isolate,sample_label,sample_used
+SRR18656115,SAMN27380589,raw.split.A_1,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656056,SAMN27380598,raw.split.A_10,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656113,SAMN27380599,raw.split.A_11,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656112,SAMN27380600,raw.split.A_12,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656111,SAMN27380601,raw.split.A_13,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656110,SAMN27380602,raw.split.A_14,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656109,SAMN27380603,raw.split.A_15,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656108,SAMN27380604,raw.split.A_16,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656107,SAMN27380605,raw.split.A_17,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656106,SAMN27380606,raw.split.A_18,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656105,SAMN27380607,raw.split.A_19,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656114,SAMN27380590,raw.split.A_2,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656104,SAMN27380608,raw.split.A_20,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656102,SAMN27380609,raw.split.A_21,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656101,SAMN27380610,raw.split.A_22,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656100,SAMN27380611,raw.split.A_23,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656099,SAMN27380612,raw.split.A_24,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656098,SAMN27380613,raw.split.A_25,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656097,SAMN27380614,raw.split.A_26,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656096,SAMN27380615,raw.split.A_27,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656103,SAMN27380591,raw.split.A_3,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656092,SAMN27380592,raw.split.A_4,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656081,SAMN27380593,raw.split.A_5,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656070,SAMN27380594,raw.split.A_6,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656059,SAMN27380595,raw.split.A_7,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656058,SAMN27380596,raw.split.A_8,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656057,SAMN27380597,raw.split.A_9c,"fecal of colorectal cancer patient",colorectal_cancer,TRUE
+SRR18656095,SAMN27380616,raw.split.B_1,"fecal of healthy people",healthy,TRUE
+SRR18656085,SAMN27380625,raw.split.B_10,"fecal of healthy people",healthy,TRUE
+SRR18656084,SAMN27380626,raw.split.B_11,"fecal of healthy people",healthy,TRUE
+SRR18656083,SAMN27380627,raw.split.B_12,"fecal of healthy people",healthy,TRUE
+SRR18656082,SAMN27380628,raw.split.B_13,"fecal of healthy people",healthy,TRUE
+SRR18656080,SAMN27380629,raw.split.B_14,"fecal of healthy people",healthy,TRUE
+SRR18656079,SAMN27380630,raw.split.B_15,"fecal of healthy people",healthy,TRUE
+SRR18656078,SAMN27380631,raw.split.B_16,"fecal of healthy people",healthy,TRUE
+SRR18656077,SAMN27380632,raw.split.B_17,"fecal of healthy people",healthy,TRUE
+SRR18656076,SAMN27380633,raw.split.B_18,"fecal of healthy people",healthy,TRUE
+SRR18656075,SAMN27380634,raw.split.B_19,"fecal of healthy people",healthy,TRUE
+SRR18656094,SAMN27380617,raw.split.B_2,"fecal of healthy people",healthy,TRUE
+SRR18656074,SAMN27380635,raw.split.B_20,"fecal of healthy people",healthy,TRUE
+SRR18656073,SAMN27380636,raw.split.B_21,"fecal of healthy people",healthy,TRUE
+SRR18656072,SAMN27380637,raw.split.B_22,"fecal of healthy people",healthy,TRUE
+SRR18656071,SAMN27380638,raw.split.B_23,"fecal of healthy people",healthy,TRUE
+SRR18656069,SAMN27380639,raw.split.B_24,"fecal of healthy people",healthy,TRUE
+SRR18656068,SAMN27380640,raw.split.B_25,"fecal of healthy people",healthy,TRUE
+SRR18656067,SAMN27380641,raw.split.B_26,"fecal of healthy people",healthy,TRUE
+SRR18656066,SAMN27380642,raw.split.B_27,"fecal of healthy people",healthy,TRUE
+SRR18656065,SAMN27380643,raw.split.B_28,"fecal of healthy people",healthy,TRUE
+SRR18656064,SAMN27380644,raw.split.B_29,"fecal of healthy people",healthy,TRUE
+SRR18656093,SAMN27380618,raw.split.B_3,"fecal of healthy people",healthy,TRUE
+SRR18656063,SAMN27380645,raw.split.B_30,"fecal of healthy people",healthy,TRUE
+SRR18656062,SAMN27380646,raw.split.B_31,"fecal of healthy people",healthy,TRUE
+SRR18656061,SAMN27380647,raw.split.B_32,"fecal of healthy people",healthy,TRUE
+SRR18656060,SAMN27380648,raw.split.B_33,"fecal of healthy people",healthy,TRUE
+SRR18656091,SAMN27380619,raw.split.B_4,"fecal of healthy people",healthy,TRUE
+SRR18656090,SAMN27380620,raw.split.B_5,"fecal of healthy people",healthy,TRUE
+SRR18656089,SAMN27380621,raw.split.B_6,"fecal of healthy people",healthy,TRUE
+SRR18656088,SAMN27380622,raw.split.B_7,"fecal of healthy people",healthy,TRUE
+SRR18656087,SAMN27380623,raw.split.B_8,"fecal of healthy people",healthy,TRUE
+SRR18656086,SAMN27380624,raw.split.B_9,"fecal of healthy people",healthy,TRUE

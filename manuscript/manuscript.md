@@ -18,12 +18,54 @@ A model trained on these reads could achieve artificially high holdout AUC if ho
 
 ## Methods
 
-### Data sources
+### Data curation
 
 Each sample corresponds to a sequencing run with multiple 16S rRNA gene sequences.
 We collected sequencing runs from different studies (four for breast cancer and four for colorectal cancer).
-Studies were only included if cancer/healthy labels were available.
+Studies were only included if both cancer and healthy control labels were available.
 We stored the SRA Run accessions (starting with SRR, ERR, or DRR) and study metadata in the repository and downloaded each run’s read archive from NCBI.
+
+Our data compilation consists of 13 studies each for breast and colorectal cancer (Table 1).
+After arranging chronologically by publication year, the first seven studies for each cancer type were used to construct the development partition
+(used for the train, val, and test splits).
+The more recent studies (6 for each cancer type) were assigned to the holdout partition.
+In our compilaion, the dev and holdout partitions are split not only along study boundaries but also on year (i.e. all holdout studies from 2023 onward).
+This makes our benchmark a challenging real-world task for genomic prediction - to make predictions on future datasets with only existing datasets available at training time.
+
+Some studies have large numbers of samples compared to others.
+To improve the balance, we used random sampling for several studies (stratified by sample label i.e. cancer vs healthy).
+The sample sizes listed in Table 1 represent the number of samples after sampling using the indicated sampling rate;
+these samples are listed as "sample_used=TRUE" in the data CSV files.
+Note that used samples may be excluded from the analysis at a later stage by filtering runs by number of sequences.
+
+|study_name|study_year|doi|cancer_type|n_cancer|n_healthy|sample_rate|ncbi_bioproject|partition|
+|---|---|---|---|---|---|---|---|---|
+|AAM+13|2013|10.14309/00000434-201310001-00625|breast|29|32|1|PRJNA396901|development|
+|GJH+15|2015|10.1093/jnci/djv147|breast|47|47|1|PRJNA345373|development|
+|GHB+18|2018|10.1038/bjc.2017.435|breast|48|48|1|PRJNA383849|development|
+|BVW+21|2021|10.1002/ijc.33473|breast|60|66|0.15|PRJNA658160|development|
+|BSR+22|2022|10.1038/s41598-022-23793-7|breast|19|14|1|PRJEB54599|development|
+|WZK+22|2022|10.3389/fmicb.2022.894283|breast|54|25|1|PRJNA804967|development|
+|ZZZ+22|2022|10.1111/jam.15620|breast|14|14|1|PRJNA726050|development|
+|SKC+23|2023|10.1038/s41598-023-27436-3|breast|22|21|1|PRJNA872152|holdout|
+|LBA+25|2025|10.3390/ijms26146801|breast|76|16|1|PRJNA1127492|holdout|
+|SYL+25|2025|10.1128/msystems.00879-25|breast|10|10|1|PRJNA1243283|holdout|
+|MTK+26|2026|10.1016/j.gutmic.2026.100009|breast|32|32|1|PRJNA914483|holdout|
+|SVK+26|2026|10.21203/rs.3.rs-8921895/v1|breast|22|30|1|PRJNA1356467|holdout|
+|YTK+26|2026|10.1007/s44411-026-00523-3|breast|15|15|1|PRJNA1190698|holdout|
+|ZTV+14|2014|10.15252/msb.20145645|colorectal|41|75|1|PRJEB6070|development|
+|BRRS16|2016|10.1186/s13073-016-0290-3|colorectal|64|94|0.5|PRJNA290926|development|
+|OKN+21|2021|10.1038/s41467-021-25965-x|colorectal|67|51|0.1|PRJDB11246|development|
+|YDS+21|2021|10.1038/s41467-021-27112-y|colorectal|65|43|0.35|PRJNA763023|development|
+|YWS+21|2021|10.1186/s13073-021-00844-8|colorectal|53|52|1|PRJEB36789|development|
+|DLT+22|2022|10.3389/fphys.2022.854545|colorectal|27|33|1|PRJNA824020|development|
+|PCL+22|2022|10.1038/s41598-022-14203-z|colorectal|36|25|1|PRJNA662014|development|
+|BWY+23|2023|10.1186/s12866-023-02805-0|colorectal|46|43|1|PRJEB53415|holdout|
+|BRR+24|2024|10.1186/s12864-024-10621-7|colorectal|51|51|1|PRJEB71787|holdout|
+|CAB+24|2024|10.1002/1878-0261.13604|colorectal|95|30|1|PRJNA911189|holdout|
+|SGH+24|2024|10.1016/j.micpath.2024.106726|colorectal|10|10|1|PRJNA1059759|holdout|
+|ARF+25|2025|10.3389/fmicb.2025.1449642|colorectal|25|15|1|PRJEB76625|holdout|
+|GYX+25|2025|10.1186/s12866-024-03721-7|colorectal|67|64|0.6|PRJNA1092526,PRJNA1092376|holdout|
 
 ### Preprocessing
 
@@ -304,7 +346,8 @@ A practical rule of thumb is that the best epoch should sit comfortably inside t
 TODO: Is this where our experiments land?
 
 Results not listed in ablation table:
-- We verified that AMP dtype (float16 or float32 (i.e., no AMP)) and turning off the DANN delay or warm-up schedule did not move holdout AUC outside seed variance.
+- We verified that using float16 (AMP) or float32 (no AMP), gradient clipping (1.0 norm), tuning by validation F1 weighted instead of AUC, or turning off the DANN delay or warm-up schedule did not move holdout AUC outside seed variance.
+- Using an MLP classification head (256 hidden layers) instead of linear decreased cancer type holdout AUC but left cancer diagnosis holdout AUC unchanged within variance.
 
 **TODOs**
 
