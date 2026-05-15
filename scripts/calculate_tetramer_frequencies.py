@@ -22,12 +22,12 @@ from __future__ import annotations
 import csv
 import itertools
 import lzma
-import os
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
 import yaml
 
 RUN_PATTERN = re.compile(r"^(SRR|ERR|DRR)\d+$")
@@ -49,22 +49,6 @@ def percentages_from_counts(counts: Sequence[int]) -> List[float]:
     return [round(100.0 * c / total, 3) for c in counts]
 
 
-def open_lzma_text(path: Path, mode: str):
-    """
-    Open .xz in text mode using lzma-mt with all CPU cores when available.
-
-    Falls back to stdlib lzma if lzma-mt is not installed or does not support
-    the threads argument in this environment.
-    """
-    threads = max(1, os.cpu_count() or 1)
-    try:
-        import lzma_mt  # type: ignore[import-not-found]
-
-        return lzma_mt.open(path, mode, newline="", threads=threads)
-    except (ImportError, TypeError):
-        return lzma.open(path, mode, newline="")
-
-
 def load_existing_runs(output_path: Path) -> set[str]:
     """Read existing Run IDs from output CSV; empty set when file is missing."""
     if not output_path.is_file():
@@ -81,19 +65,19 @@ def load_existing_runs(output_path: Path) -> set[str]:
 
 def counts_from_sequence_rows(path: Path) -> Tuple[Optional[List[int]], Optional[str]]:
     """Sum sequence-level 4-mer rows from an existing .csv.xz into run totals."""
-    totals = [0] * 256
     try:
-        with open_lzma_text(path, "rt") as in_f:
-            reader = csv.reader(in_f)
-            for row in reader:
-                if not row:
-                    continue
-                if len(row) != 256:
-                    return None, f"expected 256 columns, got {len(row)}"
-                for i, value in enumerate(row):
-                    totals[i] += int(value)
+        with lzma.open(path, "rt", newline="") as in_f:
+            arr = np.loadtxt(in_f, delimiter=",", dtype=np.int64)
     except (OSError, ValueError) as exc:
         return None, str(exc)
+
+    if arr.size == 0:
+        return None, "no data rows"
+    arr = np.atleast_2d(arr)
+    if arr.shape[1] != 256:
+        return None, f"expected 256 columns, got {arr.shape[1]}"
+
+    totals = arr.sum(axis=0).tolist()
     return totals, None
 
 

@@ -2,7 +2,7 @@ study_name,study_year,doi,cancer_type,n_cancer,n_healthy,sample_rate,ncbi_biopro
 AAM+13,2013,10.14309/00000434-201310001-00625,breast,29,32,1,PRJNA396901,development,"Use only fecal samples (not sigmoid)"
 GJH+15,2015,10.1093/jnci/djv147,breast,47,47,1,PRJNA345373,development,
 GHB+18,2018,10.1038/bjc.2017.435,breast,48,48,1,PRJNA383849,development,"Use only ""Pre"" samples (i.e. Unsorted by IgA)"
-BVW+21,2021,10.1002/ijc.33473,breast,60,66,0.15,PRJNA658160,development,"Labels: ""1)Invasive"" for cancer and ""not provided"" for control"
+BVW+21,2021,10.1002/ijc.33473,breast,57,63,0.15,PRJNA658160,development,"Labels: ""1)Invasive"" for cancer and ""not provided"" for control; only samples with spots > 2000"
 BSR+22,2022,10.1038/s41598-022-23793-7,breast,19,14,1,PRJEB54599,development,
 WZK+22,2022,10.3389/fmicb.2022.894283,breast,54,25,1,PRJNA804967,development,
 ZZZ+22,2022,10.1111/jam.15620,breast,14,14,1,PRJNA726050,development,
@@ -21,7 +21,7 @@ DLT+22,2022,10.3389/fphys.2022.854545,colorectal,27,33,1,PRJNA824020,development
 PCL+22,2022,10.1038/s41598-022-14203-z,colorectal,36,25,1,PRJNA662014,development,
 BWY+23,2023,10.1186/s12866-023-02805-0,colorectal,46,43,1,PRJEB53415,holdout,
 BRR+24,2024,10.1186/s12864-024-10621-7,colorectal,51,51,1,PRJEB71787,holdout,"Labels from Zenodo file"
-CAB+24,2024,10.1002/1878-0261.13604,colorectal,95,30,1,PRJNA911189,holdout,"Use only fecal samples"
+CAB+24,2024,10.1002/1878-0261.13604,colorectal,90,30,1,PRJNA911189,holdout,"Use only fecal samples and samples with spots > 2000"
 SGH+24,2024,10.1016/j.micpath.2024.106726,colorectal,10,10,1,PRJNA1059759,holdout,
 ARF+25,2025,10.3389/fmicb.2025.1449642,colorectal,25,15,1,PRJEB76625,holdout,"Labels from SI"
 GYX+25,2025,10.1186/s12866-024-03721-7,colorectal,67,64,0.6,"PRJNA1092526,PRJNA1092376",holdout,

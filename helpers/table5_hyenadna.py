@@ -32,8 +32,11 @@ ABLATION_DESCRIPTIONS: Dict[str, str] = {
     "no_study_balanced": "Random training sampler (no study-balanced sampling)",
     "no_class_weight": "No class weighting",
     "high_lr": "Higher learning rate (10<sup>\u22124</sup> instead of 10<sup>\u22125</sup>)",
-    "hi_adv_weight": "Higher study adversarial weight (0.6 instead of 0.3)",
+    "high_adv_weight": "Higher study adversarial weight (0.6 instead of 0.3)",
     "no_dann": "No domain adversarial training",
+    "20_epochs": "20 epochs instead of 10",
+    "30_epochs": "30 epochs instead of 10",
+    "run_logits_max": "Use max of set-level logits instead of mean",
 }
 TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("cd", "Cancer diagnosis"),
