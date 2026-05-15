@@ -38,7 +38,7 @@ from shared_utilities import (
     TEST,
     TRAIN,
     VAL,
-    binary_roc_auc_from_scores,
+    binary_auroc_from_scores,
     build_run_task_table,
     require_binary_classes,
     TETRAMERS,
@@ -48,7 +48,7 @@ from sklearn.decomposition import PCA
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, f1_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -59,6 +59,7 @@ from sklearn.svm import SVC
 T = TypeVar("T")
 
 MODEL_CHOICES = ("baseline", "knn", "random_forest", "logistic_regression", "svm")
+TUNING_METRIC_CHOICES = ("accuracy", "f1_macro", "f1_weighted", "auroc")
 
 
 @dataclass(frozen=True)
@@ -100,8 +101,8 @@ class TuningResult:
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    test_auc: float
-    holdout_auc: float
+    test_auroc: float
+    holdout_auroc: float
 
 
 # ----- UC/CAP path resolution (aligned with helpers/list_uc_cap_feature_outputs.py) -----
@@ -323,7 +324,7 @@ def _load_experiment_args(
         "model": str(config["model"]).strip(),
         "task": str(config["task"]).strip(),
         "random_state": int(config["random_state"]),
-        "scoring": str(config["val_scoring"]).strip(),
+        "tuning_metric": str(config["tuning_metric"]).strip(),
         "no_scaler": not use_scaler,
         "no_clr": not use_clr,
         "clr_pseudocount": float(config["clr_pseudocount"]),
@@ -373,6 +374,11 @@ def _validate_basic_args(args: argparse.Namespace) -> None:
         raise SystemExit("--pca-min-variance must be in (0, 1].")
     if args.model not in MODEL_CHOICES:
         raise SystemExit(f"Unknown model {args.model!r}. Expected one of {MODEL_CHOICES}.")
+    if args.tuning_metric not in TUNING_METRIC_CHOICES:
+        raise SystemExit(
+            f"Unknown tuning_metric {args.tuning_metric!r}. "
+            f"Expected one of {TUNING_METRIC_CHOICES}."
+        )
 
 
 def _prefixed(prefix: str, text: str) -> str:
@@ -677,14 +683,36 @@ def make_pipeline(
 # ----- Validation tuning -----
 
 
-def _score_val(y_true: np.ndarray, y_pred: np.ndarray, scoring: str) -> float:
-    if scoring == "accuracy":
+def _evaluation_scores(pipe: Pipeline, X: np.ndarray) -> np.ndarray:
+    clf = pipe.named_steps["clf"]
+    if hasattr(clf, "predict_proba"):
+        proba = pipe.predict_proba(X)
+        classes = clf.classes_
+        if classes.size != 2:
+            raise SystemExit("Binary classification expected.")
+        pos = list(classes).index(classes[1])
+        return proba[:, pos]
+    if hasattr(pipe, "decision_function"):
+        return np.asarray(pipe.decision_function(X), dtype=np.float64).ravel()
+    raise SystemExit("Classifier has neither predict_proba nor decision_function.")
+
+
+def _score_val(y_true: np.ndarray, y_pred: np.ndarray, tuning_metric: str) -> float:
+    if tuning_metric == "accuracy":
         return float(accuracy_score(y_true, y_pred))
-    if scoring == "f1_macro":
+    if tuning_metric == "f1_macro":
         return float(f1_score(y_true, y_pred, average="macro"))
-    if scoring == "f1_weighted":
+    if tuning_metric == "f1_weighted":
         return float(f1_score(y_true, y_pred, average="weighted"))
-    raise SystemExit(f"Unknown scoring: {scoring!r}")
+    raise SystemExit(f"Unknown tuning_metric: {tuning_metric!r}")
+
+
+def _validation_score(pipe: Pipeline, splits: TaskSplits, tuning_metric: str) -> float:
+    if tuning_metric == "auroc":
+        y_score = _evaluation_scores(pipe, splits.X_val)
+        auroc = binary_auroc_from_scores(splits.y_val, y_score)
+        return float(auroc) if np.isfinite(auroc) else float("-inf")
+    return _score_val(splits.y_val, pipe.predict(splits.X_val), tuning_metric)
 
 
 def tune_knn_on_val(
@@ -693,7 +721,7 @@ def tune_knn_on_val(
     n_components_list: Sequence[int],
     n_neighbors_list: Sequence[int],
     weights_list: Sequence[str],
-    scoring: str,
+    tuning_metric: str,
 ) -> TuningResult:
     best_score = -1.0
     best_params: Dict[str, object] = {}
@@ -708,7 +736,7 @@ def tune_knn_on_val(
             clf__weights=weights,
         )
         pipe.fit(splits.X_train, splits.y_train)
-        score = _score_val(splits.y_val, pipe.predict(splits.X_val), scoring)
+        score = _validation_score(pipe, splits, tuning_metric)
         if score > best_score:
             best_score = score
             best_params = {
@@ -725,7 +753,7 @@ def tune_random_forest_on_val(
     n_estimators_list: Sequence[int],
     max_depth_list: Sequence[Optional[int]],
     min_samples_leaf_list: Sequence[int],
-    scoring: str,
+    tuning_metric: str,
 ) -> TuningResult:
     best_score = -1.0
     best_params: Dict[str, object] = {}
@@ -740,7 +768,7 @@ def tune_random_forest_on_val(
             clf__min_samples_leaf=min_samples_leaf,
         )
         pipe.fit(splits.X_train, splits.y_train)
-        score = _score_val(splits.y_val, pipe.predict(splits.X_val), scoring)
+        score = _validation_score(pipe, splits, tuning_metric)
         if score > best_score:
             best_score = score
             best_params = {
@@ -758,7 +786,7 @@ def tune_logistic_regression_on_val(
     c_list: Sequence[float],
     solver_list: Sequence[str],
     class_weight_list: Sequence[Optional[str]],
-    scoring: str,
+    tuning_metric: str,
 ) -> TuningResult:
     allowed_solvers = {"lbfgs", "liblinear", "saga"}
     bad_solvers = [s for s in solver_list if s not in allowed_solvers]
@@ -783,7 +811,7 @@ def tune_logistic_regression_on_val(
             clf__class_weight=class_weight,
         )
         pipe.fit(splits.X_train, splits.y_train)
-        score = _score_val(splits.y_val, pipe.predict(splits.X_val), scoring)
+        score = _validation_score(pipe, splits, tuning_metric)
         if score > best_score:
             best_score = score
             best_params = {
@@ -802,7 +830,7 @@ def tune_svm_on_val(
     c_list: Sequence[float],
     gamma_list: Sequence[Union[float, str]],
     kernel_list: Sequence[str],
-    scoring: str,
+    tuning_metric: str,
 ) -> TuningResult:
     best_score = -1.0
     best_params: Dict[str, object] = {}
@@ -819,7 +847,7 @@ def tune_svm_on_val(
             clf__kernel=kernel,
         )
         pipe.fit(splits.X_train, splits.y_train)
-        score = _score_val(splits.y_val, pipe.predict(splits.X_val), scoring)
+        score = _validation_score(pipe, splits, tuning_metric)
         if score > best_score:
             best_score = score
             best_params = {
@@ -849,7 +877,7 @@ def _tune_model_on_validation(
             flush=True,
         )
         pipe.fit(splits.X_train, splits.y_train)
-        score = _score_val(splits.y_val, pipe.predict(splits.X_val), args.scoring)
+        score = _validation_score(pipe, splits, args.tuning_metric)
         return TuningResult(
             best_params={"strategy": "most_frequent"},
             validation_score=score,
@@ -870,7 +898,7 @@ def _tune_model_on_validation(
             n_components_list=n_components_grid,
             n_neighbors_list=grids.n_neighbors,
             weights_list=grids.weights,
-            scoring=args.scoring,
+            tuning_metric=args.tuning_metric,
         )
         pipe.set_params(
             pca__n_components=result.best_params["n_components"],
@@ -895,7 +923,7 @@ def _tune_model_on_validation(
             n_estimators_list=grids.rf_n_estimators,
             max_depth_list=grids.rf_max_depth,
             min_samples_leaf_list=grids.rf_min_samples_leaf,
-            scoring=args.scoring,
+            tuning_metric=args.tuning_metric,
         )
         pipe.set_params(
             clf__n_estimators=result.best_params["n_estimators"],
@@ -920,7 +948,7 @@ def _tune_model_on_validation(
             c_list=grids.svm_c,
             gamma_list=grids.svm_gamma,
             kernel_list=grids.svm_kernel,
-            scoring=args.scoring,
+            tuning_metric=args.tuning_metric,
         )
         pipe.set_params(
             pca__n_components=result.best_params["n_components"],
@@ -946,7 +974,7 @@ def _tune_model_on_validation(
             c_list=grids.lr_c,
             solver_list=grids.lr_solver,
             class_weight_list=grids.lr_class_weight,
-            scoring=args.scoring,
+            tuning_metric=args.tuning_metric,
         )
         pipe.set_params(
             pca__n_components=result.best_params["n_components"],
@@ -962,29 +990,15 @@ def _tune_model_on_validation(
 # ----- Evaluation and reporting -----
 
 
-def _evaluation_scores(pipe: Pipeline, X: np.ndarray) -> np.ndarray:
-    clf = pipe.named_steps["clf"]
-    if hasattr(clf, "predict_proba"):
-        proba = pipe.predict_proba(X)
-        classes = clf.classes_
-        if classes.size != 2:
-            raise SystemExit("Binary classification expected.")
-        pos = list(classes).index(classes[1])
-        return proba[:, pos]
-    if hasattr(pipe, "decision_function"):
-        return np.asarray(pipe.decision_function(X), dtype=np.float64).ravel()
-    raise SystemExit("Classifier has neither predict_proba nor decision_function.")
-
-
 def _evaluate_model(pipe: Pipeline, splits: TaskSplits) -> EvaluationResult:
     pipe.fit(splits.X_train, splits.y_train)
     test_scores = _evaluation_scores(pipe, splits.X_test)
-    test_auc = binary_roc_auc_from_scores(splits.y_test, test_scores)
-    holdout_auc = float("nan")
+    test_auroc = binary_auroc_from_scores(splits.y_test, test_scores)
+    holdout_auroc = float("nan")
     if len(splits.y_holdout) > 0:
         hold_scores = _evaluation_scores(pipe, splits.X_holdout)
-        holdout_auc = binary_roc_auc_from_scores(splits.y_holdout, hold_scores)
-    return EvaluationResult(test_auc=test_auc, holdout_auc=holdout_auc)
+        holdout_auroc = binary_auroc_from_scores(splits.y_holdout, hold_scores)
+    return EvaluationResult(test_auroc=test_auroc, holdout_auroc=holdout_auroc)
 
 
 def _label_counts(y: np.ndarray) -> Dict[str, int]:
@@ -1027,9 +1041,9 @@ def _print_dataset_summary(splits: TaskSplits, *, prefix: str = "") -> None:
 
 def _print_evaluation(model: str, result: EvaluationResult, *, prefix: str = "") -> None:
     del model
-    test_value = f"{result.test_auc:.6f}" if np.isfinite(result.test_auc) else "nan"
-    holdout_value = f"{result.holdout_auc:.6f}" if np.isfinite(result.holdout_auc) else "nan"
-    print(_prefixed(prefix, "Evaluation (binary ROC AUC):"), flush=True)
+    test_value = f"{result.test_auroc:.6f}" if np.isfinite(result.test_auroc) else "nan"
+    holdout_value = f"{result.holdout_auroc:.6f}" if np.isfinite(result.holdout_auroc) else "nan"
+    print(_prefixed(prefix, "Evaluation (binary AUROC):"), flush=True)
     print(_prefixed(prefix, f"  test: {test_value}"), flush=True)
     print(_prefixed(prefix, f"  holdout: {holdout_value}"), flush=True)
 
@@ -1121,7 +1135,7 @@ def _write_results_json(
         "svm_c": args.svm_c,
         "svm_gamma": args.svm_gamma,
         "svm_kernel": args.svm_kernel,
-        "scoring": args.scoring,
+        "tuning_metric": args.tuning_metric,
     }
     ex_idx = getattr(args, "experiment_index", None)
     if ex_idx is not None and int(ex_idx) > 0:
@@ -1135,14 +1149,14 @@ def _write_results_json(
     }
     tuning_block: Dict[str, object] = {
         "split": "validation",
-        "metric": args.scoring,
+        "metric": args.tuning_metric,
         "score": float(tuning.validation_score),
         "pca_n_components_candidates": [int(x) for x in n_components_grid],
         "best_hyperparameters": _jsonify_for_results(dict(tuning.best_params)),
     }
     metrics_block: Dict[str, object] = {
-        "test": {"roc_auc": _float_for_json(evaluation.test_auc)},
-        "holdout": {"roc_auc": _float_for_json(evaluation.holdout_auc)},
+        "test": {"auroc": _float_for_json(evaluation.test_auroc)},
+        "holdout": {"auroc": _float_for_json(evaluation.holdout_auroc)},
     }
     payload = {
         "script": Path(__file__).name,
@@ -1249,7 +1263,7 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
         n_components_grid=n_components_grid,
     )
     print(_prefixed(prefix, "Best validation:"), flush=True)
-    print(_prefixed(prefix, f"  {args.scoring}: {tuning.validation_score:.6f}"), flush=True)
+    print(_prefixed(prefix, f"  {args.tuning_metric}: {tuning.validation_score:.6f}"), flush=True)
     print(
         _prefixed(prefix, f"  Hyperparameters - {_format_hyperparameters(tuning.best_params)}"),
         flush=True,

@@ -5,8 +5,8 @@ Build Table 2 (tetramer classifiers) as HTML under manuscript/table2_tetramer.ht
 Reads eight JSON files under results/tetramer/ named {task}_{model}.json
 (e.g. cancer_diagnosis_knn.json), as written by scripts/fit_classifier.py:
 tasks cancer_diagnosis and cancer_type; models baseline, knn, svm, and
-random_forest. Each file must have metrics.test.roc_auc and
-metrics.holdout.roc_auc.
+random_forest. Each file must have metrics.test.auroc and
+metrics.holdout.auroc.
 
 Run from the repository root: ``python helpers/table2_tetramer.py``
 """
@@ -31,8 +31,8 @@ ROW_LABELS: Dict[str, str] = {
 }
 
 TASK_HEADER = {
-    "cancer_diagnosis": "Cancer diagnosis AUC",
-    "cancer_type": "Cancer type AUC",
+    "cancer_diagnosis": "Cancer diagnosis",
+    "cancer_type": "Cancer type",
 }
 
 DECIMALS = 3
@@ -42,7 +42,7 @@ OUTPUT_REL = Path("manuscript") / "table2_tetramer.html"
 def _load_metrics(
     tetramer_dir: Path,
 ) -> Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]]:
-    """Map (task, model) -> (test_roc_auc, holdout_roc_auc). None if JSON null."""
+    """Map (task, model) -> (test_auroc, holdout_auroc). None if JSON null."""
     out: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]] = {}
     for task in TASKS:
         for model in MODELS:
@@ -66,10 +66,10 @@ def _load_metrics(
                 if not isinstance(blob, dict):
                     raise SystemExit(
                         f"{path}: expected metrics['{split}'] to be an object with "
-                        f"'roc_auc' (scripts/fit_classifier.py output layout)."
+                        f"'auroc' (scripts/fit_classifier.py output layout)."
                     )
-            test_v = metrics["test"].get("roc_auc")
-            hold_v = metrics["holdout"].get("roc_auc")
+            test_v = metrics["test"].get("auroc")
+            hold_v = metrics["holdout"].get("auroc")
             out[(task, model)] = (
                 float(test_v) if test_v is not None else None,
                 float(hold_v) if hold_v is not None else None,

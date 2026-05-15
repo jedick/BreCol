@@ -7,7 +7,7 @@ Resolves ``results/uc_cap/<feat>/`` using ``experiments.yaml`` ``run_uc_cap_pipe
 rows merged over ``defaults.yaml`` (same ordering as ``helpers/list_uc_cap_feature_outputs.py``),
 then loads KNN, SVM, and random forest for both tasks.
 
-The manuscript triple is fixed: *n*<sub>UC</sub> = 2000, *K* = 5000, *n*<sub>CAP</sub> = 10000.
+The manuscript triple is fixed: *n*<sub>UC</sub> = 1000, *K* = 2000, *n*<sub>CAP</sub> = 5000.
 
 Run from the repository root: ``python helpers/table4_uc_cap.py``
 """
@@ -35,13 +35,13 @@ ROW_LABELS: Dict[str, str] = {
 }
 
 TASK_HEADER = {
-    "cancer_diagnosis": "Cancer diagnosis AUC",
-    "cancer_type": "Cancer type AUC",
+    "cancer_diagnosis": "Cancer diagnosis",
+    "cancer_type": "Cancer type",
 }
 
-N_UC = 2000
-N_CLUSTERS = 5000
-N_CAP = 10000
+N_UC = 1000
+N_CLUSTERS = 2000
+N_CAP = 5000
 DECIMALS = 3
 OUTPUT_REL = Path("manuscript") / "table4_uc_cap.html"
 
@@ -84,7 +84,7 @@ def resolve_feat_index(
 def _load_metrics_uc_cap(
     uc_cap_subdir: Path,
 ) -> Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]]:
-    """Map (task, model) -> (test_roc_auc, holdout_roc_auc)."""
+    """Map (task, model) -> (test_auroc, holdout_auroc)."""
     out: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]] = {}
     for task in TASKS:
         for model in MODELS:
@@ -108,10 +108,10 @@ def _load_metrics_uc_cap(
                 if not isinstance(blob, dict):
                     raise SystemExit(
                         f"{path}: expected metrics['{split}'] to be an object with "
-                        f"'roc_auc' (scripts/fit_classifier.py output layout)."
+                        f"'auroc' (scripts/fit_classifier.py output layout)."
                     )
-            test_v = metrics["test"].get("roc_auc")
-            hold_v = metrics["holdout"].get("roc_auc")
+            test_v = metrics["test"].get("auroc")
+            hold_v = metrics["holdout"].get("auroc")
             out[(task, model)] = (
                 float(test_v) if test_v is not None else None,
                 float(hold_v) if hold_v is not None else None,

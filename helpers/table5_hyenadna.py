@@ -4,7 +4,7 @@ Build Table 5 (HyenaDNA ablations) as HTML under manuscript/table5_hyenadna.html
 
 Reads ``experiments.yaml`` ``train_hyenadna.experiments`` (row order preserved)
 and aggregates
-``metrics.test.roc_auc`` / ``metrics.holdout.roc_auc`` from per-seed files:
+``metrics.test.auroc`` / ``metrics.holdout.auroc`` from per-seed files:
 ``{task_abbrv}_{name}_<L>k_s<seed>.json`` under ``results/hyenadna/``.
 
 Run from the repository root: ``python helpers/table5_hyenadna.py``
@@ -148,7 +148,7 @@ def _seed_files(
 
 
 def _read_metrics(path: Path) -> Tuple[int, float, float]:
-    """Return (best_epoch, test_roc_auc, holdout_roc_auc) from one JSON file."""
+    """Return (best_epoch, test_auroc, holdout_auroc) from one JSON file."""
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit(f"{path}: expected a JSON object.")
@@ -163,16 +163,16 @@ def _read_metrics(path: Path) -> Tuple[int, float, float]:
         blob = metrics.get(split)
         if not isinstance(blob, dict):
             raise SystemExit(
-                f"{path}: expected metrics['{split}'] to be an object with 'roc_auc'."
+                f"{path}: expected metrics['{split}'] to be an object with 'auroc'."
             )
-    test_v = metrics["test"].get("roc_auc")
-    hold_v = metrics["holdout"].get("roc_auc")
+    test_v = metrics["test"].get("auroc")
+    hold_v = metrics["holdout"].get("auroc")
     if test_v is None or hold_v is None:
-        raise SystemExit(f"{path}: missing test or holdout roc_auc.")
+        raise SystemExit(f"{path}: missing test or holdout auroc.")
     t = float(test_v)
     h = float(hold_v)
     if not math.isfinite(t) or not math.isfinite(h):
-        raise SystemExit(f"{path}: non-finite test/holdout roc_auc ({t}, {h}).")
+        raise SystemExit(f"{path}: non-finite test/holdout auroc ({t}, {h}).")
     return int(best_epoch), t, h
 
 
@@ -265,12 +265,12 @@ def format_table_html(
         "<th colspan='3'>Cancer type</th>\n"
         "</tr>\n"
         "<tr>\n"
-        "<th>Median best epoch</th>"
-        "<th>Test AUC</th>"
-        "<th>Holdout AUC</th>"
-        "<th>Median best epoch</th>"
-        "<th>Test AUC</th>"
-        "<th>Holdout AUC</th>\n"
+        "<th>Epoch</th>"
+        "<th>Test</th>"
+        "<th>Holdout</th>"
+        "<th>Epoch</th>"
+        "<th>Test</th>"
+        "<th>Holdout</th>\n"
         "</tr>\n"
         "</thead>\n"
     )

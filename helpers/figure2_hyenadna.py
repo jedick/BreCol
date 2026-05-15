@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Build Figure 2: HyenaDNA AUC vs sequence length per set (test vs holdout).
+Build Figure 2: HyenaDNA AUROC vs sequence length per set (test vs holdout).
 
 Layout:
 - 2x2 subplots
 - rows = task (cancer diagnosis, cancer type)
 - columns = early-stop horizon by validation F1: best epoch in epochs 1–10 vs 1–20
 - x-axis = length per set (1k, 2k, 4k, 8k, 16k) from experiment max_length
-- y-axis = ROC AUC at the chosen epoch (from training log)
+- y-axis = AUROC at the chosen epoch (from training log)
 
 Each subplot draws:
 - test split: thin dashed line with markers
 - holdout split: solid bold line with markers
 
-For each column, AUC is read from ``results/hyenadna/<name>_training.json`` at the
+For each column, AUROC is read from ``results/hyenadna/<name>_training.json`` at the
 epoch that maximizes ``val_f1_weighted`` among rows with ``epoch`` ≤ the column
 cap (10 or 20). Ties break toward a later epoch.
 
@@ -147,18 +147,18 @@ def _auc_at_best_val_f1(
         key=lambda r: (_val_f1_for_argmax(r.get("val_f1_weighted")), int(r["epoch"])),
     )
     ep = int(best["epoch"])
-    t_raw = best.get("test_roc_auc")
-    h_raw = best.get("holdout_roc_auc")
+    t_raw = best.get("test_auroc")
+    h_raw = best.get("holdout_auroc")
     if t_raw is None or h_raw is None:
         raise SystemExit(
-            f"Chosen epoch {ep}: need finite test_roc_auc and holdout_roc_auc "
+            f"Chosen epoch {ep}: need finite test_auroc and holdout_auroc "
             f"(got {t_raw!r}, {h_raw!r})."
         )
     t_auc = float(t_raw)
     h_auc = float(h_raw)
     if not math.isfinite(t_auc) or not math.isfinite(h_auc):
         raise SystemExit(
-            f"Chosen epoch {ep}: test_roc_auc and holdout_roc_auc must be finite "
+            f"Chosen epoch {ep}: test_auroc and holdout_auroc must be finite "
             f"(got {t_auc}, {h_auc})."
         )
     return t_auc, h_auc, ep
@@ -220,7 +220,7 @@ def build_plot(
             if row == 0:
                 ax.set_title(col_title)
             if col == 0:
-                ax.set_ylabel(f"{task_label}\nROC AUC")
+                ax.set_ylabel(f"{task_label}\nAUROC")
 
             ax.set_xticks(x)
             ax.set_xticklabels(X_LABELS)

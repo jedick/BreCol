@@ -4,12 +4,11 @@ Fine-tune HyenaDNA with the classification head (hyenadna/standalone_hyenadna.py
 
 Uses a pre-built feature-only per-run tensor cache under paths.run_tensors_dir/ from
 scripts/build_run_tensors.py, joins labels/splits from shared metadata at runtime, and reports
-run-level ROC-AUC on the test and holdout splits (one score per Run).
+run-level AUROC on the test and holdout splits (one score per Run).
 
-Training logs (`*_training.json`) record validation ROC-AUC, validation study-macro ROC-AUC,
-validation CE loss, a fixed train-subset ROC-AUC, gradient norms (when clipping is enabled),
-optional per-study AUC on validation/holdout, and score moments by label. Checkpoints are
-selected by ``train_hyenadna.tuning_metric`` (default ``val_roc_auc``).
+Training logs (`*_training.json`) record validation AUROC, validation CE loss,
+optional per-study AUROC on validation/holdout, and score moments by label. Checkpoints are
+selected by ``train_hyenadna.tuning_metric`` (default ``auroc``).
 
 When ``study_adv`` is true, the model adds a study (domain) classifier with optional
 ``study_adv_delay_epochs`` (task-only), ``study_discriminator_warmup`` plus
@@ -49,7 +48,7 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
 from shared_utilities import (
-    binary_roc_auc_from_scores,
+    binary_auroc_from_scores,
     build_run_task_table,
 )
 from hyenadna_fasta_data import (
@@ -446,7 +445,7 @@ def run_level_scores(
     requested_max_len: int,
     cache_num_sets: int,
     cache_max_len: int,
-    amp_eval_enabled: bool,
+    amp_enabled: bool,
     amp_dtype: torch.dtype,
 ) -> Tuple[np.ndarray, np.ndarray]:
     model.eval()
@@ -469,7 +468,7 @@ def run_level_scores(
             nv = min(int(blob["n_sets"]), requested_num_sets, cache_num_sets)
             if nv <= 0:
                 continue
-            with _amp_autocast(device, amp_enabled=amp_eval_enabled, amp_dtype=amp_dtype):
+            with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
                 logits = model(x[:nv])
             if aggregate == "mean":
                 agg = logits.mean(dim=0)
@@ -709,7 +708,7 @@ def _make_lr_scheduler(
     raise SystemExit(f"Unknown lr_schedule {schedule!r} (use none or warmup_cosine).")
 
 
-def _per_study_roc_dict(
+def _per_study_auroc_dict(
     entries: Sequence[RunRecord],
     y_true: np.ndarray,
     y_score: np.ndarray,
@@ -721,8 +720,8 @@ def _per_study_roc_dict(
     for study, pairs in by_study.items():
         yt = np.array([p[0] for p in pairs], dtype=object)
         ys = np.array([p[1] for p in pairs], dtype=np.float64)
-        auc = binary_roc_auc_from_scores(yt, ys)
-        out[study] = float(auc) if auc == auc else None
+        auroc = binary_auroc_from_scores(yt, ys)
+        out[study] = float(auroc) if auroc == auroc else None
     return out
 
 
@@ -786,85 +785,28 @@ def _label_score_moments(
     return out
 
 
-def _study_macro_roc_auc(
-    per_study_auc: Mapping[str, Optional[float]],
-) -> Tuple[float, int]:
-    vals = [float(v) for v in per_study_auc.values() if v is not None and float(v) == float(v)]
-    if not vals:
-        return float("nan"), 0
-    return float(np.mean(vals)), int(len(vals))
-
-
-def _tuning_score(
-    val_f1: float,
-    val_auc: float,
-    val_study_macro_auc: float,
-    val_study_n_roc_eligible: int,
-    metric: str,
-) -> float:
-    m = str(metric).strip().lower()
-    if m in ("val_roc_auc", "roc_auc", "val_auc"):
-        v = float(val_auc)
-    elif m in (
-        "val_study_macro_roc_auc",
-        "study_macro_roc_auc",
-        "val_study_auc",
-    ):
-        # Some tasks/splits can have only single-class studies in validation, making
-        # per-study ROC undefined. Fall back to run-level val ROC in that case.
-        if int(val_study_n_roc_eligible) > 0 and float(val_study_macro_auc) == float(
-            val_study_macro_auc
-        ):
-            v = float(val_study_macro_auc)
-        else:
-            v = float(val_auc)
-    elif m in ("val_f1_weighted", "f1", "f1_weighted"):
+def _tuning_score(val_f1: float, val_auroc: float, metric: str) -> float:
+    m = str(metric).strip()
+    if m == "auroc":
+        v = float(val_auroc)
+    elif m == "f1_weighted":
         v = float(val_f1)
     else:
         raise SystemExit(
-            "Unknown tuning_metric "
-            f"{metric!r} (use val_roc_auc, val_study_macro_roc_auc, or val_f1_weighted)."
+            f"Unknown tuning_metric {metric!r} (use auroc or f1_weighted)."
         )
     return v if v == v else float("-inf")
 
 
-def _average_state_dicts(
-    states: Sequence[Mapping[str, torch.Tensor]],
-) -> Dict[str, torch.Tensor]:
-    if not states:
-        raise SystemExit("SWA requested but no weight snapshots were collected.")
-    keys = list(states[0].keys())
-    out: Dict[str, torch.Tensor] = {}
-    n = float(len(states))
-    for k in keys:
-        acc: Optional[torch.Tensor] = None
-        for sd in states:
-            t = sd[k].float()
-            acc = t if acc is None else acc + t
-        assert acc is not None
-        out[k] = (acc / n).to(states[0][k].dtype)
-    return out
-
-
 def _optimizer_step(
-    model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scaler: Optional[torch.amp.GradScaler],
-    grad_clip_norm: Optional[float],
-) -> float:
-    grad_norm = float("nan")
-    if grad_clip_norm is not None:
-        if scaler is not None:
-            scaler.unscale_(optimizer)
-        grad_norm = float(
-            torch.nn.utils.clip_grad_norm_(model.parameters(), float(grad_clip_norm))
-        )
+) -> None:
     if scaler is not None:
         scaler.step(optimizer)
         scaler.update()
     else:
         optimizer.step()
-    return grad_norm
 
 
 def train_epoch(
@@ -879,13 +821,11 @@ def train_epoch(
     scaler: Optional[torch.amp.GradScaler],
     ce_weight: Optional[torch.Tensor],
     label_smoothing: float,
-    grad_clip_norm: Optional[float],
     study_train_kw: Optional[Mapping[str, object]] = None,
-) -> Tuple[float, float, Dict[str, float]]:
+) -> Tuple[float, Dict[str, float]]:
     model.train()
     total = 0.0
     n_batches = 0
-    grad_norms: List[float] = []
     study_ce_num = 0.0
     study_ce_den = 0.0
     for batch in tqdm(loader, desc="Train", leave=False):
@@ -940,8 +880,7 @@ def train_epoch(
                     study_ce_den += float(extra2["study_n"])
             else:
                 loss_sum_2 = torch.zeros((), device=device)
-            gn = _optimizer_step(model, optimizer, scaler, grad_clip_norm)
-            grad_norms.append(gn)
+            _optimizer_step(optimizer, scaler)
             total += float((loss_sum_1 + loss_sum_2).item() / float(denom))
         else:
             loss_sum, denom, extra_full = training_loss_sum_and_count(
@@ -962,19 +901,17 @@ def train_epoch(
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
-            gn = _optimizer_step(model, optimizer, scaler, grad_clip_norm)
-            grad_norms.append(gn)
+            _optimizer_step(optimizer, scaler)
             total += float(loss.item())
             if extra_full is not None:
                 study_ce_num += float(extra_full["study_ce_sum"])
                 study_ce_den += float(extra_full["study_n"])
         n_batches += 1
     mean_loss = total / max(n_batches, 1)
-    mean_gn = sum(grad_norms) / len(grad_norms) if grad_norms else float("nan")
     train_study_ce = (
         float(study_ce_num / study_ce_den) if study_ce_den > 0.0 else float("nan")
     )
-    return mean_loss, mean_gn, {"train_study_ce": train_study_ce}
+    return mean_loss, {"train_study_ce": train_study_ce}
 
 
 def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
@@ -1090,14 +1027,13 @@ def _write_results_json(
     *,
     merged: Mapping[str, Any],
     cache_info: Mapping[str, Any],
-    test_auc: float,
-    holdout_auc: float,
+    test_auroc: float,
+    holdout_auroc: float,
     best_epoch: int,
     tuning_metric: str,
     best_tuning_score: float,
     best_val_f1_weighted: float,
-    best_val_roc_auc: float,
-    best_val_study_macro_roc_auc: float,
+    best_val_auroc: float,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1113,14 +1049,11 @@ def _write_results_json(
             "score": _float_or_none(float(best_tuning_score)),
             "best_epoch": int(best_epoch),
             "val_f1_weighted_at_best": _float_or_none(float(best_val_f1_weighted)),
-            "val_roc_auc_at_best": _float_or_none(float(best_val_roc_auc)),
-            "val_study_macro_roc_auc_at_best": _float_or_none(
-                float(best_val_study_macro_roc_auc)
-            ),
+            "val_auroc_at_best": _float_or_none(float(best_val_auroc)),
         },
         "metrics": {
-            "test": {"roc_auc": float(test_auc) if test_auc == test_auc else None},
-            "holdout": {"roc_auc": float(holdout_auc) if holdout_auc == holdout_auc else None},
+            "test": {"auroc": float(test_auroc) if test_auroc == test_auroc else None},
+            "holdout": {"auroc": float(holdout_auroc) if holdout_auroc == holdout_auroc else None},
         },
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -1143,19 +1076,13 @@ def _write_training_log(path: Path, epoch_rows: Sequence[Mapping[str, object]]) 
                 "epoch": int(row["epoch"]),
                 "learning_rate": float(row["learning_rate"]),
                 "train_loss": float(row["train_loss"]),
-                "grad_norm_clip": _float_or_none(float(row["grad_norm_clip"])),
                 "val_loss": _float_or_none(float(row["val_loss"])),
                 "val_f1_weighted": _float_or_none(float(row["val_f1_weighted"])),
-                "val_roc_auc": _float_or_none(float(row["val_roc_auc"])),
-                "val_study_macro_roc_auc": _float_or_none(
-                    float(row["val_study_macro_roc_auc"])
-                ),
-                "val_study_n_roc_eligible": int(row["val_study_n_roc_eligible"]),
-                "val_per_study_roc_auc": dict(row["val_per_study_roc_auc"]),
-                "train_roc_auc": _float_or_none(float(row["train_roc_auc"])),
-                "test_roc_auc": _float_or_none(float(row["test_roc_auc"])),
-                "holdout_roc_auc": _float_or_none(float(row["holdout_roc_auc"])),
-                "holdout_per_study_roc_auc": dict(row["holdout_per_study_roc_auc"]),
+                "val_auroc": _float_or_none(float(row["val_auroc"])),
+                "val_per_study_auroc": dict(row["val_per_study_auroc"]),
+                "test_auroc": _float_or_none(float(row["test_auroc"])),
+                "holdout_auroc": _float_or_none(float(row["holdout_auroc"])),
+                "holdout_per_study_auroc": dict(row["holdout_per_study_auroc"]),
                 "holdout_per_study_score_diagnostics": dict(
                     row["holdout_per_study_score_diagnostics"]
                 ),
@@ -1438,7 +1365,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     amp_enabled, amp_dtype, amp_dtype_name, amp_use_grad_scaler = _resolve_amp_config(
         merged, device
     )
-    amp_eval_enabled = amp_enabled
     exp_label = str(exp_name).strip() if exp_name is not None else ""
     if expt > 0 and exp_label:
         print(f"\nExperiment: EXPT={expt} name={exp_label}", flush=True)
@@ -1461,10 +1387,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     backbone_lr_mult: Optional[float] = (
         None if raw_blm is None else float(raw_blm)
     )
-    raw_gc = merged.get("grad_clip_norm")
-    grad_clip_norm: Optional[float] = None if raw_gc is None else float(raw_gc)
     train_sampler = str(merged.get("train_sampler") or "random").strip().lower()
-    tuning_metric = str(merged.get("tuning_metric") or "val_roc_auc").strip()
+    tuning_metric = str(merged.get("tuning_metric") or "auroc").strip()
     ce_weight = _compute_ce_weight_tensor(
         train_entries,
         mode=str(merged.get("class_weight") or "none"),
@@ -1473,17 +1397,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     freeze_full = bool(merged.get("freeze_backbone"))
     transition_n = int(merged.get("freeze_backbone_epochs") or 0)
-    swa_enabled = bool(merged.get("swa"))
-    swa_keep = int(merged.get("swa_epochs") or 0)
-    train_subset_n = min(
-        int(merged.get("train_eval_subset_size") or 200),
-        len(train_entries),
-    )
-    rng_idx = np.random.RandomState(seed).permutation(len(train_entries))[
-        :train_subset_n
-    ]
-    train_eval_entries = [train_entries[int(i)] for i in rng_idx]
-
     head_arch = str(merged.get("head_arch") or "linear").strip().lower()
     raw_hh = merged.get("head_hidden")
     head_hidden = int(raw_hh) if raw_hh is not None else None
@@ -1568,12 +1481,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     best_tuning_score = float("-inf")
     best_epoch = 0
     best_val_f1 = float("nan")
-    best_val_roc_auc = float("nan")
-    best_val_study_macro_roc_auc = float("nan")
-    best_test_auc = float("nan")
-    best_holdout_auc = float("nan")
+    best_val_auroc = float("nan")
     best_state: Optional[Dict[str, torch.Tensor]] = None
-    swa_snapshots: List[Dict[str, torch.Tensor]] = []
 
     opt: Optional[torch.optim.Optimizer] = None
     scheduler: Optional[Any] = None
@@ -1590,9 +1499,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     schedule_key = str(merged.get("lr_schedule") or "none").strip().lower()
     warmup_epochs_cfg = int(merged.get("warmup_epochs") or 0)
     min_lr_ratio_cfg = float(merged.get("min_lr_ratio") or 0.1)
-    tuning_metric_key = tuning_metric.strip().lower()
-    warned_study_macro_fallback = False
-
     for ep in range(1, epochs + 1):
         print(f"\n--- Epoch {ep}/{epochs} ---", flush=True)
 
@@ -1667,7 +1573,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 flush=True,
             )
 
-        last_loss, batch_grad_norm, train_study_stats = train_epoch(
+        last_loss, train_study_stats = train_epoch(
             model,
             train_loader,
             opt,
@@ -1678,7 +1584,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             scaler=scaler,
             ce_weight=ce_weight,
             label_smoothing=label_smoothing,
-            grad_clip_norm=grad_clip_norm,
             study_train_kw=study_train_kw,
         )
         train_study_ce = float(train_study_stats["train_study_ce"])
@@ -1687,7 +1592,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             model,
             val_loader,
             device,
-            amp_enabled=amp_eval_enabled,
+            amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             ce_weight=ce_weight,
             label_smoothing=label_smoothing,
@@ -1701,7 +1606,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 model,
                 val_loader,
                 device,
-                amp_enabled=amp_eval_enabled,
+                amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
             )
 
@@ -1715,7 +1620,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             requested_max_len=max_len,
             cache_num_sets=cache_num_sets,
             cache_max_len=cache_max_len,
-            amp_eval_enabled=amp_eval_enabled,
+            amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
         val_f1 = run_level_weighted_f1_from_scores(
@@ -1724,24 +1629,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             negative_label=neg_label,
             positive_label=pos_label,
         )
-        val_auc = binary_roc_auc_from_scores(val_true, val_score)
-        val_ps = _per_study_roc_dict(val_entries, val_true, val_score)
-        val_study_macro_auc, val_study_n_roc_eligible = _study_macro_roc_auc(val_ps)
-
-        train_true, train_score = run_level_scores(
-            model,
-            train_eval_entries,
-            device,
-            aggregate=aggregate,
-            pos_class_index=pos_class_index,
-            requested_num_sets=num_sets,
-            requested_max_len=max_len,
-            cache_num_sets=cache_num_sets,
-            cache_max_len=cache_max_len,
-            amp_eval_enabled=amp_eval_enabled,
-            amp_dtype=amp_dtype,
-        )
-        train_auc = binary_roc_auc_from_scores(train_true, train_score)
+        val_auroc = binary_auroc_from_scores(val_true, val_score)
+        val_ps = _per_study_auroc_dict(val_entries, val_true, val_score)
 
         test_true, test_score_m = run_level_scores(
             model,
@@ -1753,14 +1642,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             requested_max_len=max_len,
             cache_num_sets=cache_num_sets,
             cache_max_len=cache_max_len,
-            amp_eval_enabled=amp_eval_enabled,
+            amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
-        test_auc = binary_roc_auc_from_scores(test_true, test_score_m)
+        test_auroc = binary_auroc_from_scores(test_true, test_score_m)
 
         hold_true: np.ndarray = np.asarray([], dtype=object)
         hold_score_m = np.asarray([], dtype=np.float64)
-        hold_auc = float("nan")
+        hold_auroc = float("nan")
         if holdout_entries:
             hold_true, hold_score_m = run_level_scores(
                 model,
@@ -1772,12 +1661,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 requested_max_len=max_len,
                 cache_num_sets=cache_num_sets,
                 cache_max_len=cache_max_len,
-                amp_eval_enabled=amp_eval_enabled,
+                amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
             )
-            hold_auc = binary_roc_auc_from_scores(hold_true, hold_score_m)
+            hold_auroc = binary_auroc_from_scores(hold_true, hold_score_m)
 
-        hold_ps = _per_study_roc_dict(holdout_entries, hold_true, hold_score_m)
+        hold_ps = _per_study_auroc_dict(holdout_entries, hold_true, hold_score_m)
         hold_ps_diag = _per_study_score_diagnostics(
             holdout_entries,
             hold_true,
@@ -1799,41 +1688,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
         lr_log = float(opt.param_groups[0]["lr"])
-        if (
-            tuning_metric_key
-            in ("val_study_macro_roc_auc", "study_macro_roc_auc", "val_study_auc")
-            and val_study_n_roc_eligible == 0
-            and not warned_study_macro_fallback
-        ):
-            print(
-                "tuning_metric=val_study_macro_roc_auc has zero ROC-eligible validation "
-                "studies this run; falling back to val_roc_auc for checkpoint selection.",
-                flush=True,
-            )
-            warned_study_macro_fallback = True
-        ts = _tuning_score(
-            val_f1,
-            val_auc,
-            val_study_macro_auc,
-            val_study_n_roc_eligible,
-            tuning_metric,
-        )
+        ts = _tuning_score(val_f1, val_auroc, tuning_metric)
         epoch_log.append(
             {
                 "epoch": int(ep),
                 "learning_rate": lr_log,
                 "train_loss": float(last_loss),
-                "grad_norm_clip": float(batch_grad_norm),
                 "val_loss": float(val_loss),
                 "val_f1_weighted": float(val_f1),
-                "val_roc_auc": float(val_auc),
-                "val_study_macro_roc_auc": float(val_study_macro_auc),
-                "val_study_n_roc_eligible": int(val_study_n_roc_eligible),
-                "val_per_study_roc_auc": val_ps,
-                "train_roc_auc": float(train_auc),
-                "test_roc_auc": float(test_auc),
-                "holdout_roc_auc": float(hold_auc),
-                "holdout_per_study_roc_auc": hold_ps,
+                "val_auroc": float(val_auroc),
+                "val_per_study_auroc": val_ps,
+                "test_auroc": float(test_auroc),
+                "holdout_auroc": float(hold_auroc),
+                "holdout_per_study_auroc": hold_ps,
                 "holdout_per_study_score_diagnostics": hold_ps_diag,
                 "val_score_by_label": val_by_label,
                 "holdout_score_by_label": hold_by_label,
@@ -1852,18 +1719,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             best_tuning_score = float(ts)
             best_epoch = int(ep)
             best_val_f1 = float(val_f1)
-            best_val_roc_auc = float(val_auc)
-            best_val_study_macro_roc_auc = float(val_study_macro_auc)
-            best_test_auc = float(test_auc)
-            best_holdout_auc = float(hold_auc)
+            best_val_auroc = float(val_auroc)
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
-
-        if swa_enabled and swa_keep > 0 and ep > epochs - swa_keep:
-            swa_snapshots.append(
-                {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            )
 
         if scheduler is not None:
             scheduler.step()
@@ -1876,17 +1735,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             fields.append(f"val_study_acc={val_study_acc:.4f}")
         fields.extend(
             [
-                f"val_roc_auc={val_auc:.4f}",
-                f"test_roc_auc={test_auc:.4f}",
-                f"holdout_roc_auc={hold_auc:.4f}",
+                f"val_auroc={val_auroc:.4f}",
+                f"test_auroc={test_auroc:.4f}",
+                f"holdout_auroc={hold_auroc:.4f}",
             ]
         )
         print("  ".join(fields), flush=True)
 
-    use_swa = swa_enabled and bool(swa_snapshots)
-    if use_swa:
-        model.load_state_dict(_average_state_dicts(swa_snapshots))
-    elif best_state is not None:
+    if best_state is not None:
         model.load_state_dict(best_state)
 
     if results_path is not None:
@@ -1900,12 +1756,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             requested_max_len=max_len,
             cache_num_sets=cache_num_sets,
             cache_max_len=cache_max_len,
-            amp_eval_enabled=amp_eval_enabled,
+            amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
-        final_test_auc = binary_roc_auc_from_scores(test_true_final, test_score_best)
+        final_test_auroc = binary_auroc_from_scores(test_true_final, test_score_best)
         hold_score_best = np.asarray([], dtype=np.float64)
-        final_holdout_auc = float("nan")
+        final_holdout_auroc = float("nan")
         if holdout_entries:
             hold_true_final, hold_score_best = run_level_scores(
                 model,
@@ -1917,10 +1773,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 requested_max_len=max_len,
                 cache_num_sets=cache_num_sets,
                 cache_max_len=cache_max_len,
-                amp_eval_enabled=amp_eval_enabled,
+                amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
             )
-            final_holdout_auc = binary_roc_auc_from_scores(
+            final_holdout_auroc = binary_auroc_from_scores(
                 hold_true_final,
                 hold_score_best,
             )
@@ -1953,23 +1809,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "run_tensors_min_seqs": cache_min_seqs,
                 "n_cached_runs": len(all_records),
             },
-            test_auc=final_test_auc,
-            holdout_auc=final_holdout_auc,
+            test_auroc=final_test_auroc,
+            holdout_auroc=final_holdout_auroc,
             best_epoch=best_epoch,
             tuning_metric=tuning_metric,
             best_tuning_score=best_tuning_score,
             best_val_f1_weighted=best_val_f1,
-            best_val_roc_auc=best_val_roc_auc,
-            best_val_study_macro_roc_auc=best_val_study_macro_roc_auc,
-        )
-        tail = (
-            f"SWA last {swa_keep} epochs"
-            if use_swa
-            else f"best epoch by {tuning_metric}"
+            best_val_auroc=best_val_auroc,
         )
         print(
-            f"Final eval ({tail}): best_epoch={best_epoch} "
-            f"test_roc_auc={final_test_auc:.4f} holdout_roc_auc={final_holdout_auc:.4f}\n",
+            f"Final eval (best epoch by {tuning_metric}): best_epoch={best_epoch} "
+            f"test_auroc={final_test_auroc:.4f} holdout_auroc={final_holdout_auroc:.4f}\n",
             flush=True,
         )
 

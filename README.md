@@ -6,9 +6,9 @@
 
 ## Study design
 
-**Stage 1** uses 16S rRNA sequences from eight studies (four breast cancer, four colorectal cancer). All eight studies contribute to model fitting and testing via in-study train/test splits. In-study test sets will yield optimistic AUC estimates, as the model has seen sequences from the same study during training.
+**Stage 1** uses 16S rRNA sequences from eight studies (four breast cancer, four colorectal cancer). All eight studies contribute to model fitting and testing via in-study train/test splits. In-study test sets will yield optimistic AUROC estimates, as the model has seen sequences from the same study during training.
 
-**Stage 2** addresses this by validating on four holdout studies (two breast, two colorectal) not seen during training. AUC values are expected to drop substantially for all models. *The central research question is whether the language model generalizes better across studies than classical approaches.*
+**Stage 2** addresses this by validating on four holdout studies (two breast, two colorectal) not seen during training. AUROC values are expected to drop substantially for all models. *The central research question is whether the language model generalizes better across studies than classical approaches.*
 
 ## Methods
 
@@ -48,11 +48,12 @@ See the list for a quick overview of the steps and read below for details.
 1. Installation: `pip install -r requirements.txt` installs dependencies including the local `hyenadna` package in editable mode.
 2. Download data: `make download_data` downloads 16S sequences from SRA (about 13 GB on disk).
 3. Tetramer counts: `make -j4 tetramer_counts` (sequence-level tetramer counting and xzipping output files is CPU-heavy; 10+ hours and 8 GB on disk).
-4. Tetramer frequencies: `make tetramer_frequencies` (aggregates tetramer counts to run-level percentages, saved in `outputs/tetramer_frequencies.csv`).
-5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (about 6 min).
-6. Sequence cache: `make sequence_cache` generates a Parquet file with tetramer counts for the first 10000 sequences in each run.
-7. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/uc_cap` (about 40 min / 100GB RAM).
-8. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/uc_cap` (about 2 hr).
+4. Tetramer frequencies: `make tetramer_frequencies` (calculates run-level percentages, saved in `outputs/tetramer_frequencies.csv`) (75 min / 3 MB on disk).
+5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (about 3 min).
+6. Sequence cache: `make sequence_cache` generates a Parquet file with tetramer counts for the first 10000 sequences in each run
+   (a few minutes / 80 GB RAM / 1.2 GB on disk).
+7. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/uc_cap` (about 18 min / 100GB RAM).
+8. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/uc_cap` (about 35 min).
 9. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (about 15 min).
 10. Frozen embeddings: `make extract_embeddings FEAT=0` builds consolidated embedding feature CSVs in `outputs/embeddings`.
 11. Embedding classifier: `make fit_embeddings FEAT=1 EXPT=1` fits the selected embedding feature set with the selected `fit_classifier` experiment.
@@ -96,7 +97,7 @@ Split proportions are configured in `defaults.yaml (currently 0.70/0.15/0.15 for
 `make fit_tetramer` fits models on `outputs/tetramer_frequencies.csv`, with CLR, scaling, and PCA.
 Default task/model and other settings are resolved from `fit_classifier` in `defaults.yaml` with results written to `results/scratch/`.
 Add `EXPT=N` to get experiment name and model configuration from `experiments.yaml` and write results to `results/tetramer/{name}.json`.
-Hyperparameters are chosen on validation, then ROC AUC is reported for test and holdout.
+Hyperparameters are chosen on validation (`fit_classifier.tuning_metric` in `defaults.yaml`), then AUROC is reported for test and holdout (`metrics.test.auroc` / `metrics.holdout.auroc` in each results JSON).
 Supported models are `baseline`, `knn`, `random_forest`, `logistic_regression`, and `svm`.
 
 Output files:
@@ -150,3 +151,4 @@ Inputs/outputs:
       - Default `make train_hyenadna` writes `results/scratch/train_hyenadna_<task>_<timestamp>.json`.
       - Experiment runs (`make train_hyenadna EXPT=N`) write under the `train_hyenadna.results_json_template` path in `experiments.yaml` (for example `results/hyenadna/{name}_{max_length/1024}k_s{seed}.json`).
       - Existing JSON outputs are skipped per `(experiment, seed, max_length)` combination.
+      - Checkpoints are selected by `train_hyenadna.tuning_metric` (default `auroc`); each results JSON reports `metrics.test.auroc` and `metrics.holdout.auroc`.

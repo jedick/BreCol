@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Figure 1: UC/CAP feature-set stability across test vs holdout AUC.
+Build Figure 1: UC/CAP feature-set stability across test vs holdout AUROC.
 
 Writes ``manuscript/figure1_uc_cap.png`` and ``manuscript/figure1_uc_cap.svg`` from
 JSON metrics under ``results/uc_cap/<feat_index>/``.
@@ -24,8 +24,8 @@ TASKS: List[Tuple[str, str]] = [
     ("cancer_type", "Cancer type"),
 ]
 MODELS: List[Tuple[str, str]] = [
+    ("knn", "KNN"),
     ("svm", "SVM"),
-    ("random_forest", "Random Forest"),
 ]
 
 OUTPUT_PNG = Path("manuscript") / "figure1_uc_cap.png"
@@ -51,11 +51,11 @@ def _load_metrics(json_path: Path) -> Tuple[float, float]:
     metrics = data.get("metrics") or {}
     test = metrics.get("test") or {}
     holdout = metrics.get("holdout") or {}
-    if "roc_auc" not in test or "roc_auc" not in holdout:
+    if "auroc" not in test or "auroc" not in holdout:
         raise SystemExit(
-            f"{json_path}: expected metrics.test.roc_auc and metrics.holdout.roc_auc."
+            f"{json_path}: expected metrics.test.auroc and metrics.holdout.auroc."
         )
-    return float(test["roc_auc"]), float(holdout["roc_auc"])
+    return float(test["auroc"]), float(holdout["auroc"])
 
 
 def collect_series(
@@ -112,7 +112,7 @@ def build_plot(
             if row == 0:
                 ax.set_title(model_label)
             if col == 0:
-                ax.set_ylabel(f"{task_label}\nROC AUC")
+                ax.set_ylabel(f"{task_label}\nAUROC")
 
             ax.set_xticks(x)
             ax.set_ylim(0.5, 1.02)

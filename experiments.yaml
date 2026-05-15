@@ -43,14 +43,14 @@ fit_classifier:
 
 # Flat list merged shallowly over the defaults.yaml run_uc_cap_pipeline baseline (feature sets; --feat 1..N).
 run_uc_cap_pipeline:
+  - { n_uc:  500, n_clusters: 1000, n_cap: 2000 }
+  - { n_uc: 1000, n_clusters: 1000, n_cap: 2000 }
+  - { n_uc:  500, n_clusters: 2000, n_cap: 2000 }
+  - { n_uc: 1000, n_clusters: 2000, n_cap: 2000 }
+  - { n_uc:  500, n_clusters: 1000, n_cap: 5000 }
+  - { n_uc: 1000, n_clusters: 1000, n_cap: 5000 }
+  - { n_uc:  500, n_clusters: 2000, n_cap: 5000 }
   - { n_uc: 1000, n_clusters: 2000, n_cap: 5000 }
-  - { n_uc: 2000, n_clusters: 2000, n_cap: 5000 }
-  - { n_uc: 1000, n_clusters: 5000, n_cap: 5000 }
-  - { n_uc: 2000, n_clusters: 5000, n_cap: 5000 }
-  - { n_uc: 1000, n_clusters: 2000, n_cap: 10000 }
-  - { n_uc: 2000, n_clusters: 2000, n_cap: 10000 }
-  - { n_uc: 1000, n_clusters: 5000, n_cap: 10000 }
-  - { n_uc: 2000, n_clusters: 5000, n_cap: 10000 }
 
 extract_embeddings:
   - { num_sets: 5, max_length: 1024 }
@@ -66,46 +66,26 @@ train_hyenadna:
     #   (with batch_size=20 uses ca. 15000 MiB GPU memory):
     #   - about 26 minutes for cd_* experiments
     #   - about 13 minutes for ct_* experiments
-    # Estimated total time for 8 experiments with 5 seeds and 13.75 average epochs (6*10, 1*20, 1*30):
-    #   8 * (26 + 13) * 5/3 * 13.75/10 = 715 minutes (11.9 hours)
+    # Estimated total time for 4 experiments with 3 seeds and 20 epochs:
+    #   4 * (26 + 13) * 3/3 * 20/10 = 312 minutes (5.2 hours)
     - name: best_recipe  # 1
       overrides:
         task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
-    - name: 20_epochs  # 2
+        random_seed: "0,1,2"
+    - name: no_study_balanced  # 2
       overrides:
         task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
-        epochs: 20
-    - name: 30_epochs  # 3
-      overrides:
-        task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
-        epochs: 30
-    - name: run_logits_max  # 4
-      overrides:
-        task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
-        run_logits_aggregate: max
-    - name: no_study_balanced  # 5
-      overrides:
-        task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
+        random_seed: "0,1,2"
         train_sampler: random
-    - name: high_lr  # 6
+    - name: high_lr  # 3
       overrides:
         task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
-        learning_rate: 1.0e-4
-    - name: high_adv_weight  # 7
+        random_seed: "0,1,2"
+        learning_rate: 5.0e-4
+    - name: no_dann  # 4
       overrides:
         task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
-        study_adv_weight: 0.6
-    - name: no_dann  # 8
-      overrides:
-        task: "cancer_diagnosis,cancer_type"
-        random_seed: "0,1,2,3,4"
+        random_seed: "0,1,2"
         study_adv: false
 #    - name: max_length
 #      overrides:

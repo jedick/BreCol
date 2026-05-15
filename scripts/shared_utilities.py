@@ -6,7 +6,7 @@ Public API
 build_run_table()             Run + sample_label + study_name + cancer_type + split
 build_run_task_table(task)    extends the above with a task_label column
 require_binary_classes()      validates a label array has exactly two classes
-binary_roc_auc_from_scores()  ROC AUC from positive-class probability scores
+binary_auroc_from_scores()  AUROC from positive-class probability scores
 
 Constants: RUN_PATTERN, TETRAMERS, CANCER_LABELS, SPLITS, TRAIN, VAL, TEST, HOLDOUT
 
@@ -28,7 +28,7 @@ from typing import Dict, List, Literal, Mapping, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yaml
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import auroc_score
 from sklearn.model_selection import train_test_split
 
 SplitName = Literal["train", "val", "test", "holdout"]
@@ -315,8 +315,8 @@ def require_binary_classes(y: np.ndarray, *, split_name: str, task: str) -> None
         )
 
 
-def binary_roc_auc_from_scores(y_true_obj: np.ndarray, y_score: np.ndarray) -> float:
-    """Compute binary ROC AUC from positive-class scores; return NaN if undefined."""
+def binary_auroc_from_scores(y_true_obj: np.ndarray, y_score: np.ndarray) -> float:
+    """Compute binary AUROC from positive-class scores; return NaN if undefined."""
     y_true_obj = np.asarray(y_true_obj, dtype=object)
     y_score = np.asarray(y_score, dtype=np.float64).ravel()
     classes = np.unique(y_true_obj)
@@ -324,6 +324,6 @@ def binary_roc_auc_from_scores(y_true_obj: np.ndarray, y_score: np.ndarray) -> f
         return float("nan")
     pos_label = classes[1]
     try:
-        return float(roc_auc_score(y_true_obj == pos_label, y_score))
+        return float(auroc_score(y_true_obj == pos_label, y_score))
     except ValueError:
         return float("nan")

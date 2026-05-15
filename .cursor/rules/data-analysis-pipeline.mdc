@@ -47,3 +47,9 @@ alwaysApply: true
 
 - Any script that **iterates over many runs or large FASTAs** should expose **visible progress** (e.g. current study, run index / total, optional ETA or per-study summary); print a **newline** before unrelated output so progress lines do not corrupt the terminal.
 - **Tetramer counting** (`tetramer_counts`) is **CPU-heavy** (4-mer accumulation and **xz** compression of large per-run tables), not only I/O; budget wall time accordingly.
+
+## AUROC terminology
+
+- Use **AUROC** in prose, comments, docstrings, logs, and user-facing messages — not “ROC AUC”, “ROC-AUC”, or bare “AUC” when you mean area under the ROC curve.
+- In code and JSON keys, use snake_case **`auroc`** (for example `metrics.test.auroc`, `metrics.holdout.auroc`, `fit_classifier.tuning_metric: auroc`, `train_hyenadna.tuning_metric: auroc`, `binary_auroc_from_scores`).
+- **`tuning_metric`** selects the validation objective for hyperparameter search and checkpointing. Shared values include **`auroc`** and **`f1_weighted`**; classical ML (`fit_classifier`) also supports **`accuracy`** and **`f1_macro`**.

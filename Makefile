@@ -45,7 +45,7 @@ EMBEDDING_FEATURE_OUTPUTS := $(shell $(PYTHON) $(ROOT)/helpers/list_embedding_fe
 EMBEDDING_FEATURE_INDICES := $(shell seq 1 $(words $(EMBEDDING_FEATURE_OUTPUTS)))
 EMBEDDING_FEATURE_OUTPUT := $(if $(filter-out 0,$(strip $(FEAT))),$(word $(FEAT),$(EMBEDDING_FEATURE_OUTPUTS)),)
 # Deferred: FEAT=0 EXPT=<n> fan-out output paths under results/embeddings/<feat>/.
-EMBEDDINGS_SINGLE_EXPT_ALL_FEAT_OUTPUTS = $(foreach f,$(EMBEDDING_FEATURE_INDICES),$(ROOT)/results/embeddings/$(f)/$(word $(EXPT),$(EXPERIMENT_NAMES)).json)
+EMBEDDINGS_SINGLE_EXPT_ALL_FEAT_OUTPUTS = $(if $(filter-out 0,$(strip $(EXPT))),$(foreach f,$(EMBEDDING_FEATURE_INDICES),$(ROOT)/results/embeddings/$(f)/$(word $(EXPT),$(EXPERIMENT_NAMES)).json),)
 
 TETRA_CSV := $(ROOT)/$(TETRAMER_FREQUENCIES_CSV)
 SEQ_CACHE := $(ROOT)/$(UC_CAP_ROOT)/sequence_counts_first_$(SEQUENCE_CACHE_N_MAX)_all_runs.parquet
@@ -134,14 +134,14 @@ $(TETRA_CSV): $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py $(R
 tetramer_frequencies: $(TETRA_CSV)
 	@echo "Up to date: $(TETRA_CSV)"
 
-$(SEQ_CACHE): $(TETRA_CSV) $(ROOT)/scripts/build_uc_cap_sequence_cache.py $(ROOT)/defaults.yaml
+$(SEQ_CACHE): $(ROOT)/scripts/build_uc_cap_sequence_cache.py $(ROOT)/defaults.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_uc_cap_sequence_cache.py
 
 sequence_cache: $(SEQ_CACHE)
 	@echo "Up to date: $(SEQ_CACHE)"
 
 # Real file target: default ``run_uc_cap`` depends on this path (no duplicate recipe for FEAT>=1 rows).
-$(UC_CAP_BASELINE_CAP_CSV): $(SEQ_CACHE) $(TETRA_CSV) \
+$(UC_CAP_BASELINE_CAP_CSV): $(SEQ_CACHE) \
 		$(ROOT)/scripts/run_uc_cap_pipeline.py \
 		$(ROOT)/defaults.yaml \
 		$(ROOT)/helpers/list_uc_cap_feature_outputs.py
@@ -253,8 +253,10 @@ $(foreach f,$(EMBEDDING_FEATURE_INDICES),$(foreach e,$(TETRAMER_EXPERIMENT_INDIC
 
 ifeq ($(strip $(FEAT)),0)
 ifneq ($(strip $(EXPT)),)
+ifneq ($(strip $(EXPT)),0)
 fit_embeddings: $(EMBEDDINGS_SINGLE_EXPT_ALL_FEAT_OUTPUTS)
 	@echo "Up to date: fit_embeddings EXPT=$(EXPT) (all feature sets under results/embeddings/<k>/)"
+endif
 endif
 else
 ifneq ($(strip $(FEAT)),)
@@ -292,7 +294,7 @@ run_uc_cap: $(UC_CAP_BASELINE_CAP_CSV)
 endif
 
 define uc_cap_feature_rule
-$(word $(1),$(UC_CAP_FEATURE_OUTPUTS)): $(SEQ_CACHE) $(TETRA_CSV) \
+$(word $(1),$(UC_CAP_FEATURE_OUTPUTS)): $(SEQ_CACHE) \
 		$(ROOT)/scripts/run_uc_cap_pipeline.py \
 		$(ROOT)/helpers/list_uc_cap_feature_outputs.py \
 		$(ROOT)/defaults.yaml \
