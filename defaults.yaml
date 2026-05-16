@@ -138,8 +138,12 @@ run_tensors:
 train_hyenadna:
   random_seed: 0
   num_workers: 0
-  # Binary task: cancer_diagnosis or cancer_type (same label rules as fit_classifier).
+  # Task: cancer_diagnosis, cancer_type, or multitask (two heads, shared backbone).
   task: cancer_diagnosis
+  # multitask: loss = task_ratio * L_diagnosis + (1 - task_ratio) * L_type (1 = diagnosis only).
+  task_ratio: 0.5
+  # multitask: checkpoint metric from cancer_diagnosis, cancer_type, or mean of both.
+  tuning_task: mean
   # Pretrained checkpoint name under checkpoint_dir (see LongSafari/* on Hugging Face).
   model: hyenadna-small-32k-seqlen
   # Non-overlapping sequence sets per Run (each set packed to max_length tokens).
@@ -173,7 +177,7 @@ train_hyenadna:
   amp: true
   # Low-precision dtype for AMP autocast: float16 or bfloat16.
   amp_dtype: bfloat16
-  learning_rate: 1.0e-4
+  learning_rate: 1.0e-5
   # Per-parameter-group multiplier for backbone vs head when backbone_lr_mult is set (head keeps learning_rate).
   backbone_lr_mult: null
   weight_decay: 0.01
@@ -196,7 +200,7 @@ train_hyenadna:
   # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template.
   results_json: null
   # Study domain adversarial (DANN-style) head on pooled backbone features (train_hyenadna only).
-  study_adv: true
+  study_adv: false
   # Weight on study CE and GRL backward scale during the adversarial phase.
   study_adv_weight: 0.3
   # Epochs 1..N: cancer loss only (study branch inactive).
@@ -206,6 +210,8 @@ train_hyenadna:
   study_disc_warmup_epochs: 1
   study_head_hidden: 256
   study_head_dropout: 0.0
+  # Grid experiments only: retries per child subprocess after native SIGSEGV (signal 11).
+  sigsegv_retries: 2
 
 # Frozen HyenaDNA feature extraction (scripts/extract_embeddings.py).
 # Produces one consolidated CSV per feature set in paths.embeddings_dir.

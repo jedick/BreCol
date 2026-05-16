@@ -917,6 +917,31 @@ feasible on colab.
 
 """
 
+
+def _build_classification_output(
+    d_model: int,
+    n_classes: int,
+    *,
+    head_arch: str,
+    head_hidden: Optional[int],
+    head_dropout: float,
+) -> nn.Module:
+    arch = str(head_arch).strip().lower()
+    if arch == "linear":
+        return nn.Linear(d_model, int(n_classes))
+    if arch == "mlp":
+        if head_hidden is None:
+            raise ValueError("head_arch='mlp' requires head_hidden > 0")
+        hidden = int(head_hidden)
+        return nn.Sequential(
+            nn.Linear(d_model, hidden),
+            nn.GELU(),
+            nn.Dropout(float(head_dropout)),
+            nn.Linear(hidden, int(n_classes)),
+        )
+    raise ValueError(f"head_arch must be 'linear' or 'mlp'; got {head_arch!r}")
+
+
 class HyenaDNAModel(nn.Module):
 
     def __init__(self, d_model: int, n_layer: int, d_inner: int, vocab_size: int,
@@ -928,6 +953,7 @@ class HyenaDNAModel(nn.Module):
                  head_arch: str = "linear",
                  head_hidden: Optional[int] = None,
                  head_dropout: float = 0.0,
+                 multitask_class_counts: Optional[Sequence[int]] = None,
                  use_study_adv: bool = False,
                  n_study_classes: int = 0,
                  study_head_hidden: int = 256,
@@ -939,6 +965,8 @@ class HyenaDNAModel(nn.Module):
             vocab_size += pad_vocab_size_multiple - (vocab_size % pad_vocab_size_multiple)
 
         self.use_head = use_head
+        mt_counts = list(multitask_class_counts) if multitask_class_counts is not None else []
+        self.multitask_mode = bool(use_head) and len(mt_counts) >= 2
         self.use_study_adv = (
             bool(use_study_adv) and int(n_study_classes) >= 2 and bool(use_head)
         )
@@ -959,20 +987,43 @@ class HyenaDNAModel(nn.Module):
 
         # we only need a head if doing classification, otherwise we'll use the
         # hidden states as embeddings
+        self.head: Optional[SequenceDecoder] = None
+        self.pooler: Optional[SequenceDecoder] = None
+        self.task_heads: Optional[nn.ModuleList] = None
         if self.use_head:
-            head_kw: Dict[str, object] = {}
-            if head_arch.strip().lower() == "mlp":
-                if head_hidden is None:
-                    raise ValueError("head_arch='mlp' requires head_hidden > 0")
-                head_kw["mlp_hidden"] = int(head_hidden)
-                head_kw["mlp_dropout"] = float(head_dropout)
-            self.head = SequenceDecoder(
-                d_model=d_model,
-                d_output=n_classes,
-                l_output=0,
-                mode=head_pooling_mode,
-                **head_kw,
-            )
+            if self.multitask_mode:
+                self.pooler = SequenceDecoder(
+                    d_model=d_model,
+                    d_output=None,
+                    l_output=0,
+                    mode=head_pooling_mode,
+                )
+                self.task_heads = nn.ModuleList(
+                    [
+                        _build_classification_output(
+                            d_model,
+                            int(n_cls),
+                            head_arch=head_arch,
+                            head_hidden=head_hidden,
+                            head_dropout=head_dropout,
+                        )
+                        for n_cls in mt_counts
+                    ]
+                )
+            else:
+                head_kw: Dict[str, object] = {}
+                if head_arch.strip().lower() == "mlp":
+                    if head_hidden is None:
+                        raise ValueError("head_arch='mlp' requires head_hidden > 0")
+                    head_kw["mlp_hidden"] = int(head_hidden)
+                    head_kw["mlp_dropout"] = float(head_dropout)
+                self.head = SequenceDecoder(
+                    d_model=d_model,
+                    d_output=n_classes,
+                    l_output=0,
+                    mode=head_pooling_mode,
+                    **head_kw,
+                )
 
         self.study_head: Optional[nn.Module] = None
         self.grad_reverse: Optional[GradientReversal] = None
@@ -998,6 +1049,15 @@ class HyenaDNAModel(nn.Module):
     # def tie_weights(self):
     #     self.head.weight = self.backbone.embeddings.word_embeddings.weight
 
+    def _pooled_representation(self, hidden_states):
+        if self.multitask_mode:
+            if self.pooler is None:
+                raise RuntimeError("multitask_mode requires pooler.")
+            return self.pooler.pooled_representation(hidden_states)
+        if self.head is None:
+            raise RuntimeError("Single-task forward requires head.")
+        return self.head.pooled_representation(hidden_states)
+
     def forward(
         self,
         input_ids,
@@ -1014,8 +1074,17 @@ class HyenaDNAModel(nn.Module):
         if not self.use_head:
             return hidden_states
 
-        pooled = self.head.pooled_representation(hidden_states)
-        task_logits = self.head.output_transform(pooled)
+        pooled = self._pooled_representation(hidden_states)
+        if self.multitask_mode:
+            if self.task_heads is None:
+                raise RuntimeError("multitask_mode requires task_heads.")
+            task_logits: Union[torch.Tensor, List[torch.Tensor]] = [
+                head(pooled) for head in self.task_heads
+            ]
+        else:
+            if self.head is None:
+                raise RuntimeError("Single-task forward requires head.")
+            task_logits = self.head.output_transform(pooled)
 
         if not self.use_study_adv or not return_study_logits or self.study_head is None:
             return task_logits
@@ -1036,7 +1105,7 @@ class HyenaDNAModel(nn.Module):
         if not self.use_study_adv or self.study_head is None:
             raise RuntimeError("eval_study_logits requires use_study_adv and study_head.")
         hidden_states = self.backbone(input_ids, position_ids=position_ids)
-        pooled = self.head.pooled_representation(hidden_states)
+        pooled = self._pooled_representation(hidden_states)
         return self.study_head(pooled)
 
 """# Data pipeline

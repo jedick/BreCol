@@ -62,31 +62,83 @@ extract_embeddings:
 train_hyenadna:
   results_json_template: results/hyenadna/{task_abbrv}_{name}_{max_length/1024}k_s{seed}.json
   experiments:
-    # Timings to run 3 seeds over 10 epochs for 5 sets and 2048 max_length
-    #   (with batch_size=20 uses ca. 15000 MiB GPU memory):
-    #   - about 26 minutes for cd_* experiments
-    #   - about 13 minutes for ct_* experiments
-    # Estimated total time for 4 experiments with 3 seeds and 20 epochs:
-    #   4 * (26 + 13) * 3/3 * 20/10 = 312 minutes (5.2 hours)
+    # With 5 sets and 2048 max_length, batch_size=20 uses ca. 15 GB GPU memory
+    # Timings to run 3 seeds over 10 epochs:
+    #   - about 26 minutes for cancer_diagnosis
+    #   - about 13 minutes for cancer_type
+    #   - about 22 minutes for multitask
+    # Estimated total time for 10 multitask experiments with 3 seeds and 20 epochs:
+    #   10 * (22) * 3/3 * 20/10 = 440 minutes (7.3 hours)
     - name: best_recipe  # 1
       overrides:
-        task: "cancer_diagnosis,cancer_type"
+        task: "multitask"
         random_seed: "0,1,2"
-    - name: no_study_balanced  # 2
+    - name: medium  # 2  (with batch_size = 10 this counts as 2 experiments)
       overrides:
-        task: "cancer_diagnosis,cancer_type"
+        task: "multitask"
+        random_seed: "0,1,2"
+        max_length: 4096
+        batch_size: 10
+    - name: no_study_balanced  # 3
+      overrides:
+        task: "multitask"
         random_seed: "0,1,2"
         train_sampler: random
-    - name: high_lr  # 3
+    - name: class_balanced  # 4
       overrides:
-        task: "cancer_diagnosis,cancer_type"
+        task: "multitask"
         random_seed: "0,1,2"
-        learning_rate: 5.0e-4
-    - name: no_dann  # 4
+        class_weight: balanced
+    - name: high_lr  # 5
       overrides:
-        task: "cancer_diagnosis,cancer_type"
+        task: "multitask"
         random_seed: "0,1,2"
-        study_adv: false
+        learning_rate: 1.0e-4
+    - name: with_dann  # 6
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        study_adv: true
+    - name: head_mlp  # 7
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        head_arch: mlp
+    - name: head_mlp_dropout  # 8
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        head_arch: mlp
+        head_dropout: 0.1
+    - name: head_mlp_freeze  # 9
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        head_arch: mlp
+        freeze_backbone_epochs: 5
+    - name: 30epochs  # 10
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        epochs: 30
+    - name: label_smoothing  # 11
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        label_smoothing: 0.1
+    - name: mlp_tr0.6  # 12
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        head_arch: mlp
+        task_ratio: 0.6
+    - name: mlp_tr0.7_frz5  # 13
+      overrides:
+        task: "multitask"
+        random_seed: "0,1,2"
+        head_arch: mlp
+        task_ratio: 0.7
+        freeze_backbone_epochs: 5
 #    - name: max_length
 #      overrides:
 #        task: "cancer_diagnosis,cancer_type"

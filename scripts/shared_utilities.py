@@ -5,6 +5,7 @@ Public API
 ----------
 build_run_table()             Run + sample_label + study_name + cancer_type + split
 build_run_task_table(task)    extends the above with a task_label column
+build_multitask_run_table()   full run table with cd_task_label and ct_task_label columns
 require_binary_classes()      validates a label array has exactly two classes
 binary_auroc_from_scores()  AUROC from positive-class probability scores
 
@@ -28,7 +29,7 @@ from typing import Dict, List, Literal, Mapping, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yaml
-from sklearn.metrics import auroc_score
+from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
 SplitName = Literal["train", "val", "test", "holdout"]
@@ -305,6 +306,23 @@ def build_run_task_table(task: str, *, config_path: Optional[Path] = None) -> pd
     return _apply_task_labels(build_run_table(config_path=config_path), task)
 
 
+def build_multitask_run_table(*, config_path: Optional[Path] = None) -> pd.DataFrame:
+    """Return all runs with canonical splits and two binary label columns.
+
+    Columns: Run, sample_label, study_name, cancer_type, split, cd_task_label,
+    ct_task_label. ``cd_task_label`` is cancer vs healthy for every row.
+    ``ct_task_label`` is the cancer sample_label for cancer rows and empty for healthy.
+    """
+    out = build_run_table(config_path=config_path)
+    is_cancer = out["sample_label"].isin(CANCER_LABELS)
+    out = out.copy()
+    out["cd_task_label"] = np.where(is_cancer, "cancer", "healthy")
+    out["ct_task_label"] = np.where(
+        is_cancer, out["sample_label"].astype(str), ""
+    )
+    return out
+
+
 def require_binary_classes(y: np.ndarray, *, split_name: str, task: str) -> None:
     """Raise SystemExit unless the label array contains exactly two distinct classes."""
     classes = np.unique(np.asarray(y, dtype=object))
@@ -315,15 +333,31 @@ def require_binary_classes(y: np.ndarray, *, split_name: str, task: str) -> None
         )
 
 
-def binary_auroc_from_scores(y_true_obj: np.ndarray, y_score: np.ndarray) -> float:
-    """Compute binary AUROC from positive-class scores; return NaN if undefined."""
+def binary_auroc_from_scores(
+    y_true_obj: np.ndarray,
+    y_score: np.ndarray,
+    *,
+    positive_label: Optional[str] = None,
+) -> float:
+    """Compute binary AUROC from scores for ``positive_label``.
+
+    ``y_score`` must be the predicted probability (or score) for ``positive_label``.
+    When ``positive_label`` is omitted, the lexicographically second class among
+  ``y_true`` is used (legacy behaviour for single-task cancer_type with
+    colorectal scores).
+    """
     y_true_obj = np.asarray(y_true_obj, dtype=object)
     y_score = np.asarray(y_score, dtype=np.float64).ravel()
     classes = np.unique(y_true_obj)
     if classes.size != 2:
         return float("nan")
-    pos_label = classes[1]
+    if positive_label is None:
+        pos_label = classes[1]
+    else:
+        pos_label = str(positive_label)
+        if pos_label not in classes:
+            return float("nan")
     try:
-        return float(auroc_score(y_true_obj == pos_label, y_score))
+        return float(roc_auc_score(y_true_obj == pos_label, y_score))
     except ValueError:
         return float("nan")

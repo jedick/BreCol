@@ -14,6 +14,8 @@ import re
 import os
 import json
 import subprocess
+from typing import Optional, Sequence
+
 import torch
 from transformers import PreTrainedModel
 from .standalone_hyenadna import HyenaDNAModel
@@ -96,6 +98,7 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
                         head_arch="linear",
                         head_hidden=None,
                         head_dropout=0.0,
+                        multitask_class_counts: Optional[Sequence[int]] = None,
                         use_study_adv=False,
                         n_study_classes=0,
                         study_head_hidden=256,
@@ -124,6 +127,7 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
             head_arch=head_arch,
             head_hidden=head_hidden,
             head_dropout=head_dropout,
+            multitask_class_counts=multitask_class_counts,
             use_study_adv=use_study_adv,
             n_study_classes=n_study_classes,
             study_head_hidden=study_head_hidden,

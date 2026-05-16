@@ -8,7 +8,13 @@ run-level AUROC on the test and holdout splits (one score per Run).
 
 Training logs (`*_training.json`) record validation AUROC, validation CE loss,
 optional per-study AUROC on validation/holdout, and score moments by label. Checkpoints are
-selected by ``train_hyenadna.tuning_metric`` (default ``auroc``).
+selected by ``train_hyenadna.tuning_metric`` (default ``auroc``); for ``task: multitask``,
+``tuning_task`` chooses whether to use diagnosis AUROC, type AUROC (cancer runs only), or
+the mean of both.
+
+Multitask mode trains two binary heads on a shared pooled backbone; loss is
+``task_ratio * L_diagnosis + (1 - task_ratio) * L_type``. Results JSON nests metrics under
+``cancer_diagnosis`` and ``cancer_type``; prediction CSVs use ``cd_*`` and ``ct_*`` columns.
 
 When ``study_adv`` is true, the model adds a study (domain) classifier with optional
 ``study_adv_delay_epochs`` (task-only), ``study_discriminator_warmup`` plus
@@ -19,42 +25,62 @@ only; unknown studies use ``ignore_index``).
 
 Config: defaults.yaml (train_hyenadna + run_tensors + paths) with optional
 experiments.yaml train_hyenadna overrides (--expt).
+
+Intermittent ``Signals.SIGSEGV`` during grid runs usually indicates a GPU driver or
+PyTorch CUDA native crash rather than bad Python tensor logic. We use
+``PYTHONFAULTHANDLER=1`` for child processes to get more info.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
+import os
+import signal
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, ContextManager, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, ContextManager, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
 from hyenadna import HyenaDNAPreTrainedModel
-from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
-from shared_utilities import (
-    binary_auroc_from_scores,
-    build_run_task_table,
-)
+from shared_utilities import binary_auroc_from_scores
 from hyenadna_fasta_data import (
     merge_train_hyenadna_config,
     model_max_length,
     resolve_repo_path,
+)
+from hyenadna_multitask import (
+    MULTITASK_TASK,
+    RunRecord,
+    ScoreContext,
+    apply_task_training_overrides,
+    build_multitask_records,
+    build_single_task_records,
+    epoch_progress_fields,
+    eval_splits,
+    is_multitask,
+    multitask_training_loss_sum_and_count,
+    prepare_multitask_config,
+    prepare_single_task_config,
+    score_entries,
+    tuning_score_from_heads,
+    tuning_score_single,
+    write_run_artifacts,
 )
 
 HEAD_MODES = ("last", "first", "pool", "sum")
@@ -63,7 +89,62 @@ HALF_BATCH_SIZE = 0.5
 SET_SPLIT_INDEX = 5
 STUDY_IGNORE_INDEX = -100
 
-_HYENADNA_TASK_GRID_VALUES = frozenset({"cancer_diagnosis", "cancer_type"})
+_HYENADNA_TASK_GRID_VALUES = frozenset(
+    {"cancer_diagnosis", "cancer_type", "multitask"}
+)
+
+
+def _grid_child_subprocess_env() -> Dict[str, str]:
+    """Copy of the environment for ``--child-run`` workers; enables faulthandler (see module doc)."""
+    env = dict(os.environ)
+    env["PYTHONFAULTHANDLER"] = "1"
+    return env
+
+
+def _clamp_sigsegv_retries(raw: object) -> int:
+    """Grid SIGSEGV retries: 0..8 extra attempts after the first child failure."""
+    try:
+        n = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(int(n), 8))
+
+
+def _run_grid_child_check(
+    cmd: Sequence[str],
+    repo_root: Path,
+    *,
+    sigsegv_retries: object,
+) -> None:
+    retries = _clamp_sigsegv_retries(sigsegv_retries)
+    max_attempts = 1 + retries
+    env = _grid_child_subprocess_env()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            subprocess.run(list(cmd), check=True, cwd=str(repo_root), env=env)
+            return
+        except subprocess.CalledProcessError as exc:
+            sigsegv = getattr(signal, "SIGSEGV", None)
+            is_sigsegv = sigsegv is not None and exc.returncode == -int(sigsegv)
+            if is_sigsegv and attempt < max_attempts:
+                print(
+                    "train_hyenadna: grid child died with SIGSEGV "
+                    f"(attempt {attempt}/{max_attempts}); retrying after short delay.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                time.sleep(min(float(attempt), 5.0))
+                continue
+            if is_sigsegv:
+                raise SystemExit(
+                    "HyenaDNA training subprocess crashed with SIGSEGV (signal 11). "
+                    "This normally comes from the CUDA stack or GPU driver, not from "
+                    "Python exceptions—reruns often succeed. Next steps: run once with "
+                    "CUDA_LAUNCH_BLOCKING=1; confirm train_hyenadna.num_workers is 0; "
+                    "upgrade driver/PyTorch; or raise "
+                    "train_hyenadna.sigsegv_retries in defaults.yaml (already retried)."
+                ) from exc
+            raise
 
 
 def _task_abbrv(task: str) -> str:
@@ -72,8 +153,11 @@ def _task_abbrv(task: str) -> str:
         return "cd"
     if t == "cancer_type":
         return "ct"
+    if t == MULTITASK_TASK:
+        return "mt"
     raise SystemExit(
-        f"Unknown task {task!r} for results path (expected cancer_diagnosis or cancer_type)."
+        f"Unknown task {task!r} for results path "
+        "(expected cancer_diagnosis, cancer_type, or multitask)."
     )
 
 
@@ -93,18 +177,6 @@ def _resolve_study_adv_phase(
     if wu > 0 and epoch_1based <= int(delay_epochs) + wu:
         return "warmup"
     return "dann"
-
-
-@dataclass(frozen=True)
-class RunRecord:
-    run: str
-    split: str
-    label: int
-    task_label: str
-    study_name: str
-    study_id: int
-    n_sets: int
-    file: Path
 
 
 def _results_json_out_path(
@@ -131,58 +203,6 @@ def _results_json_out_path(
     return p if p.is_absolute() else repo_root / p
 
 
-def _build_records(
-    run_task_df,
-    cache_root: Path,
-    *,
-    label_encoder: LabelEncoder,
-    requested_num_sets: int,
-    study_name_to_id: Optional[Mapping[str, int]] = None,
-) -> Tuple[List[RunRecord], int, Tuple[str, ...]]:
-    rows = (
-        run_task_df.loc[:, ["Run", "split", "task_label", "study_name"]]
-        .drop_duplicates(subset=["Run"])
-        .reset_index(drop=True)
-    )
-    out: List[RunRecord] = []
-    missing_runs: List[str] = []
-
-    for _, row in rows.iterrows():
-        run = str(row["Run"]).strip()
-        pt_path = cache_root / f"{run}.pt"
-        if not pt_path.is_file():
-            missing_runs.append(run)
-            continue
-        try:
-            blob = torch.load(pt_path, map_location="cpu", weights_only=False)
-        except TypeError:
-            blob = torch.load(pt_path, map_location="cpu")
-        n_sets = int(blob.get("n_sets", 0))
-        if n_sets <= 0:
-            continue
-        study_name = str(row["study_name"]).strip()
-        if study_name_to_id is None:
-            study_id = 0
-        else:
-            study_id = int(study_name_to_id.get(study_name, -1))
-        out.append(
-            RunRecord(
-                run=run,
-                split=str(row["split"]),
-                label=int(label_encoder.transform([str(row["task_label"])])[0]),
-                task_label=str(row["task_label"]),
-                study_name=study_name,
-                study_id=study_id,
-                n_sets=min(n_sets, requested_num_sets),
-                file=pt_path,
-            )
-        )
-
-    n_skipped_missing = len(missing_runs)
-    examples = tuple(sorted(missing_runs)[:5])
-    return out, n_skipped_missing, examples
-
-
 class RunTensorDataset(Dataset):
     def __init__(
         self,
@@ -192,12 +212,14 @@ class RunTensorDataset(Dataset):
         requested_max_len: int,
         cache_num_sets: int,
         cache_max_len: int,
+        multitask: bool = False,
     ):
         self.entries = list(entries)
         self.requested_num_sets = requested_num_sets
         self.requested_max_len = requested_max_len
         self.cache_num_sets = cache_num_sets
         self.cache_max_len = cache_max_len
+        self.multitask = bool(multitask)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -218,7 +240,7 @@ class RunTensorDataset(Dataset):
             )
         input_ids = blob["input_ids"][: self.requested_num_sets, start:self.cache_max_len]
         attention_mask = blob["attention_mask"][: self.requested_num_sets, start:self.cache_max_len]
-        return {
+        item: Dict[str, object] = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "n_sets": n_sets,
@@ -226,6 +248,9 @@ class RunTensorDataset(Dataset):
             "study_id": int(e.study_id),
             "run": e.run,
         }
+        if self.multitask:
+            item["ct_label"] = int(e.ct_label)
+        return item
 
 
 def collate_batch(batch: List[Dict[str, object]]) -> Dict[str, object]:
@@ -235,7 +260,7 @@ def collate_batch(batch: List[Dict[str, object]]) -> Dict[str, object]:
     labels = torch.tensor([b["label"] for b in batch], dtype=torch.long)
     study_ids = torch.tensor([int(b["study_id"]) for b in batch], dtype=torch.long)
     runs = [str(b["run"]) for b in batch]
-    return {
+    out: Dict[str, object] = {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "n_sets": n_sets,
@@ -243,6 +268,11 @@ def collate_batch(batch: List[Dict[str, object]]) -> Dict[str, object]:
         "study_id": study_ids,
         "run": runs,
     }
+    if "ct_label" in batch[0]:
+        out["ct_label"] = torch.tensor(
+            [int(b["ct_label"]) for b in batch], dtype=torch.long
+        )
+    return out
 
 
 def training_loss(
@@ -281,7 +311,24 @@ def training_loss_sum_and_count(
     ce_weight: Optional[torch.Tensor] = None,
     label_smoothing: float = 0.0,
     study_train_kw: Optional[Mapping[str, object]] = None,
+    ce_weight_ct: Optional[torch.Tensor] = None,
+    task_ratio: float = 1.0,
 ) -> Tuple[torch.Tensor, int, Optional[Dict[str, float]]]:
+    if getattr(model, "multitask_mode", False):
+        return multitask_training_loss_sum_and_count(
+            model,
+            batch,
+            device,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+            ce_weight_cd=ce_weight,
+            ce_weight_ct=ce_weight_ct,
+            label_smoothing=label_smoothing,
+            study_train_kw=study_train_kw,
+            task_ratio=float(task_ratio),
+            study_ignore_index=STUDY_IGNORE_INDEX,
+        )
+
     input_ids = batch["input_ids"].to(device)
     bsz, n_set, seq_len = input_ids.shape
     flat_in = input_ids.view(bsz * n_set, seq_len)
@@ -371,7 +418,7 @@ def _slice_batch_sets(
     batch_attention_mask = batch["attention_mask"]
     batch_n_sets = batch["n_sets"]
     sub_n_sets = torch.clamp(batch_n_sets - start, min=0, max=max(end - start, 0))
-    return {
+    sub: Dict[str, object] = {
         "input_ids": batch_input_ids[:, start:end, :],
         "attention_mask": batch_attention_mask[:, start:end, :],
         "n_sets": sub_n_sets,
@@ -379,6 +426,9 @@ def _slice_batch_sets(
         "study_id": batch["study_id"],
         "run": batch["run"],
     }
+    if "ct_label" in batch:
+        sub["ct_label"] = batch["ct_label"]
+    return sub
 
 
 def _count_valid_sets(batch: Mapping[str, object]) -> int:
@@ -434,112 +484,6 @@ def _amp_autocast(
     return nullcontext()
 
 
-def run_level_scores(
-    model: torch.nn.Module,
-    entries: Sequence[RunRecord],
-    device: torch.device,
-    *,
-    aggregate: str,
-    pos_class_index: int,
-    requested_num_sets: int,
-    requested_max_len: int,
-    cache_num_sets: int,
-    cache_max_len: int,
-    amp_enabled: bool,
-    amp_dtype: torch.dtype,
-) -> Tuple[np.ndarray, np.ndarray]:
-    model.eval()
-    y_true: List[str] = []
-    y_score: List[float] = []
-    with torch.no_grad():
-        for e in entries:
-            path = e.file
-            try:
-                blob = torch.load(path, map_location="cpu", weights_only=False)
-            except TypeError:
-                blob = torch.load(path, map_location="cpu")
-            start = cache_max_len - requested_max_len
-            if start < 0:
-                raise SystemExit(
-                    "train_hyenadna.max_length exceeds run_tensors.max_length. "
-                    "Increase run_tensors.max_length and rebuild run tensors."
-                )
-            x = blob["input_ids"][:requested_num_sets, start:cache_max_len].to(device)
-            nv = min(int(blob["n_sets"]), requested_num_sets, cache_num_sets)
-            if nv <= 0:
-                continue
-            with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
-                logits = model(x[:nv])
-            if aggregate == "mean":
-                agg = logits.mean(dim=0)
-            elif aggregate == "max":
-                agg = logits.max(dim=0)[0]
-            else:
-                raise SystemExit(f"Unknown run_logits_aggregate: {aggregate!r}")
-            prob = torch.softmax(agg, dim=-1)[pos_class_index].item()
-            y_true.append(e.task_label)
-            y_score.append(float(prob))
-    return np.asarray(y_true, dtype=object), np.asarray(y_score, dtype=np.float64)
-
-
-def run_level_prediction_rows(
-    entries: Sequence[RunRecord],
-    y_score: np.ndarray,
-    *,
-    negative_label: str,
-    positive_label: str,
-) -> List[Dict[str, object]]:
-    rows: List[Dict[str, object]] = []
-    if len(entries) != int(y_score.shape[0]):
-        raise SystemExit(
-            "Prediction row count mismatch while writing HyenaDNA split predictions."
-        )
-    for e, score in zip(entries, y_score):
-        pred = positive_label if float(score) >= 0.5 else negative_label
-        rows.append(
-            {
-                "Run": str(e.run),
-                "task_label": str(e.task_label),
-                "predicted_label": str(pred),
-                "positive_score": float(score),
-            }
-        )
-    return rows
-
-
-def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["Run", "task_label", "predicted_label", "positive_score"],
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(
-                {
-                    "Run": str(row["Run"]),
-                    "task_label": str(row["task_label"]),
-                    "predicted_label": str(row["predicted_label"]),
-                    "positive_score": f"{float(row['positive_score']):.10f}",
-                }
-            )
-
-
-def run_level_weighted_f1_from_scores(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    *,
-    negative_label: str,
-    positive_label: str,
-) -> float:
-    if y_true.size == 0:
-        return float("nan")
-    y_pred = np.where(y_score >= 0.5, positive_label, negative_label)
-    return float(f1_score(y_true, y_pred, average="weighted"))
-
-
 def _study_sampler_weights(entries: Sequence[RunRecord]) -> torch.Tensor:
     counts: Dict[str, int] = defaultdict(int)
     for e in entries:
@@ -554,20 +498,26 @@ def _compute_ce_weight_tensor(
     mode: str,
     n_classes: int,
     device: torch.device,
+    label_getter: Optional[Callable[[RunRecord], int]] = None,
 ) -> Optional[torch.Tensor]:
     m = str(mode or "none").strip().lower()
     if m in ("none", "null", ""):
         return None
     if m in ("balanced", "balanced_sqrt"):
-        y = np.array([e.label for e in train_entries], dtype=np.int64)
-        classes = np.arange(n_classes, dtype=np.int64)
-        cw = compute_class_weight(class_weight="balanced", classes=classes, y=y)
+        get_label = label_getter or (lambda e: e.label)
+        y = np.array([int(get_label(e)) for e in train_entries], dtype=np.int64)
+        if y.size == 0:
+            return None
+        present = np.unique(y)
+        if present.size < 2:
+            return None
+        cw = compute_class_weight(class_weight="balanced", classes=present, y=y)
         if m == "balanced_sqrt":
             cw = np.sqrt(cw)
             cw = cw / np.mean(cw)
-        t = torch.zeros(n_classes, dtype=torch.float32, device=device)
-        for i in range(n_classes):
-            t[i] = float(cw[i])
+        t = torch.ones(n_classes, dtype=torch.float32, device=device)
+        for cls, w in zip(present, cw):
+            t[int(cls)] = float(w)
         return t
     raise SystemExit(
         f"Unknown class_weight {mode!r} (use none, balanced, or balanced_sqrt)."
@@ -583,6 +533,8 @@ def _eval_mean_ce_loss(
     amp_dtype: torch.dtype,
     ce_weight: Optional[torch.Tensor],
     label_smoothing: float,
+    ce_weight_ct: Optional[torch.Tensor] = None,
+    task_ratio: float = 1.0,
 ) -> float:
     model.eval()
     total = 0.0
@@ -598,6 +550,8 @@ def _eval_mean_ce_loss(
                 ce_weight=ce_weight,
                 label_smoothing=label_smoothing,
                 study_train_kw=None,
+                ce_weight_ct=ce_weight_ct,
+                task_ratio=task_ratio,
             )
             total += float(loss_sum.item())
             count += int(n)
@@ -650,6 +604,20 @@ def _eval_val_study_branch_metrics(
     return ce_sum / n_labeled, correct / float(n_labeled), n_labeled
 
 
+def _classification_head_params(model: torch.nn.Module) -> List[torch.nn.Parameter]:
+    if getattr(model, "multitask_mode", False):
+        params: List[torch.nn.Parameter] = []
+        if model.pooler is not None:
+            params.extend([p for p in model.pooler.parameters() if p.requires_grad])
+        if model.task_heads is not None:
+            for head in model.task_heads:
+                params.extend([p for p in head.parameters() if p.requires_grad])
+        return params
+    if model.head is None:
+        return []
+    return [p for p in model.head.parameters() if p.requires_grad]
+
+
 def _make_optimizer(
     model: torch.nn.Module,
     *,
@@ -658,7 +626,7 @@ def _make_optimizer(
     backbone_lr_mult: Optional[float],
 ) -> torch.optim.Optimizer:
     backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
-    head_params = [p for p in model.head.parameters() if p.requires_grad]
+    head_params = _classification_head_params(model)
     if getattr(model, "study_head", None) is not None:
         head_params.extend([p for p in model.study_head.parameters() if p.requires_grad])
     groups: List[Dict[str, object]] = []
@@ -675,7 +643,7 @@ def _make_optimizer(
 def _set_backbone_requires_grad(model: torch.nn.Module, trainable: bool) -> None:
     for p in model.backbone.parameters():
         p.requires_grad = trainable
-    for p in model.head.parameters():
+    for p in _classification_head_params(model):
         p.requires_grad = True
     if getattr(model, "study_head", None) is not None:
         for p in model.study_head.parameters():
@@ -712,6 +680,8 @@ def _per_study_auroc_dict(
     entries: Sequence[RunRecord],
     y_true: np.ndarray,
     y_score: np.ndarray,
+    *,
+    positive_label: Optional[str] = None,
 ) -> Dict[str, Optional[float]]:
     by_study: Dict[str, List[Tuple[object, float]]] = defaultdict(list)
     for e, yt, ys in zip(entries, y_true, y_score):
@@ -720,7 +690,7 @@ def _per_study_auroc_dict(
     for study, pairs in by_study.items():
         yt = np.array([p[0] for p in pairs], dtype=object)
         ys = np.array([p[1] for p in pairs], dtype=np.float64)
-        auroc = binary_auroc_from_scores(yt, ys)
+        auroc = binary_auroc_from_scores(yt, ys, positive_label=positive_label)
         out[study] = float(auroc) if auroc == auroc else None
     return out
 
@@ -822,6 +792,8 @@ def train_epoch(
     ce_weight: Optional[torch.Tensor],
     label_smoothing: float,
     study_train_kw: Optional[Mapping[str, object]] = None,
+    ce_weight_ct: Optional[torch.Tensor] = None,
+    task_ratio: float = 1.0,
 ) -> Tuple[float, Dict[str, float]]:
     model.train()
     total = 0.0
@@ -848,6 +820,8 @@ def train_epoch(
                     ce_weight=ce_weight,
                     label_smoothing=label_smoothing,
                     study_train_kw=study_train_kw,
+                    ce_weight_ct=ce_weight_ct,
+                    task_ratio=task_ratio,
                 )
                 scaled_loss_1 = loss_sum_1 / float(denom)
                 if scaler is not None:
@@ -869,6 +843,8 @@ def train_epoch(
                     ce_weight=ce_weight,
                     label_smoothing=label_smoothing,
                     study_train_kw=study_train_kw,
+                    ce_weight_ct=ce_weight_ct,
+                    task_ratio=task_ratio,
                 )
                 scaled_loss_2 = loss_sum_2 / float(denom)
                 if scaler is not None:
@@ -892,6 +868,8 @@ def train_epoch(
                 ce_weight=ce_weight,
                 label_smoothing=label_smoothing,
                 study_train_kw=study_train_kw,
+                ce_weight_ct=ce_weight_ct,
+                task_ratio=task_ratio,
             )
             if denom <= 0:
                 raise SystemExit("Training batch has zero valid sets after masking.")
@@ -995,8 +973,8 @@ def _parse_task_grid(raw: object) -> Optional[List[str]]:
         bad = [p for p in parts if p not in _HYENADNA_TASK_GRID_VALUES]
         if bad:
             raise SystemExit(
-                "train_hyenadna task grid must list only cancer_diagnosis and/or "
-                f"cancer_type; unknown value(s): {bad!r}."
+                "train_hyenadna task grid must list only cancer_diagnosis, "
+                f"cancer_type, and/or multitask; unknown value(s): {bad!r}."
             )
         return parts
     return None
@@ -1034,8 +1012,27 @@ def _write_results_json(
     best_tuning_score: float,
     best_val_f1_weighted: float,
     best_val_auroc: float,
+    metrics: Optional[Mapping[str, Any]] = None,
+    tuning_extra: Optional[Mapping[str, Any]] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if metrics is None:
+        metrics = {
+            "test": {"auroc": float(test_auroc) if test_auroc == test_auroc else None},
+            "holdout": {
+                "auroc": float(holdout_auroc) if holdout_auroc == holdout_auroc else None
+            },
+        }
+    tuning_block: Dict[str, Any] = {
+        "split": "validation",
+        "metric": str(tuning_metric),
+        "score": _float_or_none(float(best_tuning_score)),
+        "best_epoch": int(best_epoch),
+        "val_f1_weighted_at_best": _float_or_none(float(best_val_f1_weighted)),
+        "val_auroc_at_best": _float_or_none(float(best_val_auroc)),
+    }
+    if tuning_extra:
+        tuning_block.update(dict(tuning_extra))
     payload = {
         "script": Path(__file__).name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1043,18 +1040,8 @@ def _write_results_json(
         "data": {
             "cache": dict(cache_info),
         },
-        "tuning": {
-            "split": "validation",
-            "metric": str(tuning_metric),
-            "score": _float_or_none(float(best_tuning_score)),
-            "best_epoch": int(best_epoch),
-            "val_f1_weighted_at_best": _float_or_none(float(best_val_f1_weighted)),
-            "val_auroc_at_best": _float_or_none(float(best_val_auroc)),
-        },
-        "metrics": {
-            "test": {"auroc": float(test_auroc) if test_auroc == test_auroc else None},
-            "holdout": {"auroc": float(holdout_auroc) if holdout_auroc == holdout_auroc else None},
-        },
+        "tuning": tuning_block,
+        "metrics": dict(metrics),
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -1215,7 +1202,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             f"max_length={max_length} -> {out_path}",
                             flush=True,
                         )
-                        subprocess.run(cmd, check=True, cwd=str(repo_root))
+                        _run_grid_child_check(
+                            cmd,
+                            repo_root,
+                            sigsegv_retries=merged.get("sigsegv_retries"),
+                        )
                         completed += 1
             print(
                 f"Finished EXPT={expt} grid: launched={completed}, skipped_existing={skipped}, total={total}.",
@@ -1243,6 +1234,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cache_min_seqs = int(run_tensors_cfg.get("min_seqs", 0))
 
     task = str(merged["task"]).strip()
+    if task not in _HYENADNA_TASK_GRID_VALUES:
+        raise SystemExit(
+            f"Unknown train_hyenadna.task {task!r} "
+            "(use cancer_diagnosis, cancer_type, or multitask)."
+        )
     model_name = str(merged["model"]).strip()
     num_sets = int(merged["num_sets"])
     raw_batch_size = merged["batch_size"]
@@ -1277,22 +1273,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "to split each run into sets 0-4 and 5-9."
         )
 
-    run_task_df = build_run_task_table(task, config_path=defaults_path)
-    enc = LabelEncoder()
-    y_train = run_task_df.loc[run_task_df["split"] == "train", "task_label"].to_numpy(
-        dtype=object
-    )
-    if y_train.size == 0:
-        raise SystemExit("No training runs found after shared split assignment.")
-    enc.fit(y_train)
-    class_names = [str(x) for x in enc.classes_.tolist()]
-    if len(class_names) < 2:
-        raise SystemExit("HyenaDNA training expects at least 2 task classes.")
+    multitask = is_multitask(task)
+    ce_weight_ct: Optional[torch.Tensor] = None
+    enc_ct: Optional[LabelEncoder] = None
 
-    neg_class_index = 0
-    pos_class_index = 1
-    neg_label = class_names[neg_class_index]
-    pos_label = class_names[pos_class_index]
+    if multitask:
+        run_task_df, enc_cd, enc_ct, task_cfg = prepare_multitask_config(defaults_path)
+        task_cfg = apply_task_training_overrides(task_cfg, merged)
+    else:
+        run_task_df, enc_cd, task_cfg = prepare_single_task_config(task, defaults_path)
+        task_cfg = apply_task_training_overrides(task_cfg, merged)
+
+    class_names = list(task_cfg.class_names)
+    primary_head = task_cfg.heads[0] if not multitask else task_cfg.heads[0]
+    neg_label = primary_head.neg_label
+    pos_label = primary_head.pos_label
+    pos_class_index = primary_head.pos_class_index
 
     study_adv_enabled = bool(merged.get("study_adv", False))
     study_name_to_id: Optional[Dict[str, int]] = None
@@ -1306,13 +1302,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
         study_name_to_id = {name: i for i, name in enumerate(uniq_studies)}
 
-    all_records, n_skipped_missing_cache, missing_cache_examples = _build_records(
-        run_task_df,
-        run_tensors_root,
-        label_encoder=enc,
-        requested_num_sets=num_sets,
-        study_name_to_id=study_name_to_id,
-    )
+    if multitask:
+        assert enc_ct is not None
+        all_records, n_skipped_missing_cache, missing_cache_examples = build_multitask_records(
+            run_task_df,
+            run_tensors_root,
+            cd_encoder=enc_cd,
+            ct_encoder=enc_ct,
+            requested_num_sets=num_sets,
+            study_name_to_id=study_name_to_id,
+        )
+    else:
+        all_records, n_skipped_missing_cache, missing_cache_examples = build_single_task_records(
+            run_task_df,
+            run_tensors_root,
+            label_encoder=enc_cd,
+            requested_num_sets=num_sets,
+            study_name_to_id=study_name_to_id,
+        )
     if n_skipped_missing_cache:
         ex = ", ".join(missing_cache_examples)
         print(
@@ -1372,9 +1379,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"\nExperiment: EXPT={expt}", flush=True)
     else:
         print("\nExperiment: EXPT=0 (defaults.yaml config)", flush=True)
+    extra = (
+        f"task_ratio={task_cfg.task_ratio} tuning_task={task_cfg.tuning_task} | "
+        if multitask
+        else f"positive_class={pos_label!r} (index {pos_class_index}) | "
+    )
     print(
         f"\nHyenaDNA train | task={task} model={model_name} | "
-        f"positive_class={pos_label!r} (index {pos_class_index}) | "
+        f"{extra}"
         f"precision={'amp(' + amp_dtype_name + ')' if amp_enabled else 'fp32'} | "
         f"study_adv={'on' if study_adv_enabled else 'off'}",
         flush=True,
@@ -1389,12 +1401,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     train_sampler = str(merged.get("train_sampler") or "random").strip().lower()
     tuning_metric = str(merged.get("tuning_metric") or "auroc").strip()
+    class_weight_mode = str(merged.get("class_weight") or "none")
     ce_weight = _compute_ce_weight_tensor(
         train_entries,
-        mode=str(merged.get("class_weight") or "none"),
+        mode=class_weight_mode,
         n_classes=len(class_names),
         device=device,
     )
+    if multitask:
+        ct_train_entries = [e for e in train_entries if e.is_cancer]
+        ce_weight_ct = _compute_ce_weight_tensor(
+            ct_train_entries,
+            mode=class_weight_mode,
+            n_classes=len(task_cfg.ct_class_names),
+            device=device,
+            label_getter=lambda e: e.ct_label,
+        )
     freeze_full = bool(merged.get("freeze_backbone"))
     transition_n = int(merged.get("freeze_backbone_epochs") or 0)
     head_arch = str(merged.get("head_arch") or "linear").strip().lower()
@@ -1408,6 +1430,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         requested_max_len=max_len,
         cache_num_sets=cache_num_sets,
         cache_max_len=cache_max_len,
+        multitask=multitask,
     )
     sampler: Optional[WeightedRandomSampler] = None
     shuffle = True
@@ -1439,6 +1462,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         requested_max_len=max_len,
         cache_num_sets=cache_num_sets,
         cache_max_len=cache_max_len,
+        multitask=multitask,
     )
     val_loader = DataLoader(
         val_ds,
@@ -1453,22 +1477,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     n_study_classes = len(study_name_to_id) if study_name_to_id is not None else 0
     study_head_hidden = int(merged.get("study_head_hidden") or 256)
     study_head_dropout = float(merged.get("study_head_dropout") or 0.0)
+    model_kw: Dict[str, object] = {
+        "download": bool(merged["download_pretrained"]),
+        "config": None,
+        "device": str(device),
+        "use_head": True,
+        "head_pooling_mode": head_mode,
+        "head_arch": head_arch,
+        "head_hidden": head_hidden if head_arch == "mlp" else None,
+        "head_dropout": head_dropout,
+        "use_study_adv": study_adv_enabled,
+        "n_study_classes": n_study_classes,
+        "study_head_hidden": study_head_hidden,
+        "study_head_dropout": study_head_dropout,
+    }
+    if multitask:
+        model_kw["multitask_class_counts"] = [2, 2]
+    else:
+        model_kw["n_classes"] = len(class_names)
     model = HyenaDNAPreTrainedModel.from_pretrained(
         str(ckpt_dir),
         model_name,
-        download=bool(merged["download_pretrained"]),
-        config=None,
-        device=str(device),
-        use_head=True,
-        n_classes=len(class_names),
-        head_pooling_mode=head_mode,
-        head_arch=head_arch,
-        head_hidden=head_hidden if head_arch == "mlp" else None,
-        head_dropout=head_dropout,
-        use_study_adv=study_adv_enabled,
-        n_study_classes=n_study_classes,
-        study_head_hidden=study_head_hidden,
-        study_head_dropout=study_head_dropout,
+        **model_kw,
     )
     model = model.to(device)
 
@@ -1482,7 +1512,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     best_epoch = 0
     best_val_f1 = float("nan")
     best_val_auroc = float("nan")
+    best_val_scores: Optional[Dict[str, object]] = None
     best_state: Optional[Dict[str, torch.Tensor]] = None
+    score_ctx = ScoreContext(
+        aggregate=aggregate,
+        requested_num_sets=num_sets,
+        requested_max_len=max_len,
+        cache_num_sets=cache_num_sets,
+        cache_max_len=cache_max_len,
+    )
 
     opt: Optional[torch.optim.Optimizer] = None
     scheduler: Optional[Any] = None
@@ -1585,6 +1623,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ce_weight=ce_weight,
             label_smoothing=label_smoothing,
             study_train_kw=study_train_kw,
+            ce_weight_ct=ce_weight_ct,
+            task_ratio=task_cfg.task_ratio,
         )
         train_study_ce = float(train_study_stats["train_study_ce"])
 
@@ -1596,6 +1636,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_dtype=amp_dtype,
             ce_weight=ce_weight,
             label_smoothing=label_smoothing,
+            ce_weight_ct=ce_weight_ct,
+            task_ratio=task_cfg.task_ratio,
         )
 
         val_study_ce = float("nan")
@@ -1610,63 +1652,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 amp_dtype=amp_dtype,
             )
 
-        val_true, val_score = run_level_scores(
+        split_eval = eval_splits(
             model,
-            val_entries,
-            device,
-            aggregate=aggregate,
-            pos_class_index=pos_class_index,
-            requested_num_sets=num_sets,
-            requested_max_len=max_len,
-            cache_num_sets=cache_num_sets,
-            cache_max_len=cache_max_len,
+            val_entries=val_entries,
+            test_entries=test_entries,
+            holdout_entries=holdout_entries,
+            heads=task_cfg.heads,
+            ctx=score_ctx,
+            device=device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
-        val_f1 = run_level_weighted_f1_from_scores(
-            val_true,
-            val_score,
-            negative_label=neg_label,
-            positive_label=pos_label,
+        primary_val = split_eval.val[task_cfg.primary_head]
+        val_true, val_score = primary_val.y_true, primary_val.y_score
+        val_f1 = primary_val.f1_weighted
+        val_auroc = primary_val.auroc
+        test_auroc = split_eval.test[task_cfg.primary_head].auroc
+        hold_auroc = split_eval.holdout[task_cfg.primary_head].auroc
+        hold_primary = split_eval.holdout[task_cfg.primary_head]
+        hold_true, hold_score_m = hold_primary.y_true, hold_primary.y_score
+
+        val_ps = _per_study_auroc_dict(
+            val_entries, val_true, val_score, positive_label=pos_label
         )
-        val_auroc = binary_auroc_from_scores(val_true, val_score)
-        val_ps = _per_study_auroc_dict(val_entries, val_true, val_score)
-
-        test_true, test_score_m = run_level_scores(
-            model,
-            test_entries,
-            device,
-            aggregate=aggregate,
-            pos_class_index=pos_class_index,
-            requested_num_sets=num_sets,
-            requested_max_len=max_len,
-            cache_num_sets=cache_num_sets,
-            cache_max_len=cache_max_len,
-            amp_enabled=amp_enabled,
-            amp_dtype=amp_dtype,
+        hold_ps = _per_study_auroc_dict(
+            holdout_entries, hold_true, hold_score_m, positive_label=pos_label
         )
-        test_auroc = binary_auroc_from_scores(test_true, test_score_m)
-
-        hold_true: np.ndarray = np.asarray([], dtype=object)
-        hold_score_m = np.asarray([], dtype=np.float64)
-        hold_auroc = float("nan")
-        if holdout_entries:
-            hold_true, hold_score_m = run_level_scores(
-                model,
-                holdout_entries,
-                device,
-                aggregate=aggregate,
-                pos_class_index=pos_class_index,
-                requested_num_sets=num_sets,
-                requested_max_len=max_len,
-                cache_num_sets=cache_num_sets,
-                cache_max_len=cache_max_len,
-                amp_enabled=amp_enabled,
-                amp_dtype=amp_dtype,
-            )
-            hold_auroc = binary_auroc_from_scores(hold_true, hold_score_m)
-
-        hold_ps = _per_study_auroc_dict(holdout_entries, hold_true, hold_score_m)
         hold_ps_diag = _per_study_score_diagnostics(
             holdout_entries,
             hold_true,
@@ -1688,7 +1699,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
 
         lr_log = float(opt.param_groups[0]["lr"])
-        ts = _tuning_score(val_f1, val_auroc, tuning_metric)
+        if multitask:
+            ts = tuning_score_from_heads(
+                split_eval.val,
+                tuning_metric=tuning_metric,
+                tuning_task=task_cfg.tuning_task,
+            )
+        else:
+            ts = tuning_score_single(val_f1, val_auroc, tuning_metric)
         epoch_log.append(
             {
                 "epoch": int(ep),
@@ -1720,6 +1738,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             best_epoch = int(ep)
             best_val_f1 = float(val_f1)
             best_val_auroc = float(val_auroc)
+            best_val_scores = split_eval.val
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
@@ -1727,78 +1746,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if scheduler is not None:
             scheduler.step()
 
-        fields = [
-            f"train_loss={last_loss:.4f}",
-            f"val_loss={val_loss:.4f}",
-        ]
-        if study_adv_enabled:
-            fields.append(f"val_study_acc={val_study_acc:.4f}")
-        fields.extend(
-            [
-                f"val_auroc={val_auroc:.4f}",
-                f"test_auroc={test_auroc:.4f}",
-                f"holdout_auroc={hold_auroc:.4f}",
-            ]
+        print(
+            "  ".join(
+                epoch_progress_fields(
+                    multitask=multitask,
+                    split_eval=split_eval,
+                    train_loss=last_loss,
+                    val_loss=val_loss,
+                    study_adv_enabled=study_adv_enabled,
+                    val_study_acc=val_study_acc,
+                )
+            ),
+            flush=True,
         )
-        print("  ".join(fields), flush=True)
 
     if best_state is not None:
         model.load_state_dict(best_state)
 
     if results_path is not None:
-        test_true_final, test_score_best = run_level_scores(
+        if best_val_scores is None:
+            raise SystemExit("No best validation scores recorded; cannot write results.")
+        final_test = score_entries(
             model,
             test_entries,
             device,
-            aggregate=aggregate,
-            pos_class_index=pos_class_index,
-            requested_num_sets=num_sets,
-            requested_max_len=max_len,
-            cache_num_sets=cache_num_sets,
-            cache_max_len=cache_max_len,
+            task_cfg.heads,
+            score_ctx,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
-        final_test_auroc = binary_auroc_from_scores(test_true_final, test_score_best)
-        hold_score_best = np.asarray([], dtype=np.float64)
-        final_holdout_auroc = float("nan")
-        if holdout_entries:
-            hold_true_final, hold_score_best = run_level_scores(
-                model,
-                holdout_entries,
-                device,
-                aggregate=aggregate,
-                pos_class_index=pos_class_index,
-                requested_num_sets=num_sets,
-                requested_max_len=max_len,
-                cache_num_sets=cache_num_sets,
-                cache_max_len=cache_max_len,
-                amp_enabled=amp_enabled,
-                amp_dtype=amp_dtype,
-            )
-            final_holdout_auroc = binary_auroc_from_scores(
-                hold_true_final,
-                hold_score_best,
-            )
-
-        test_pred_rows = run_level_prediction_rows(
-            test_entries,
-            test_score_best,
-            negative_label=neg_label,
-            positive_label=pos_label,
+        final_holdout = score_entries(
+            model,
+            holdout_entries,
+            device,
+            task_cfg.heads,
+            score_ctx,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
         )
-        holdout_pred_rows = run_level_prediction_rows(
-            holdout_entries[: len(hold_score_best)],
-            hold_score_best,
-            negative_label=neg_label,
-            positive_label=pos_label,
-        )
-        test_pred_path = results_path.with_name(f"{results_path.stem}_test.csv")
-        holdout_pred_path = results_path.with_name(f"{results_path.stem}_holdout.csv")
-        _write_predictions_csv(test_pred_path, test_pred_rows)
-        _write_predictions_csv(holdout_pred_path, holdout_pred_rows)
-
-        _write_results_json(
+        write_run_artifacts(
             results_path,
             merged=merged,
             cache_info={
@@ -1809,18 +1795,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "run_tensors_min_seqs": cache_min_seqs,
                 "n_cached_runs": len(all_records),
             },
-            test_auroc=final_test_auroc,
-            holdout_auroc=final_holdout_auroc,
+            task_cfg=task_cfg,
+            test_entries=test_entries,
+            holdout_entries=holdout_entries,
+            test_scores=final_test,
+            holdout_scores=final_holdout,
             best_epoch=best_epoch,
             tuning_metric=tuning_metric,
             best_tuning_score=best_tuning_score,
-            best_val_f1_weighted=best_val_f1,
-            best_val_auroc=best_val_auroc,
-        )
-        print(
-            f"Final eval (best epoch by {tuning_metric}): best_epoch={best_epoch} "
-            f"test_auroc={final_test_auroc:.4f} holdout_auroc={final_holdout_auroc:.4f}\n",
-            flush=True,
+            best_val_scores=best_val_scores,
+            write_results_json=_write_results_json,
         )
 
     return 0
