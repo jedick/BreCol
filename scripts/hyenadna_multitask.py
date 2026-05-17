@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -65,7 +66,6 @@ class BinaryHeadSpec:
 
 @dataclass(frozen=True)
 class ScoreContext:
-    aggregate: str
     requested_num_sets: int
     requested_max_len: int
     cache_num_sets: int
@@ -95,8 +95,8 @@ class SplitHeadScores:
 @dataclass(frozen=True)
 class TaskTrainingConfig:
     multitask: bool
-    task_ratio: float
-    tuning_task: str
+    loss_ratio: float
+    tuning_ratio: float
     heads: Tuple[BinaryHeadSpec, ...]
     primary_head: str
     class_names: Tuple[str, ...]
@@ -259,18 +259,9 @@ def build_single_task_records(
     )
 
 
-def _aggregate_logits(logits: torch.Tensor, aggregate: str) -> torch.Tensor:
-    if aggregate == "mean":
-        return logits.mean(dim=0)
-    if aggregate == "max":
-        return logits.max(dim=0)[0]
-    raise SystemExit(f"Unknown run_logits_aggregate: {aggregate!r}")
-
-
-def _positive_class_score(
-    logits: torch.Tensor, aggregate: str, pos_class_index: int
-) -> float:
-    agg = _aggregate_logits(logits, aggregate)
+def _positive_class_score(logits: torch.Tensor, pos_class_index: int) -> float:
+    """Run-level score: mean logits over sequence sets, then softmax positive class."""
+    agg = logits.mean(dim=0)
     return float(torch.softmax(agg, dim=-1)[pos_class_index].item())
 
 
@@ -368,9 +359,7 @@ def _forward_entry_scores(
             raise SystemExit("Single-task model must return a single logits tensor.")
         per_head = {heads[0].head_index: logits_out}
     return {
-        h.name: _positive_class_score(
-            per_head[h.head_index], ctx.aggregate, h.pos_class_index
-        )
+        h.name: _positive_class_score(per_head[h.head_index], h.pos_class_index)
         for h in heads
     }
 
@@ -461,7 +450,7 @@ def multitask_training_loss_sum_and_count(
     ce_weight_ct: Optional[torch.Tensor],
     label_smoothing: float,
     study_train_kw: Optional[Mapping[str, object]],
-    task_ratio: float,
+    loss_ratio: float,
     study_ignore_index: int,
 ) -> Tuple[torch.Tensor, int, Optional[Dict[str, float]]]:
     input_ids = batch["input_ids"].to(device)
@@ -485,7 +474,7 @@ def multitask_training_loss_sum_and_count(
         else "off"
     )
     use_study = bool(getattr(model, "use_study_adv", False)) and phase in ("warmup", "dann")
-    alpha = float(task_ratio)
+    alpha = float(loss_ratio)
 
     with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
         if use_study:
@@ -573,12 +562,12 @@ def multitask_training_loss_sum_and_count(
     }
 
 
-def tuning_score_single(val_f1: float, val_auroc: float, metric: str) -> float:
+def tuning_score_single(weighted_f_measure: float, primary_curve: float, metric: str) -> float:
     m = str(metric).strip()
     if m == "auroc":
-        v = float(val_auroc)
+        v = float(primary_curve)
     elif m == "f1_weighted":
-        v = float(val_f1)
+        v = float(weighted_f_measure)
     else:
         raise SystemExit(
             f"Unknown tuning_metric {metric!r} (use auroc or f1_weighted)."
@@ -590,33 +579,34 @@ def tuning_score_from_heads(
     val_scores: Mapping[str, HeadScores],
     *,
     tuning_metric: str,
-    tuning_task: str,
+    tuning_ratio: float,
     cd_name: str = HEAD_CD,
     ct_name: str = HEAD_CT,
 ) -> float:
     cd = val_scores[cd_name]
     ct = val_scores[ct_name]
-    task_sel = str(tuning_task).strip().lower()
-    if task_sel == "mean":
-        metric = str(tuning_metric).strip()
-        if metric == "auroc":
-            parts = [cd.auroc, ct.auroc]
-        elif metric == "f1_weighted":
-            parts = [cd.f1_weighted, ct.f1_weighted]
-        else:
-            raise SystemExit(
-                f"Unknown tuning_metric {tuning_metric!r} (use auroc or f1_weighted)."
-            )
-        good = [p for p in parts if p == p]
-        return float(sum(good) / len(good)) if good else float("-inf")
-    if task_sel == METRIC_KEY_CD:
+    tr = float(tuning_ratio)
+    if not 0.0 <= tr <= 1.0:
+        raise SystemExit("train_hyenadna.tuning_ratio must be between 0 and 1.")
+    if tr == 1.0:
         return tuning_score_single(cd.f1_weighted, cd.auroc, tuning_metric)
-    if task_sel == METRIC_KEY_CT:
+    if tr == 0.0:
         return tuning_score_single(ct.f1_weighted, ct.auroc, tuning_metric)
-    raise SystemExit(
-        f"Unknown tuning_task {tuning_task!r} "
-        f"(use {METRIC_KEY_CD}, {METRIC_KEY_CT}, or mean)."
-    )
+    s_cd = tuning_score_single(cd.f1_weighted, cd.auroc, tuning_metric)
+    s_ct = tuning_score_single(ct.f1_weighted, ct.auroc, tuning_metric)
+    w_cd = tr
+    w_ct = 1.0 - tr
+    num = 0.0
+    den = 0.0
+    if w_cd > 0.0 and math.isfinite(s_cd):
+        num += w_cd * s_cd
+        den += w_cd
+    if w_ct > 0.0 and math.isfinite(s_ct):
+        num += w_ct * s_ct
+        den += w_ct
+    if den <= 0.0:
+        return float("-inf")
+    return num / den
 
 
 def prepare_multitask_config(
@@ -670,8 +660,8 @@ def prepare_multitask_config(
     )
     cfg = TaskTrainingConfig(
         multitask=True,
-        task_ratio=0.5,
-        tuning_task="mean",
+        loss_ratio=0.7,
+        tuning_ratio=0.5,
         heads=heads,
         primary_head=HEAD_CD,
         class_names=tuple(cd_class_names),
@@ -684,16 +674,19 @@ def apply_task_training_overrides(
     cfg: TaskTrainingConfig,
     merged: Mapping[str, object],
 ) -> TaskTrainingConfig:
-    task_ratio = float(merged.get("task_ratio", cfg.task_ratio))
-    if not 0.0 <= task_ratio <= 1.0:
-        raise SystemExit("train_hyenadna.task_ratio must be between 0 and 1.")
-    tuning_task = str(
-        merged.get("tuning_task") or ("mean" if cfg.multitask else METRIC_KEY_CD)
-    ).strip()
+    loss_ratio = float(merged.get("loss_ratio", cfg.loss_ratio))
+    if not 0.0 <= loss_ratio <= 1.0:
+        raise SystemExit("train_hyenadna.loss_ratio must be between 0 and 1.")
+    if cfg.multitask:
+        tuning_ratio = float(merged.get("tuning_ratio", cfg.tuning_ratio))
+        if not 0.0 <= tuning_ratio <= 1.0:
+            raise SystemExit("train_hyenadna.tuning_ratio must be between 0 and 1.")
+    else:
+        tuning_ratio = cfg.tuning_ratio
     return TaskTrainingConfig(
         multitask=cfg.multitask,
-        task_ratio=task_ratio,
-        tuning_task=tuning_task,
+        loss_ratio=loss_ratio,
+        tuning_ratio=tuning_ratio,
         heads=cfg.heads,
         primary_head=cfg.primary_head,
         class_names=cfg.class_names,
@@ -727,8 +720,8 @@ def prepare_single_task_config(
     )
     cfg = TaskTrainingConfig(
         multitask=False,
-        task_ratio=1.0,
-        tuning_task=METRIC_KEY_CD,
+        loss_ratio=1.0,
+        tuning_ratio=1.0,
         heads=(head,),
         primary_head="task",
         class_names=tuple(class_names),
@@ -892,18 +885,19 @@ def write_run_artifacts(
     write_results_json: Callable[..., None],
 ) -> None:
     """Write results JSON and split prediction CSVs."""
-    primary = best_val_scores[task_cfg.primary_head]
     tuning_extra: Optional[Dict[str, Any]] = None
     if task_cfg.multitask:
+        metrics_payload = build_metrics_payload(test_scores, holdout_scores, task_cfg.heads)
         cd = best_val_scores[HEAD_CD]
         ct = best_val_scores[HEAD_CT]
-        metrics_payload = build_metrics_payload(test_scores, holdout_scores, task_cfg.heads)
         tuning_extra = {
-            "task": task_cfg.tuning_task,
-            "val_auroc_cd_at_best": _float_or_none(cd.auroc),
-            "val_auroc_ct_at_best": _float_or_none(ct.auroc),
-            "val_f1_weighted_cd_at_best": _float_or_none(cd.f1_weighted),
-            "val_f1_weighted_ct_at_best": _float_or_none(ct.f1_weighted),
+            "cancer_diagnosis_score": _float_or_none(
+                tuning_score_single(cd.f1_weighted, cd.auroc, tuning_metric)
+            ),
+            "cancer_type_score": _float_or_none(
+                tuning_score_single(ct.f1_weighted, ct.auroc, tuning_metric)
+            ),
+            "combined_score": _float_or_none(float(best_tuning_score)),
         }
         pred_rows_test = _prediction_rows_multitask(
             test_entries, test_scores, task_cfg.heads[0], task_cfg.heads[1]
@@ -911,20 +905,37 @@ def write_run_artifacts(
         pred_rows_hold = _prediction_rows_multitask(
             holdout_entries, holdout_scores, task_cfg.heads[0], task_cfg.heads[1]
         )
-        final_test_auroc = test_scores[HEAD_CD].auroc
-        final_holdout_auroc = holdout_scores[HEAD_CD].auroc
-        final_test_auroc_ct = test_scores[HEAD_CT].auroc
-        final_holdout_auroc_ct = holdout_scores[HEAD_CT].auroc
+        final_test_cd_curve = test_scores[HEAD_CD].auroc
+        final_holdout_cd_curve = holdout_scores[HEAD_CD].auroc
+        final_test_ct_curve = test_scores[HEAD_CT].auroc
+        final_holdout_ct_curve = holdout_scores[HEAD_CT].auroc
     else:
         head = task_cfg.heads[0]
         metrics_payload = build_flat_metrics_payload(test_scores, holdout_scores, head.name)
+        hv = best_val_scores[head.name]
+        task_key = str(merged.get("task") or "").strip()
+        head_score = _float_or_none(
+            tuning_score_single(hv.f1_weighted, hv.auroc, tuning_metric)
+        )
+        if task_key == "cancer_type":
+            tuning_extra = {
+                "cancer_diagnosis_score": None,
+                "cancer_type_score": head_score,
+                "combined_score": _float_or_none(float(best_tuning_score)),
+            }
+        else:
+            tuning_extra = {
+                "cancer_diagnosis_score": head_score,
+                "cancer_type_score": None,
+                "combined_score": _float_or_none(float(best_tuning_score)),
+            }
         pred_rows_test = _prediction_rows_single(test_entries, test_scores, head)
         hold_entries = tuple(holdout_entries)[: len(holdout_scores[head.name].y_score)]
         pred_rows_hold = _prediction_rows_single(hold_entries, holdout_scores, head)
-        final_test_auroc = test_scores[head.name].auroc
-        final_holdout_auroc = holdout_scores[head.name].auroc
-        final_test_auroc_ct = float("nan")
-        final_holdout_auroc_ct = float("nan")
+        final_test_cd_curve = test_scores[head.name].auroc
+        final_holdout_cd_curve = holdout_scores[head.name].auroc
+        final_test_ct_curve = float("nan")
+        final_holdout_ct_curve = float("nan")
 
     test_pred_path = results_path.with_name(f"{results_path.stem}_test.csv")
     holdout_pred_path = results_path.with_name(f"{results_path.stem}_holdout.csv")
@@ -935,31 +946,31 @@ def write_run_artifacts(
         results_path,
         merged=merged,
         cache_info=cache_info,
-        test_auroc=final_test_auroc,
-        holdout_auroc=final_holdout_auroc,
+        test_primary_curve=final_test_cd_curve,
+        holdout_primary_curve=final_holdout_cd_curve,
         best_epoch=best_epoch,
         tuning_metric=tuning_metric,
         best_tuning_score=best_tuning_score,
-        best_val_f1_weighted=primary.f1_weighted,
-        best_val_auroc=primary.auroc,
         metrics=metrics_payload,
         tuning_extra=tuning_extra,
     )
 
     if task_cfg.multitask:
         print(
-            f"Final eval (best epoch by {task_cfg.tuning_task}/{tuning_metric}): "
+            f"Final eval (best epoch by tuning_ratio={task_cfg.tuning_ratio:.3f} "
+            f"with {tuning_metric}): "
             f"best_epoch={best_epoch} "
-            f"test_auroc_cd={final_test_auroc:.4f} "
-            f"test_auroc_ct={final_test_auroc_ct:.4f} "
-            f"holdout_auroc_cd={final_holdout_auroc:.4f} "
-            f"holdout_auroc_ct={final_holdout_auroc_ct:.4f}\n",
+            f"test_auroc_cd={final_test_cd_curve:.4f} "
+            f"test_auroc_ct={final_test_ct_curve:.4f} "
+            f"holdout_auroc_cd={final_holdout_cd_curve:.4f} "
+            f"holdout_auroc_ct={final_holdout_ct_curve:.4f}\n",
             flush=True,
         )
     else:
         print(
             f"Final eval (best epoch by {tuning_metric}): best_epoch={best_epoch} "
-            f"test_auroc={final_test_auroc:.4f} holdout_auroc={final_holdout_auroc:.4f}\n",
+            f"test_auroc={final_test_cd_curve:.4f} "
+            f"holdout_auroc={final_holdout_cd_curve:.4f}\n",
             flush=True,
         )
 

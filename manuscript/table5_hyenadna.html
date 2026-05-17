@@ -9,43 +9,19 @@
 </thead>
 <tbody>
 <tr>
-<td>Best recipe (baseline)</td><td>19</td><td>0.618 ± 0.016</td><td>0.540 ± 0.022</td><td>19</td><td>0.963 ± 0.027</td><td>0.492 ± 0.160</td>
+<td>Best recipe (baseline)</td><td>25</td><td>0.611 ± 0.031</td><td>0.557 ± 0.009</td><td>25</td><td>0.968 ± 0.016</td><td>0.611 ± 0.112</td>
 </tr>
 <tr>
-<td>4096-token context with batch size 10</td><td>19</td><td>0.635 ± 0.016</td><td>0.533 ± 0.022</td><td>19</td><td>0.992 ± 0.007</td><td>0.561 ± 0.086</td>
+<td>Higher learning rate (10<sup>−4</sup> instead of 10<sup>−5</sup>)</td><td>21</td><td>0.614 ± 0.026</td><td>0.522 ± 0.018</td><td>21</td><td>0.924 ± 0.022</td><td>0.499 ± 0.091</td>
 </tr>
 <tr>
-<td>Random training sampler (no study-balanced sampling)</td><td>20</td><td>0.630 ± 0.019</td><td>0.554 ± 0.032</td><td>20</td><td>0.957 ± 0.029</td><td>0.483 ± 0.234</td>
+<td>With domain adversarial training (study head)</td><td>24</td><td>0.579 ± 0.047</td><td>0.530 ± 0.009</td><td>24</td><td>0.972 ± 0.011</td><td>0.581 ± 0.082</td>
 </tr>
 <tr>
-<td>Balanced class weighting</td><td>19</td><td>0.610 ± 0.016</td><td>0.544 ± 0.019</td><td>19</td><td>0.962 ± 0.025</td><td>0.506 ± 0.099</td>
+<td>No frozen backbone in first 5 epochs</td><td>18</td><td>0.608 ± 0.021</td><td>0.532 ± 0.042</td><td>18</td><td>0.967 ± 0.014</td><td>0.616 ± 0.125</td>
 </tr>
 <tr>
-<td>Higher learning rate (10<sup>−4</sup> instead of 10<sup>−5</sup>)</td><td>17</td><td>0.639 ± 0.021</td><td>0.531 ± 0.036</td><td>17</td><td>0.976 ± 0.009</td><td>0.566 ± 0.120</td>
-</tr>
-<tr>
-<td>With domain adversarial training (study head)</td><td>19</td><td>0.590 ± 0.027</td><td>0.526 ± 0.017</td><td>19</td><td>0.986 ± 0.006</td><td>0.499 ± 0.081</td>
-</tr>
-<tr>
-<td>MLP classification head instead of linear</td><td>18</td><td>0.577 ± 0.017</td><td>0.500 ± 0.024</td><td>18</td><td>0.983 ± 0.003</td><td>0.639 ± 0.088</td>
-</tr>
-<tr>
-<td>MLP classification head with dropout</td><td>18</td><td>0.574 ± 0.029</td><td>0.502 ± 0.027</td><td>18</td><td>0.984 ± 0.004</td><td>0.639 ± 0.092</td>
-</tr>
-<tr>
-<td>MLP classification head with frozen backbone (first 5 epochs)</td><td>18</td><td>0.566 ± 0.031</td><td>0.512 ± 0.037</td><td>18</td><td>0.961 ± 0.021</td><td>0.697 ± 0.045</td>
-</tr>
-<tr>
-<td>30 epochs instead of 10</td><td>29</td><td>0.634 ± 0.018</td><td>0.536 ± 0.025</td><td>29</td><td>0.977 ± 0.006</td><td>0.523 ± 0.155</td>
-</tr>
-<tr>
-<td>Label smoothing 0.1</td><td>19</td><td>0.625 ± 0.007</td><td>0.538 ± 0.021</td><td>19</td><td>0.965 ± 0.029</td><td>0.484 ± 0.160</td>
-</tr>
-<tr>
-<td>MLP with 0.6 task ratio</td><td>16</td><td>0.594 ± 0.037</td><td>0.525 ± 0.039</td><td>16</td><td>0.970 ± 0.017</td><td>0.622 ± 0.115</td>
-</tr>
-<tr>
-<td>MLP with 5 frozen backbone epochs and 0.7 task ratio</td><td>18</td><td>0.584 ± 0.016</td><td>0.564 ± 0.002</td><td>18</td><td>0.947 ± 0.006</td><td>0.603 ± 0.093</td>
+<td>Evenly weight diagnosis and task heads for loss</td><td>20</td><td>0.570 ± 0.024</td><td>0.517 ± 0.034</td><td>20</td><td>0.963 ± 0.021</td><td>0.686 ± 0.039</td>
 </tr>
 </tbody>
 </table>

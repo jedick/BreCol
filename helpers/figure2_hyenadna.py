@@ -3,22 +3,16 @@
 Build Figure 2: HyenaDNA AUROC vs sequence length per set (test vs holdout).
 
 Layout:
-- 2x2 subplots
-- rows = task (cancer diagnosis, cancer type)
-- columns = early-stop horizon by validation F1: best epoch in epochs 1–10 vs 1–20
-- x-axis = length per set (1k, 2k, 4k, 8k, 16k) from experiment max_length
-- y-axis = AUROC at the chosen epoch (from training log)
+- 1 row, 2 columns (cancer diagnosis, cancer type)
+- x-axis = length per set (1k, 2k, 4k, 8k, 16k) from max_length train_hyenadna runs
+- y-axis = AUROC from ``results/hyenadna/mt_max_length_<bp>_<token>_s*.json``
+  (mean and sample stdev across seeds)
 
 Each subplot draws:
-- test split: thin dashed line with markers
-- holdout split: solid bold line with markers
+- test split: thin dashed line with markers and ±1 stdev error bars
+- holdout split: solid bold line with markers and ±1 stdev error bars
 
-For each column, AUROC is read from ``results/hyenadna/<name>_training.json`` at the
-epoch that maximizes ``val_f1_weighted`` among rows with ``epoch`` ≤ the column
-cap (10 or 20). Ties break toward a later epoch.
-
-Experiment names come from ``experiments.yaml`` ``train_hyenadna.experiments``
-merged with ``defaults.yaml`` ``train_hyenadna`` (single num_sets grid, typically 5).
+Missing ``max_length_*`` result groups are skipped (partial result trees are OK).
 
 Writes ``manuscript/figure2_hyenadna.png`` and ``manuscript/figure2_hyenadna.svg``.
 
@@ -29,208 +23,179 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import statistics
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
-import yaml
 
-
-TASKS: List[Tuple[str, str]] = [
+TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("cancer_diagnosis", "Cancer diagnosis"),
     ("cancer_type", "Cancer type"),
-]
-EPOCH_COLUMNS: List[Tuple[int, str]] = [
-    (10, "Best val F1 (epochs 1–10)"),
-    (20, "Best val F1 (epochs 1–20)"),
-]
-
+)
 LENGTHS_BP: Tuple[int, ...] = (1024, 2048, 4096, 8192, 16384)
-X_LABELS: Tuple[str, ...] = ("1k", "2k", "4k", "8k", "16k")
+RESULTS_GLOB = "mt_max_length_*_*_s*.json"
+_RESULT_RE = re.compile(r"mt_max_length_(\d+)_(\d+k)_s\d+\.json$")
 
 OUTPUT_PNG = Path("manuscript") / "figure2_hyenadna.png"
 OUTPUT_SVG = Path("manuscript") / "figure2_hyenadna.svg"
 
 
-def _load_yaml(path: Path) -> dict:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else {}
+@dataclass(frozen=True)
+class LengthPoint:
+    bp: int
+    x_label: str
+    test_mean: float
+    test_std: float
+    holdout_mean: float
+    holdout_std: float
 
 
-def _train_hyenadna_base(repo_root: Path) -> dict:
-    cfg = _load_yaml(repo_root / "defaults.yaml")
-    sec = cfg.get("train_hyenadna")
-    if not isinstance(sec, dict):
-        raise SystemExit("defaults.yaml must define train_hyenadna as a mapping.")
-    return dict(sec)
+def _len_token(bp: int) -> str:
+    return f"{bp // 1024}k"
 
 
-def _experiment_grid(repo_root: Path) -> Dict[Tuple[str, int], str]:
-    """Map (task, max_length) -> experiment name (results / training log stem)."""
-    base = _train_hyenadna_base(repo_root)
-    exp_cfg = _load_yaml(repo_root / "experiments.yaml").get("train_hyenadna") or {}
-    rows = exp_cfg.get("experiments") or []
-    if not isinstance(rows, list) or not rows:
-        raise SystemExit("experiments.yaml must list train_hyenadna.experiments.")
-
-    out: Dict[Tuple[str, int], str] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            raise SystemExit("train_hyenadna experiment entry must be a mapping.")
-        name = str(row.get("name") or "").strip()
-        if not name:
-            raise SystemExit("Each train_hyenadna experiment must have a non-empty name.")
-        overrides = row.get("overrides") or {}
-        if not isinstance(overrides, dict):
-            raise SystemExit("experiment overrides must be a mapping.")
-        merged = {**base, **overrides}
-
-        task = merged.get("task")
-        if task not in ("cancer_diagnosis", "cancer_type"):
-            raise SystemExit(f"{name}: expected task cancer_diagnosis or cancer_type, got {task!r}")
-
-        max_length = int(merged["max_length"])
-        key = (str(task), max_length)
-        if key in out:
-            raise SystemExit(
-                f"Duplicate experiment for task={task!r}, max_length={max_length}: "
-                f"{out[key]!r} and {name!r}."
-            )
-        out[key] = name
-
-    return out
-
-
-def _grid_complete(grid: Dict[Tuple[str, int], str]) -> None:
-    for task, _ in TASKS:
-        for L in LENGTHS_BP:
-            key = (task, L)
-            if key not in grid:
-                raise SystemExit(
-                    f"Missing train_hyenadna experiment for task={task!r}, max_length={L}."
-                )
-
-
-def _val_f1_for_argmax(raw: object) -> float:
-    if raw is None:
-        return float("-inf")
-    try:
-        v = float(raw)
-    except (TypeError, ValueError):
-        return float("-inf")
-    if not math.isfinite(v):
-        return float("-inf")
-    return v
-
-
-def _load_training_rows(path: Path) -> List[dict]:
-    if not path.is_file():
-        raise SystemExit(f"Missing training log: {path}")
+def _read_task_aurocs(path: Path, task_key: str) -> Tuple[float, float]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list) or not data:
-        raise SystemExit(f"{path}: expected a non-empty JSON list of epoch records.")
-    return [r for r in data if isinstance(r, dict)]
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: expected a JSON object.")
+    metrics = data.get("metrics") or {}
+    blob = metrics.get(task_key)
+    if not isinstance(blob, dict):
+        raise SystemExit(f"{path}: missing metrics[{task_key!r}] (expected multitask layout).")
+    for split in ("test", "holdout"):
+        part = blob.get(split)
+        if not isinstance(part, dict):
+            raise SystemExit(f"{path}: metrics[{task_key!r}][{split!r}] must be an object.")
+    test_v = blob["test"].get("auroc")
+    hold_v = blob["holdout"].get("auroc")
+    if test_v is None or hold_v is None:
+        raise SystemExit(f"{path}: missing test or holdout auroc for {task_key}.")
+    t, h = float(test_v), float(hold_v)
+    if not math.isfinite(t) or not math.isfinite(h):
+        raise SystemExit(f"{path}: non-finite AUROC for {task_key} ({t}, {h}).")
+    return t, h
 
 
-def _auc_at_best_val_f1(
-    rows: Sequence[dict],
-    *,
-    max_epoch: int,
-) -> Tuple[float, float, int]:
-    capped = [r for r in rows if int(r.get("epoch", -1)) <= max_epoch]
-    if not capped:
-        raise SystemExit(f"No epochs with epoch ≤ {max_epoch} in training log.")
+def _discover_result_files(hyenadna_dir: Path) -> Dict[int, List[Path]]:
+    """Map max_length (bp) to multitask result JSON paths."""
+    by_bp: Dict[int, List[Path]] = {}
+    for path in sorted(hyenadna_dir.glob(RESULTS_GLOB)):
+        if path.name.endswith("_training.json"):
+            continue
+        m = _RESULT_RE.match(path.name)
+        if m is None:
+            continue
+        bp = int(m.group(1))
+        if m.group(2) != _len_token(bp):
+            continue
+        by_bp.setdefault(bp, []).append(path)
+    return by_bp
 
-    best = max(
-        capped,
-        key=lambda r: (_val_f1_for_argmax(r.get("val_f1_weighted")), int(r["epoch"])),
-    )
-    ep = int(best["epoch"])
-    t_raw = best.get("test_auroc")
-    h_raw = best.get("holdout_auroc")
-    if t_raw is None or h_raw is None:
+
+def _aggregate_seed_values(values: Sequence[float]) -> Tuple[float, float]:
+    mean = statistics.fmean(values)
+    if len(values) >= 2:
+        std = statistics.stdev(values)
+    else:
+        std = 0.0
+    return mean, std
+
+
+def collect_series(hyenadna_dir: Path) -> Dict[str, List[LengthPoint]]:
+    """Per task key, return length points that have on-disk seed results."""
+    by_bp = _discover_result_files(hyenadna_dir)
+    out: Dict[str, List[LengthPoint]] = {task_key: [] for task_key, _ in TASK_COLUMNS}
+    for bp in LENGTHS_BP:
+        paths = by_bp.get(bp) or []
+        if not paths:
+            continue
+        for task_key, _ in TASK_COLUMNS:
+            test_seed: List[float] = []
+            hold_seed: List[float] = []
+            for path in paths:
+                t, h = _read_task_aurocs(path, task_key)
+                test_seed.append(t)
+                hold_seed.append(h)
+            test_mean, test_std = _aggregate_seed_values(test_seed)
+            hold_mean, hold_std = _aggregate_seed_values(hold_seed)
+            out[task_key].append(
+                LengthPoint(
+                    bp=bp,
+                    x_label=_len_token(bp),
+                    test_mean=test_mean,
+                    test_std=test_std,
+                    holdout_mean=hold_mean,
+                    holdout_std=hold_std,
+                )
+            )
+    if not any(out.values()):
         raise SystemExit(
-            f"Chosen epoch {ep}: need finite test_auroc and holdout_auroc "
-            f"(got {t_raw!r}, {h_raw!r})."
+            "No max_length results found under "
+            f"{hyenadna_dir} (expected mt_max_length_<bp>_<token>_s*.json)."
         )
-    t_auc = float(t_raw)
-    h_auc = float(h_raw)
-    if not math.isfinite(t_auc) or not math.isfinite(h_auc):
-        raise SystemExit(
-            f"Chosen epoch {ep}: test_auroc and holdout_auroc must be finite "
-            f"(got {t_auc}, {h_auc})."
-        )
-    return t_auc, h_auc, ep
-
-
-def collect_series(
-    hyenadna_dir: Path,
-    grid: Dict[Tuple[str, int], str],
-) -> Dict[Tuple[str, int], Tuple[List[float], List[float]]]:
-    out: Dict[Tuple[str, int], Tuple[List[float], List[float]]] = {}
-    for task, _ in TASKS:
-        for max_epoch, _ in EPOCH_COLUMNS:
-            test_vals: List[float] = []
-            holdout_vals: List[float] = []
-            for L in LENGTHS_BP:
-                name = grid[(task, L)]
-                log_path = hyenadna_dir / f"{name}_training.json"
-                rows = _load_training_rows(log_path)
-                test_auc, holdout_auc, _ep = _auc_at_best_val_f1(rows, max_epoch=max_epoch)
-                test_vals.append(test_auc)
-                holdout_vals.append(holdout_auc)
-            out[(task, max_epoch)] = (test_vals, holdout_vals)
     return out
 
 
-def build_plot(
-    series: Dict[Tuple[str, int], Tuple[List[float], List[float]]],
-    output_path: Path,
-) -> None:
-    x = list(range(len(LENGTHS_BP)))
-    fig, axes = plt.subplots(2, 2, figsize=(10, 7), sharex=True, sharey=True)
+def build_plot(series: Dict[str, List[LengthPoint]], output_path: Path) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
 
-    for row, (task_key, task_label) in enumerate(TASKS):
-        for col, (max_epoch, col_title) in enumerate(EPOCH_COLUMNS):
-            ax = axes[row, col]
-            test_vals, holdout_vals = series[(task_key, max_epoch)]
+    for col, (task_key, task_label) in enumerate(TASK_COLUMNS):
+        ax = axes[col]
+        points = series[task_key]
+        if not points:
+            raise SystemExit(f"No max_length results for task {task_key!r}.")
 
-            ax.plot(
-                x,
-                test_vals,
-                linestyle="--",
-                linewidth=1.2,
-                marker="o",
-                markersize=4,
-                label="Test",
-                color="#4C78A8",
-            )
-            ax.plot(
-                x,
-                holdout_vals,
-                linestyle="-",
-                linewidth=2.8,
-                marker="o",
-                markersize=4.5,
-                label="Holdout",
-                color="#F58518",
-            )
+        x = list(range(len(points)))
+        test_means = [p.test_mean for p in points]
+        test_stds = [p.test_std for p in points]
+        hold_means = [p.holdout_mean for p in points]
+        hold_stds = [p.holdout_std for p in points]
+        x_labels = [p.x_label for p in points]
 
-            if row == 0:
-                ax.set_title(col_title)
-            if col == 0:
-                ax.set_ylabel(f"{task_label}\nAUROC")
+        ax.errorbar(
+            x,
+            test_means,
+            yerr=test_stds,
+            linestyle="--",
+            linewidth=1.2,
+            marker="o",
+            markersize=4,
+            capsize=3,
+            capthick=1,
+            elinewidth=1,
+            label="Test",
+            color="#4C78A8",
+        )
+        ax.errorbar(
+            x,
+            hold_means,
+            yerr=hold_stds,
+            linestyle="-",
+            linewidth=2.8,
+            marker="o",
+            markersize=4.5,
+            capsize=3,
+            capthick=1,
+            elinewidth=1,
+            label="Holdout",
+            color="#F58518",
+        )
 
-            ax.set_xticks(x)
-            ax.set_xticklabels(X_LABELS)
-            ax.set_ylim(0.5, 1.02)
-            ax.grid(alpha=0.25, linewidth=0.7)
+        ax.set_title(task_label)
+        ax.set_xticks(x)
+        ax.set_xticklabels(x_labels)
+        ax.set_ylim(0.5, 1.02)
+        ax.grid(alpha=0.25, linewidth=0.7)
 
-    for ax in axes[-1, :]:
+    axes[0].set_ylabel("AUROC")
+    for ax in axes:
         ax.set_xlabel("Length per set")
 
-    handles, labels = axes[0, 0].get_legend_handles_labels()
+    handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
         labels,
@@ -239,7 +204,7 @@ def build_plot(
         frameon=False,
         bbox_to_anchor=(0.5, 1.02),
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -252,10 +217,7 @@ def main() -> int:
     if not hyenadna_dir.is_dir():
         raise SystemExit(f"Not a directory: {hyenadna_dir}")
 
-    grid = _experiment_grid(repo_root)
-    _grid_complete(grid)
-
-    series = collect_series(hyenadna_dir, grid)
+    series = collect_series(hyenadna_dir)
     png_path = repo_root / OUTPUT_PNG
     svg_path = repo_root / OUTPUT_SVG
     build_plot(series, output_path=png_path)

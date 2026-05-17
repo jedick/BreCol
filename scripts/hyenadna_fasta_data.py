@@ -45,6 +45,10 @@ def merge_train_hyenadna_config(
     expt: int,
 ) -> Tuple[Dict[str, object], Optional[str], Optional[str]]:
     """Return merged train_hyenadna config, optional experiment name, results_json template.
+
+    experiments.yaml ``train_hyenadna`` may set ``results_json_template`` and
+    ``sigsegv_retries`` (same level as the template); those merge into the baseline before
+    per-experiment ``overrides``.
     """
     defaults = load_train_hyenadna_section(defaults_path)
     experiment_name: Optional[str] = None
@@ -78,6 +82,8 @@ def merge_train_hyenadna_config(
             if not isinstance(overrides, dict):
                 raise SystemExit("experiment overrides must be a mapping.")
             selected = dict(overrides)
+        if "sigsegv_retries" in section:
+            defaults["sigsegv_retries"] = section["sigsegv_retries"]
         defaults = {**defaults, **selected}
     elif expt != 0:
         raise SystemExit(

@@ -6,20 +6,19 @@ Uses a pre-built feature-only per-run tensor cache under paths.run_tensors_dir/ 
 scripts/build_run_tensors.py, joins labels/splits from shared metadata at runtime, and reports
 run-level AUROC on the test and holdout splits (one score per Run).
 
-Training logs (`*_training.json`) record validation AUROC, validation CE loss,
-optional per-study AUROC on validation/holdout, and score moments by label. Checkpoints are
+Training logs (`*_training.json`) record per-epoch loss and AUROC metrics aligned with
+console output (task-suffixed keys in multitask mode). Checkpoints are
 selected by ``train_hyenadna.tuning_metric`` (default ``auroc``); for ``task: multitask``,
-``tuning_task`` chooses whether to use diagnosis AUROC, type AUROC (cancer runs only), or
-the mean of both.
+``tuning_ratio`` (with ``tuning_metric``) sets the blend of diagnosis vs type validation scores for checkpointing.
 
 Multitask mode trains two binary heads on a shared pooled backbone; loss is
-``task_ratio * L_diagnosis + (1 - task_ratio) * L_type``. Results JSON nests metrics under
+``loss_ratio * L_diagnosis + (1 - loss_ratio) * L_type``. Results JSON nests metrics under
 ``cancer_diagnosis`` and ``cancer_type``; prediction CSVs use ``cd_*`` and ``ct_*`` columns.
 
-When ``study_adv`` is true, the model adds a study (domain) classifier with optional
-``study_adv_delay_epochs`` (task-only), ``study_discriminator_warmup`` plus
-``study_disc_warmup_epochs`` (train study head on detached backbone features), then
-DANN-style gradient reversal with ``study_adv_weight`` as both loss scale and GRL lambda.
+When ``study_adv_weight`` > 0, the model adds a study (domain) classifier with optional
+``study_adv_delay_epochs`` (task-only), ``study_disc_warmup_epochs`` (train study head on
+detached backbone features; 0 skips), then DANN-style gradient reversal using
+``study_adv_weight`` on both study CE and GRL backward scale during the ``dann`` phase.
 Logs include train/val study cross-entropy and val study accuracy (train-split study labels
 only; unknown studies use ``ignore_index``).
 
@@ -58,13 +57,14 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
-from shared_utilities import binary_auroc_from_scores
 from hyenadna_fasta_data import (
     merge_train_hyenadna_config,
     model_max_length,
     resolve_repo_path,
 )
 from hyenadna_multitask import (
+    HEAD_CD,
+    HEAD_CT,
     MULTITASK_TASK,
     RunRecord,
     ScoreContext,
@@ -84,7 +84,6 @@ from hyenadna_multitask import (
 )
 
 HEAD_MODES = ("last", "first", "pool", "sum")
-AGGREGATES = ("mean", "max")
 HALF_BATCH_SIZE = 0.5
 SET_SPLIT_INDEX = 5
 STUDY_IGNORE_INDEX = -100
@@ -102,7 +101,7 @@ def _grid_child_subprocess_env() -> Dict[str, str]:
 
 
 def _clamp_sigsegv_retries(raw: object) -> int:
-    """Grid SIGSEGV retries: 0..8 extra attempts after the first child failure."""
+    """Clamp train_hyenadna.sigsegv_retries for grid-mode subprocesses only (0..8 extra runs after SIGSEGV)."""
     try:
         n = int(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -116,6 +115,7 @@ def _run_grid_child_check(
     *,
     sigsegv_retries: object,
 ) -> None:
+    """Run one grid child process; retry on SIGSEGV up to train_hyenadna.sigsegv_retries extra times."""
     retries = _clamp_sigsegv_retries(sigsegv_retries)
     max_attempts = 1 + retries
     env = _grid_child_subprocess_env()
@@ -142,7 +142,7 @@ def _run_grid_child_check(
                     "Python exceptions—reruns often succeed. Next steps: run once with "
                     "CUDA_LAUNCH_BLOCKING=1; confirm train_hyenadna.num_workers is 0; "
                     "upgrade driver/PyTorch; or raise "
-                    "train_hyenadna.sigsegv_retries in defaults.yaml (already retried)."
+                    "train_hyenadna.sigsegv_retries in experiments.yaml (already retried)."
                 ) from exc
             raise
 
@@ -166,14 +166,13 @@ def _resolve_study_adv_phase(
     *,
     study_adv_enabled: bool,
     delay_epochs: int,
-    disc_warmup_enabled: bool,
     disc_warmup_epochs: int,
 ) -> str:
     if not study_adv_enabled:
         return "off"
     if epoch_1based <= int(delay_epochs):
         return "delay"
-    wu = int(disc_warmup_epochs) if disc_warmup_enabled else 0
+    wu = max(0, int(disc_warmup_epochs))
     if wu > 0 and epoch_1based <= int(delay_epochs) + wu:
         return "warmup"
     return "dann"
@@ -312,7 +311,7 @@ def training_loss_sum_and_count(
     label_smoothing: float = 0.0,
     study_train_kw: Optional[Mapping[str, object]] = None,
     ce_weight_ct: Optional[torch.Tensor] = None,
-    task_ratio: float = 1.0,
+    loss_ratio: float = 1.0,
 ) -> Tuple[torch.Tensor, int, Optional[Dict[str, float]]]:
     if getattr(model, "multitask_mode", False):
         return multitask_training_loss_sum_and_count(
@@ -325,7 +324,7 @@ def training_loss_sum_and_count(
             ce_weight_ct=ce_weight_ct,
             label_smoothing=label_smoothing,
             study_train_kw=study_train_kw,
-            task_ratio=float(task_ratio),
+            loss_ratio=float(loss_ratio),
             study_ignore_index=STUDY_IGNORE_INDEX,
         )
 
@@ -534,7 +533,7 @@ def _eval_mean_ce_loss(
     ce_weight: Optional[torch.Tensor],
     label_smoothing: float,
     ce_weight_ct: Optional[torch.Tensor] = None,
-    task_ratio: float = 1.0,
+    loss_ratio: float = 1.0,
 ) -> float:
     model.eval()
     total = 0.0
@@ -551,7 +550,7 @@ def _eval_mean_ce_loss(
                 label_smoothing=label_smoothing,
                 study_train_kw=None,
                 ce_weight_ct=ce_weight_ct,
-                task_ratio=task_ratio,
+                loss_ratio=loss_ratio,
             )
             total += float(loss_sum.item())
             count += int(n)
@@ -623,7 +622,7 @@ def _make_optimizer(
     *,
     lr: float,
     weight_decay: float,
-    backbone_lr_mult: Optional[float],
+    backbone_lr_mult: float,
 ) -> torch.optim.Optimizer:
     backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
     head_params = _classification_head_params(model)
@@ -631,7 +630,7 @@ def _make_optimizer(
         head_params.extend([p for p in model.study_head.parameters() if p.requires_grad])
     groups: List[Dict[str, object]] = []
     if backbone_params:
-        blr = lr * float(backbone_lr_mult) if backbone_lr_mult is not None else lr
+        blr = lr * float(backbone_lr_mult)
         groups.append({"params": backbone_params, "lr": blr})
     if head_params:
         groups.append({"params": head_params, "lr": lr})
@@ -676,98 +675,6 @@ def _make_lr_scheduler(
     raise SystemExit(f"Unknown lr_schedule {schedule!r} (use none or warmup_cosine).")
 
 
-def _per_study_auroc_dict(
-    entries: Sequence[RunRecord],
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    *,
-    positive_label: Optional[str] = None,
-) -> Dict[str, Optional[float]]:
-    by_study: Dict[str, List[Tuple[object, float]]] = defaultdict(list)
-    for e, yt, ys in zip(entries, y_true, y_score):
-        by_study[e.study_name].append((yt, float(ys)))
-    out: Dict[str, Optional[float]] = {}
-    for study, pairs in by_study.items():
-        yt = np.array([p[0] for p in pairs], dtype=object)
-        ys = np.array([p[1] for p in pairs], dtype=np.float64)
-        auroc = binary_auroc_from_scores(yt, ys, positive_label=positive_label)
-        out[study] = float(auroc) if auroc == auroc else None
-    return out
-
-
-def _per_study_score_diagnostics(
-    entries: Sequence[RunRecord],
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    *,
-    negative_label: str,
-    positive_label: str,
-) -> Dict[str, Dict[str, object]]:
-    by_study: Dict[str, List[Tuple[object, float]]] = defaultdict(list)
-    for e, yt, ys in zip(entries, y_true, y_score):
-        by_study[e.study_name].append((yt, float(ys)))
-    out: Dict[str, Dict[str, object]] = {}
-    for study, pairs in by_study.items():
-        yt = np.array([p[0] for p in pairs], dtype=object)
-        ys = np.array([p[1] for p in pairs], dtype=np.float64)
-        y_pred = np.where(ys >= 0.5, positive_label, negative_label)
-        true_counts = {
-            str(lbl): int(np.sum(yt == lbl)) for lbl in (negative_label, positive_label)
-        }
-        pred_counts = {
-            str(lbl): int(np.sum(y_pred == lbl)) for lbl in (negative_label, positive_label)
-        }
-        out[study] = {
-            "n_runs": int(yt.size),
-            "true_label_counts": true_counts,
-            "predicted_label_counts": pred_counts,
-            "predicted_positive_rate": float(np.mean(y_pred == positive_label)),
-            "score_mean": float(np.mean(ys)),
-            "score_std": float(np.std(ys)),
-            "accuracy": float(np.mean(y_pred == yt)),
-        }
-    return out
-
-
-def _label_score_moments(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    *,
-    neg_label: str,
-    pos_label: str,
-) -> Dict[str, Dict[str, float]]:
-    y_true = np.asarray(y_true, dtype=object)
-    y_score = np.asarray(y_score, dtype=np.float64)
-    out: Dict[str, Dict[str, float]] = {}
-    for name, mask in (
-        (str(neg_label), y_true == neg_label),
-        (str(pos_label), y_true == pos_label),
-    ):
-        s = y_score[mask]
-        if s.size == 0:
-            out[name] = {"mean": float("nan"), "std": float("nan"), "n": 0.0}
-        else:
-            out[name] = {
-                "mean": float(np.mean(s)),
-                "std": float(np.std(s)),
-                "n": float(s.size),
-            }
-    return out
-
-
-def _tuning_score(val_f1: float, val_auroc: float, metric: str) -> float:
-    m = str(metric).strip()
-    if m == "auroc":
-        v = float(val_auroc)
-    elif m == "f1_weighted":
-        v = float(val_f1)
-    else:
-        raise SystemExit(
-            f"Unknown tuning_metric {metric!r} (use auroc or f1_weighted)."
-        )
-    return v if v == v else float("-inf")
-
-
 def _optimizer_step(
     optimizer: torch.optim.Optimizer,
     scaler: Optional[torch.amp.GradScaler],
@@ -793,7 +700,7 @@ def train_epoch(
     label_smoothing: float,
     study_train_kw: Optional[Mapping[str, object]] = None,
     ce_weight_ct: Optional[torch.Tensor] = None,
-    task_ratio: float = 1.0,
+    loss_ratio: float = 1.0,
 ) -> Tuple[float, Dict[str, float]]:
     model.train()
     total = 0.0
@@ -821,7 +728,7 @@ def train_epoch(
                     label_smoothing=label_smoothing,
                     study_train_kw=study_train_kw,
                     ce_weight_ct=ce_weight_ct,
-                    task_ratio=task_ratio,
+                    loss_ratio=loss_ratio,
                 )
                 scaled_loss_1 = loss_sum_1 / float(denom)
                 if scaler is not None:
@@ -844,7 +751,7 @@ def train_epoch(
                     label_smoothing=label_smoothing,
                     study_train_kw=study_train_kw,
                     ce_weight_ct=ce_weight_ct,
-                    task_ratio=task_ratio,
+                    loss_ratio=loss_ratio,
                 )
                 scaled_loss_2 = loss_sum_2 / float(denom)
                 if scaler is not None:
@@ -869,7 +776,7 @@ def train_epoch(
                 label_smoothing=label_smoothing,
                 study_train_kw=study_train_kw,
                 ce_weight_ct=ce_weight_ct,
-                task_ratio=task_ratio,
+                loss_ratio=loss_ratio,
             )
             if denom <= 0:
                 raise SystemExit("Training batch has zero valid sets after masking.")
@@ -1005,34 +912,42 @@ def _write_results_json(
     *,
     merged: Mapping[str, Any],
     cache_info: Mapping[str, Any],
-    test_auroc: float,
-    holdout_auroc: float,
+    test_primary_curve: float,
+    holdout_primary_curve: float,
     best_epoch: int,
     tuning_metric: str,
     best_tuning_score: float,
-    best_val_f1_weighted: float,
-    best_val_auroc: float,
     metrics: Optional[Mapping[str, Any]] = None,
     tuning_extra: Optional[Mapping[str, Any]] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if metrics is None:
         metrics = {
-            "test": {"auroc": float(test_auroc) if test_auroc == test_auroc else None},
+            "test": {
+                "auroc": float(test_primary_curve)
+                if test_primary_curve == test_primary_curve
+                else None
+            },
             "holdout": {
-                "auroc": float(holdout_auroc) if holdout_auroc == holdout_auroc else None
+                "auroc": float(holdout_primary_curve)
+                if holdout_primary_curve == holdout_primary_curve
+                else None
             },
         }
     tuning_block: Dict[str, Any] = {
         "split": "validation",
         "metric": str(tuning_metric),
-        "score": _float_or_none(float(best_tuning_score)),
-        "best_epoch": int(best_epoch),
-        "val_f1_weighted_at_best": _float_or_none(float(best_val_f1_weighted)),
-        "val_auroc_at_best": _float_or_none(float(best_val_auroc)),
     }
     if tuning_extra:
-        tuning_block.update(dict(tuning_extra))
+        extra = dict(tuning_extra)
+        for key in (
+            "cancer_diagnosis_score",
+            "cancer_type_score",
+            "combined_score",
+        ):
+            if key in extra:
+                tuning_block[key] = extra[key]
+    tuning_block["best_epoch"] = int(best_epoch)
     payload = {
         "script": Path(__file__).name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1054,35 +969,53 @@ def _float_or_none(x: float) -> Optional[float]:
     return float(x) if x == x else None
 
 
-def _write_training_log(path: Path, epoch_rows: Sequence[Mapping[str, object]]) -> None:
+def _write_training_log(
+    path: Path,
+    epoch_rows: Sequence[Mapping[str, object]],
+    *,
+    multitask: bool,
+    study_adv_enabled: bool,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: List[Dict[str, object]] = []
     for row in epoch_rows:
-        payload.append(
-            {
-                "epoch": int(row["epoch"]),
-                "learning_rate": float(row["learning_rate"]),
-                "train_loss": float(row["train_loss"]),
-                "val_loss": _float_or_none(float(row["val_loss"])),
-                "val_f1_weighted": _float_or_none(float(row["val_f1_weighted"])),
-                "val_auroc": _float_or_none(float(row["val_auroc"])),
-                "val_per_study_auroc": dict(row["val_per_study_auroc"]),
-                "test_auroc": _float_or_none(float(row["test_auroc"])),
-                "holdout_auroc": _float_or_none(float(row["holdout_auroc"])),
-                "holdout_per_study_auroc": dict(row["holdout_per_study_auroc"]),
-                "holdout_per_study_score_diagnostics": dict(
-                    row["holdout_per_study_score_diagnostics"]
-                ),
-                "val_score_by_label": dict(row["val_score_by_label"]),
-                "holdout_score_by_label": dict(row["holdout_score_by_label"]),
-                "study_adv_phase": str(row["study_adv_phase"]),
-                "study_grl_lambda": _float_or_none(float(row["study_grl_lambda"])),
-                "train_study_ce": _float_or_none(float(row["train_study_ce"])),
-                "val_study_ce": _float_or_none(float(row["val_study_ce"])),
-                "val_study_accuracy": _float_or_none(float(row["val_study_accuracy"])),
-                "val_study_n_labeled": int(row["val_study_n_labeled"]),
-            }
-        )
+        entry: Dict[str, object] = {
+            "epoch": int(row["epoch"]),
+            "learning_rate": float(row["learning_rate"]),
+            "train_loss": float(row["train_loss"]),
+            "val_loss": _float_or_none(float(row["val_loss"])),
+        }
+        if multitask:
+            entry.update(
+                {
+                    "val_auroc_cd": _float_or_none(float(row["val_auroc_cd"])),
+                    "val_auroc_ct": _float_or_none(float(row["val_auroc_ct"])),
+                    "test_auroc_cd": _float_or_none(float(row["test_auroc_cd"])),
+                    "test_auroc_ct": _float_or_none(float(row["test_auroc_ct"])),
+                    "holdout_auroc_cd": _float_or_none(float(row["holdout_auroc_cd"])),
+                    "holdout_auroc_ct": _float_or_none(float(row["holdout_auroc_ct"])),
+                }
+            )
+        else:
+            entry.update(
+                {
+                    "val_auroc": _float_or_none(float(row["val_auroc"])),
+                    "test_auroc": _float_or_none(float(row["test_auroc"])),
+                    "holdout_auroc": _float_or_none(float(row["holdout_auroc"])),
+                }
+            )
+        if study_adv_enabled:
+            entry.update(
+                {
+                    "study_adv_phase": str(row["study_adv_phase"]),
+                    "study_grl_lambda": _float_or_none(float(row["study_grl_lambda"])),
+                    "train_study_ce": _float_or_none(float(row["train_study_ce"])),
+                    "val_study_ce": _float_or_none(float(row["val_study_ce"])),
+                    "val_study_accuracy": _float_or_none(float(row["val_study_accuracy"])),
+                    "val_study_n_labeled": int(row["val_study_n_labeled"]),
+                }
+            )
+        payload.append(entry)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1247,11 +1180,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     max_len = model_max_length(model_name, merged.get("max_length"))
     head_mode = str(merged["head_pooling_mode"]).strip()
-    aggregate = str(merged["run_logits_aggregate"]).strip().lower()
     if head_mode not in HEAD_MODES:
         raise SystemExit(f"head_pooling_mode must be one of {HEAD_MODES}; got {head_mode!r}.")
-    if aggregate not in AGGREGATES:
-        raise SystemExit(f"run_logits_aggregate must be one of {AGGREGATES}; got {aggregate!r}.")
     if num_sets > cache_num_sets:
         raise SystemExit(
             f"train_hyenadna.num_sets ({num_sets}) exceeds run_tensors.num_sets "
@@ -1290,15 +1220,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pos_label = primary_head.pos_label
     pos_class_index = primary_head.pos_class_index
 
-    study_adv_enabled = bool(merged.get("study_adv", False))
+    raw_saw = merged.get("study_adv_weight")
+    study_adv_weight = 0.0 if raw_saw is None else float(raw_saw)
+    if study_adv_weight < 0:
+        raise SystemExit("train_hyenadna.study_adv_weight must be >= 0.")
+    study_adv_enabled = study_adv_weight > 0.0
     study_name_to_id: Optional[Dict[str, int]] = None
     if study_adv_enabled:
         tr_st = run_task_df.loc[run_task_df["split"] == "train", "study_name"]
         uniq_studies = sorted({str(s).strip() for s in tr_st.unique()})
         if len(uniq_studies) < 2:
             raise SystemExit(
-                "train_hyenadna.study_adv requires at least 2 distinct study_name values "
-                "in the train split."
+                "train_hyenadna.study_adv_weight > 0 requires at least 2 distinct study_name "
+                "values in the train split."
             )
         study_name_to_id = {name: i for i, name in enumerate(uniq_studies)}
 
@@ -1380,7 +1314,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         print("\nExperiment: EXPT=0 (defaults.yaml config)", flush=True)
     extra = (
-        f"task_ratio={task_cfg.task_ratio} tuning_task={task_cfg.tuning_task} | "
+        f"loss_ratio={task_cfg.loss_ratio} tuning_ratio={task_cfg.tuning_ratio} | "
         if multitask
         else f"positive_class={pos_label!r} (index {pos_class_index}) | "
     )
@@ -1388,7 +1322,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"\nHyenaDNA train | task={task} model={model_name} | "
         f"{extra}"
         f"precision={'amp(' + amp_dtype_name + ')' if amp_enabled else 'fp32'} | "
-        f"study_adv={'on' if study_adv_enabled else 'off'}",
+        f"study_adv_weight={study_adv_weight}",
         flush=True,
     )
 
@@ -1396,9 +1330,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     wd = float(merged["weight_decay"])
     label_smoothing = float(merged.get("label_smoothing") or 0.0)
     raw_blm = merged.get("backbone_lr_mult")
-    backbone_lr_mult: Optional[float] = (
-        None if raw_blm is None else float(raw_blm)
-    )
+    backbone_lr_mult = 1.0 if raw_blm is None else float(raw_blm)
     train_sampler = str(merged.get("train_sampler") or "random").strip().lower()
     tuning_metric = str(merged.get("tuning_metric") or "auroc").strip()
     class_weight_mode = str(merged.get("class_weight") or "none")
@@ -1417,7 +1349,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             device=device,
             label_getter=lambda e: e.ct_label,
         )
-    freeze_full = bool(merged.get("freeze_backbone"))
     transition_n = int(merged.get("freeze_backbone_epochs") or 0)
     head_arch = str(merged.get("head_arch") or "linear").strip().lower()
     raw_hh = merged.get("head_hidden")
@@ -1510,12 +1441,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     epoch_log: List[Dict[str, object]] = []
     best_tuning_score = float("-inf")
     best_epoch = 0
-    best_val_f1 = float("nan")
-    best_val_auroc = float("nan")
     best_val_scores: Optional[Dict[str, object]] = None
     best_state: Optional[Dict[str, torch.Tensor]] = None
     score_ctx = ScoreContext(
-        aggregate=aggregate,
         requested_num_sets=num_sets,
         requested_max_len=max_len,
         cache_num_sets=cache_num_sets,
@@ -1540,22 +1468,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for ep in range(1, epochs + 1):
         print(f"\n--- Epoch {ep}/{epochs} ---", flush=True)
 
-        if freeze_full:
-            _set_backbone_requires_grad(model, False)
-        elif transition_n > 0:
+        if transition_n > 0:
             _set_backbone_requires_grad(model, ep > transition_n)
         else:
             _set_backbone_requires_grad(model, True)
 
         if ep == 1 or (transition_n > 0 and ep == transition_n + 1):
-            if freeze_full:
+            if transition_n > 0 and ep <= transition_n:
                 opt = _make_optimizer(
-                    model, lr=lr, weight_decay=wd, backbone_lr_mult=None
-                )
-                scheduler = None
-            elif transition_n > 0 and ep <= transition_n:
-                opt = _make_optimizer(
-                    model, lr=lr, weight_decay=wd, backbone_lr_mult=None
+                    model, lr=lr, weight_decay=wd, backbone_lr_mult=backbone_lr_mult
                 )
                 scheduler = None
             elif transition_n > 0 and ep == transition_n + 1:
@@ -1595,16 +1516,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ep,
             study_adv_enabled=study_adv_enabled,
             delay_epochs=int(merged.get("study_adv_delay_epochs") or 0),
-            disc_warmup_enabled=bool(merged.get("study_discriminator_warmup", False)),
             disc_warmup_epochs=int(merged.get("study_disc_warmup_epochs") or 0),
         )
         study_train_kw: Optional[Dict[str, object]] = None
         if study_adv_enabled:
-            saw = float(merged.get("study_adv_weight") or 0.1)
             study_train_kw = {
                 "phase": study_phase,
-                "study_adv_weight": saw,
-                "study_grl_lambda": float(saw) if study_phase == "dann" else 0.0,
+                "study_adv_weight": study_adv_weight,
+                "study_grl_lambda": float(study_adv_weight) if study_phase == "dann" else 0.0,
             }
             print(
                 f"study_adv phase={study_phase}  study_grl_lambda={study_train_kw['study_grl_lambda']}",
@@ -1624,7 +1543,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             label_smoothing=label_smoothing,
             study_train_kw=study_train_kw,
             ce_weight_ct=ce_weight_ct,
-            task_ratio=task_cfg.task_ratio,
+            loss_ratio=task_cfg.loss_ratio,
         )
         train_study_ce = float(train_study_stats["train_study_ce"])
 
@@ -1637,7 +1556,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ce_weight=ce_weight,
             label_smoothing=label_smoothing,
             ce_weight_ct=ce_weight_ct,
-            task_ratio=task_cfg.task_ratio,
+            loss_ratio=task_cfg.loss_ratio,
         )
 
         val_study_ce = float("nan")
@@ -1664,80 +1583,66 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_dtype=amp_dtype,
         )
         primary_val = split_eval.val[task_cfg.primary_head]
-        val_true, val_score = primary_val.y_true, primary_val.y_score
-        val_f1 = primary_val.f1_weighted
-        val_auroc = primary_val.auroc
-        test_auroc = split_eval.test[task_cfg.primary_head].auroc
-        hold_auroc = split_eval.holdout[task_cfg.primary_head].auroc
-        hold_primary = split_eval.holdout[task_cfg.primary_head]
-        hold_true, hold_score_m = hold_primary.y_true, hold_primary.y_score
-
-        val_ps = _per_study_auroc_dict(
-            val_entries, val_true, val_score, positive_label=pos_label
-        )
-        hold_ps = _per_study_auroc_dict(
-            holdout_entries, hold_true, hold_score_m, positive_label=pos_label
-        )
-        hold_ps_diag = _per_study_score_diagnostics(
-            holdout_entries,
-            hold_true,
-            hold_score_m,
-            negative_label=neg_label,
-            positive_label=pos_label,
-        )
-        val_by_label = _label_score_moments(
-            val_true,
-            val_score,
-            neg_label=neg_label,
-            pos_label=pos_label,
-        )
-        hold_by_label = _label_score_moments(
-            hold_true,
-            hold_score_m,
-            neg_label=neg_label,
-            pos_label=pos_label,
-        )
+        val_w_fmeasure = primary_val.f1_weighted
+        val_primary_curve = primary_val.auroc
+        test_primary_curve = split_eval.test[task_cfg.primary_head].auroc
+        hold_primary_curve = split_eval.holdout[task_cfg.primary_head].auroc
 
         lr_log = float(opt.param_groups[0]["lr"])
         if multitask:
             ts = tuning_score_from_heads(
                 split_eval.val,
                 tuning_metric=tuning_metric,
-                tuning_task=task_cfg.tuning_task,
+                tuning_ratio=task_cfg.tuning_ratio,
             )
-        else:
-            ts = tuning_score_single(val_f1, val_auroc, tuning_metric)
-        epoch_log.append(
-            {
+            epoch_row: Dict[str, object] = {
                 "epoch": int(ep),
                 "learning_rate": lr_log,
                 "train_loss": float(last_loss),
                 "val_loss": float(val_loss),
-                "val_f1_weighted": float(val_f1),
-                "val_auroc": float(val_auroc),
-                "val_per_study_auroc": val_ps,
-                "test_auroc": float(test_auroc),
-                "holdout_auroc": float(hold_auroc),
-                "holdout_per_study_auroc": hold_ps,
-                "holdout_per_study_score_diagnostics": hold_ps_diag,
-                "val_score_by_label": val_by_label,
-                "holdout_score_by_label": hold_by_label,
-                "study_adv_phase": str(study_phase),
-                "study_grl_lambda": float(study_train_kw["study_grl_lambda"]) if study_train_kw else 0.0,
-                "train_study_ce": float(train_study_ce),
-                "val_study_ce": float(val_study_ce),
-                "val_study_accuracy": float(val_study_acc),
-                "val_study_n_labeled": int(val_study_n_labeled),
+                "val_auroc_cd": float(split_eval.val[HEAD_CD].auroc),
+                "val_auroc_ct": float(split_eval.val[HEAD_CT].auroc),
+                "test_auroc_cd": float(split_eval.test[HEAD_CD].auroc),
+                "test_auroc_ct": float(split_eval.test[HEAD_CT].auroc),
+                "holdout_auroc_cd": float(split_eval.holdout[HEAD_CD].auroc),
+                "holdout_auroc_ct": float(split_eval.holdout[HEAD_CT].auroc),
             }
-        )
+        else:
+            ts = tuning_score_single(val_w_fmeasure, val_primary_curve, tuning_metric)
+            epoch_row = {
+                "epoch": int(ep),
+                "learning_rate": lr_log,
+                "train_loss": float(last_loss),
+                "val_loss": float(val_loss),
+                "val_auroc": float(val_primary_curve),
+                "test_auroc": float(test_primary_curve),
+                "holdout_auroc": float(hold_primary_curve),
+            }
+        if study_adv_enabled:
+            epoch_row.update(
+                {
+                    "study_adv_phase": str(study_phase),
+                    "study_grl_lambda": float(study_train_kw["study_grl_lambda"])
+                    if study_train_kw
+                    else 0.0,
+                    "train_study_ce": float(train_study_ce),
+                    "val_study_ce": float(val_study_ce),
+                    "val_study_accuracy": float(val_study_acc),
+                    "val_study_n_labeled": int(val_study_n_labeled),
+                }
+            )
+        epoch_log.append(epoch_row)
         if training_log_path is not None:
-            _write_training_log(training_log_path, epoch_log)
+            _write_training_log(
+                training_log_path,
+                epoch_log,
+                multitask=multitask,
+                study_adv_enabled=study_adv_enabled,
+            )
 
         if ts > best_tuning_score:
             best_tuning_score = float(ts)
             best_epoch = int(ep)
-            best_val_f1 = float(val_f1)
-            best_val_auroc = float(val_auroc)
             best_val_scores = split_eval.val
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()

@@ -46,24 +46,14 @@ import yaml
 # <sup>) and are intentionally not escaped when rendered into the <td>.
 ABLATION_DESCRIPTIONS: Dict[str, str] = {
     "best_recipe": "Best recipe (baseline)",
-    "medium": "4096-token context with batch size 10",
-    "no_study_balanced": "Random training sampler (no study-balanced sampling)",
-    "class_balanced": "Balanced class weighting",
-    "no_class_weight": "No class weighting",
     "high_lr": "Higher learning rate (10<sup>\u22124</sup> instead of 10<sup>\u22125</sup>)",
-    "high_adv_weight": "Higher study adversarial weight (0.6 instead of 0.3)",
-    "no_dann": "No domain adversarial training",
-    "with_dann": "With domain adversarial training (study head)",
-    "20_epochs": "20 epochs instead of 10",
-    "30_epochs": "30 epochs instead of 10",
-    "30epochs": "30 epochs instead of 10",
-    "run_logits_max": "Use max of set-level logits instead of mean",
-    "head_mlp": "MLP classification head instead of linear",
-    "head_mlp_dropout": "MLP classification head with dropout",
-    "head_mlp_freeze": "MLP classification head with frozen backbone (first 5 epochs)",
-    "label_smoothing": "Label smoothing 0.1",
-    "mlp_tr0.6": "MLP with 0.6 task ratio",
-    "mlp_tr0.7_frz5": "MLP with 5 frozen backbone epochs and 0.7 task ratio",
+    "study_adv": "With domain adversarial training (study head)",
+    "no_backbone_freezing": "No frozen backbone in first 5 epochs",
+    "loss_ratio_0.5": "Evenly weight diagnosis and task heads for loss",
+    #"no_study_balanced": "Random training sampler (no study-balanced sampling)",
+    #"class_balanced": "Balanced class weighting",
+    #"head_linear": "Linear classification head instead of MLP",
+    #"label_smoothing": "Label smoothing 0.1",
 }
 TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("cd", "Cancer diagnosis"),
@@ -271,6 +261,8 @@ def _experiment_rows(repo_root: Path) -> List[Dict[str, object]]:
         if not isinstance(row, dict):
             raise SystemExit(f"experiments.yaml row {idx + 1} is not a mapping.")
         name = str(row.get("name") or "").strip()
+        if "max_length" in name:
+            continue
         if name not in ABLATION_DESCRIPTIONS:
             raise SystemExit(
                 f"experiments.yaml row {idx + 1}: unknown experiment name {name!r}; "
@@ -320,6 +312,8 @@ def _seed_files(
     out: List[Tuple[int, Path]] = []
     for p in candidates:
         if p.name.endswith("_training.json"):
+            continue
+        if "max_length" in p.name:
             continue
         m = _SEED_RE.search(p.name)
         if m is None:
