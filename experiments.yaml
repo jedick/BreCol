@@ -63,72 +63,74 @@ train_hyenadna:
   results_json_template: results/hyenadna/{task_abbrv}_{name}_{max_length/1024}k_s{seed}.json
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
   sigsegv_retries: 2
+  # Training script supports grids over task and random_seed
+  # (e.g. task: [cancer_diagnosis,cancer_type], random_seed: [0,1,2])
   experiments:
-    # With 5 sets and 2048 max_length, batch_size=20 uses ca. 15 GB GPU memory
-    # Timings to run 3 seeds over 10 epochs (no frozen backbone epochs):
-    #   - about 26 minutes for cancer_diagnosis
-    #   - about 13 minutes for cancer_type
-    #   - about 22 minutes for multitask
-    # Estimated total time for 5 multitask experiments with 3 seeds and 25 epochs:
-    #   5 * (22) * 3/3 * 25/10 = 275 minutes (4.6 hours)
+    # Timings to run 3 seeds over 10 epochs (5 sets and 2048 max_length):
+    # - Unfrozen backbone (batch_size=20 for 15GB GPU memory):
+    #   cancer_diagnosis (26 min), cancer_type (13 min), multitask (24 min)
+    # - Frozen backbone (batch_size=80 for 15GB GPU memory):
+    #   multitask (15 min)
+    # Estimated total time for 7 multitask experiments with 5 seeds:
+    #   5/3 * (5 * 15 + 2 * 24) = 205 min (3.4 hr)
     - name: best_recipe  # EXPT=1
       overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
+        random_seed: [0,1,2,3,4]
     - name: high_lr  # EXPT=2
       overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
-        learning_rate: 1.0e-4
-    - name: study_adv  # EXPT=3
+        random_seed: [0,1,2,3,4]
+        learning_rate: 5.0e-4
+    - name: dropout_0.2  # EXPT=3
       overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
-        study_adv_weight: 0.2
-    - name: no_backbone_freezing  # EXPT=4
+        random_seed: [0,1,2,3,4]
+        head_dropout: 0.2
+    - name: hidden_256  # EXPT=4
       overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
+        random_seed: [0,1,2,3,4]
+        head_hidden: 256
+    - name: unfrozen_backbone  # EXPT=5
+      overrides:
+        random_seed: [0,1,2,3,4]
         freeze_backbone_epochs: 0
-        epochs: 20
-    - name: loss_ratio_0.5  # EXPT=5
-      overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
-        loss_ratio: 0.5
-    # Increasing max_length experiment grid
-    - name: max_length_1024  # EXPT=6 (27 min)
-      overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
-        max_length: 1024
-        batch_size: 40
-        epochs: 30
-    - name: max_length_2048  # EXPT=7 (63 min)
-      overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
-        max_length: 2048
         batch_size: 20
-        epochs: 30
-    - name: max_length_4096  # EXPT=8 (117 min)
+    - name: unfrozen_backbone_low_lr  # EXPT=6
       overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
+        random_seed: [0,1,2,3,4]
+        freeze_backbone_epochs: 0
+        learning_rate: 1.0e-5
+        batch_size: 20
+    - name: study_adv  # EXPT=7
+      overrides:
+        random_seed: [0,1,2,3,4]
+        study_adv_weight: 0.2
+    # Increasing max_length experiment grid (ca. 9.5 hr)
+    - name: max_length_1024  # EXPT=7 (14 min)
+      overrides:
+        random_seed: [0,1,2,3]
+        max_length: 1024
+        batch_size: 160
+    - name: max_length_2048  # EXPT=8 (20 min)
+      overrides:
+        random_seed: [0,1,2,3]
+        max_length: 2048
+        batch_size: 80
+    - name: max_length_4096  # EXPT=9 (35 min)
+      overrides:
+        random_seed: [0,1,2,3]
         max_length: 4096
-        batch_size: 10
-        epochs: 30
-    - name: max_length_8192  # EXPT=9 (233 min)
+        batch_size: 40
+    - name: max_length_8192  # EXPT=10 (66 min)
       overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
+        random_seed: [0,1,2,3]
         max_length: 8192
-        batch_size: 5
-        epochs: 30
-    - name: max_length_16384  # EXPT=10
+        batch_size: 20
+    - name: max_length_16384  # EXPT=11 (128 min)
       overrides:
-        task: "multitask"
-        random_seed: "0,1,2"
+        random_seed: [0,1,2,3]
         max_length: 16384
-        batch_size: 2
-        epochs: 30
+        batch_size: 10
+    - name: max_length_32768  # EXPT=12 (307 min)
+      overrides:
+        random_seed: [0,1,2,3]
+        max_length: 32768
+        batch_size: 5

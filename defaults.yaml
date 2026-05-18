@@ -69,8 +69,8 @@ fit_classifier:
   # Comma-separated SVM kernel grid.
   svm_kernel_grid: "rbf"
   # Metric to maximize on the validation split during hyperparameter tuning
-  # (accuracy | f1_macro | f1_weighted | auroc).
-  tuning_metric: f1_weighted
+  # (accuracy | f1 | auroc).
+  tuning_metric: f1
   # Optional output path for metrics JSON; null disables JSON output (experiments may set via template).
   results_json: null
 
@@ -123,13 +123,13 @@ run_tensors:
   sampling_seed: 0
   # If set, cap the number of post-offset sequences considered per run before set packing.
   # null uses all available post-offset sequences.
-  max_sequences_per_run: 8000
+  max_sequences_per_run: null
   # If true, remove exact duplicate sequence strings per run before sampling/packing.
   deduplicate_sequences: false
   # Number of set rows in each cached tensor; non-overlapping sequence groups (see max_length).
   num_sets: 5
   # Per-set DNA character budget when packing FASTA records; train_hyenadna.max_length must not exceed this.
-  max_length: 16384
+  max_length: 32768
   # Parallel worker processes for FASTA -> .pt (1 runs jobs sequentially).
   max_workers: 8
 
@@ -151,15 +151,15 @@ train_hyenadna:
   max_length: 2048
   # Batch size accepts a positive integer, or exactly 0.5 to train one run at a time
   # with two micro-passes over set slices [0:5] and [5:10] (requires num_sets: 10).
-  batch_size: 20
+  batch_size: 80
 
   ## Task/tuning
   # Task: cancer_diagnosis, cancer_type, or multitask (two heads, shared backbone).
-  task: cancer_diagnosis
-  # Validation metric used to pick the best epoch: auroc | f1_weighted.
+  task: multitask
+  # Validation metric used to pick the best epoch: auroc | f1.
   tuning_metric: auroc
   # multitask: loss = loss_ratio * L_diagnosis + (1 - loss_ratio) * L_type (1 = diagnosis only).
-  loss_ratio: 0.7
+  loss_ratio: 0.5
   # multitask: validation checkpoint blends diagnosis vs type scores (1 = diagnosis only, 0 = type only, 0.5 = equal weight).
   tuning_ratio: 0.5
   
@@ -171,37 +171,28 @@ train_hyenadna:
   # Low-precision dtype for AMP autocast: float16 or bfloat16.
   amp_dtype: bfloat16
   
-  ## Sampling/weighting/smoothing
+  ## Sampling/weighting
   # train sampler: random | study_balanced (approximate uniform sampling over study_name).
   train_sampler: study_balanced
   # Class weights: none | balanced | balanced_sqrt (tempered inverse frequency).
   class_weight: none
-  # Label smoothing for cross-entropy (0 disables).
-  label_smoothing: 0.0
 
   ## Optimization
-  epochs: 25
+  epochs: 10
   random_seed: 0
   num_workers: 0
-  learning_rate: 1.0e-5
+  learning_rate: 2.0e-4
   weight_decay: 0.01
-  # LR schedule: none | warmup_cosine (linear warmup then cosine decay to min_lr_ratio * peak LR).
-  lr_schedule: none
-  # Note: warmup_epochs is ignored when lr_schedule is none
-  warmup_epochs: 2
-  min_lr_ratio: 0.1
   # Backbone freezing: 0 = train backbone from epoch 1; N > 0 freezes epochs 1..N then unfreezes.
   # If N >= epochs, the entire run is head-only.
-  freeze_backbone_epochs: 5
+  freeze_backbone_epochs: 10
   # lr_backbone = learning_rate * backbone_lr_mult; heads use learning_rate unchanged (1.0 = no scale).
   backbone_lr_mult: 1.0
 
   ## Classification head / heads (for multitask)
-  # Architecture: linear (single Linear) or mlp (Linear → GELU → Dropout → Linear).
-  head_arch: mlp
-  # Hidden width when head_arch is mlp.
-  head_hidden: 256
-  # Dropout after the hidden activation when head_arch is mlp.
+  # 0 = linear head; positive int = one MLP hidden layer width.
+  head_hidden: 512
+  # Dropout after the MLP hidden GELU (ignored when head_hidden is 0).
   head_dropout: 0.0
   # SequenceDecoder head mode in hyenadna/standalone_hyenadna.py: last, first, pool, sum.
   head_pooling_mode: pool
@@ -213,15 +204,13 @@ train_hyenadna:
   study_head_hidden: 256
   study_head_dropout: 0.0
   # Epochs 1..N: cancer task loss only (study branch inactive).
-  study_adv_delay_epochs: 5
+  study_adv_delay_epochs: 1
   # After delay: train study head on detached backbone features for this many epochs before GRL (0 = skip).
   study_disc_warmup_epochs: 1
   
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
   # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template.
   results_json: null
-
-
 
 # Frozen HyenaDNA feature extraction (scripts/extract_embeddings.py).
 # Produces one consolidated CSV per feature set in paths.embeddings_dir.

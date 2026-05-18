@@ -59,7 +59,7 @@ from sklearn.svm import SVC
 T = TypeVar("T")
 
 MODEL_CHOICES = ("baseline", "knn", "random_forest", "logistic_regression", "svm")
-TUNING_METRIC_CHOICES = ("accuracy", "f1_macro", "f1_weighted", "auroc")
+TUNING_METRIC_CHOICES = ("accuracy", "f1", "auroc")
 
 
 @dataclass(frozen=True)
@@ -700,10 +700,19 @@ def _evaluation_scores(pipe: Pipeline, X: np.ndarray) -> np.ndarray:
 def _score_val(y_true: np.ndarray, y_pred: np.ndarray, tuning_metric: str) -> float:
     if tuning_metric == "accuracy":
         return float(accuracy_score(y_true, y_pred))
-    if tuning_metric == "f1_macro":
-        return float(f1_score(y_true, y_pred, average="macro"))
-    if tuning_metric == "f1_weighted":
-        return float(f1_score(y_true, y_pred, average="weighted"))
+    if tuning_metric == "f1":
+        classes = np.unique(np.asarray(y_true, dtype=object))
+        if classes.size != 2:
+            return float("nan")
+        return float(
+            f1_score(
+                y_true,
+                y_pred,
+                pos_label=classes[1],
+                average="binary",
+                zero_division=0,
+            )
+        )
     raise SystemExit(f"Unknown tuning_metric: {tuning_metric!r}")
 
 

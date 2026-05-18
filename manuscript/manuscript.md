@@ -222,7 +222,8 @@ SVM reaches only 0.484 and KNN only 0.407, confirming that tetramer classifiers 
 
 ### UC/CAP-based classifiers
 
-We explored eight combinations of the three UC/CAP hyperparameters: *n*<sub>UC</sub> (sequences per run used to build the codebook), *K* (number of clusters), and *n*<sub>CAP</sub> (sequences per run assigned at test time), listed in Table 3.
+We explored eight combinations of the three UC/CAP hyperparameters: *n*<sub>UC</sub> (sequences per run used to build the codebook),
+*K* (number of clusters), and *n*<sub>CAP</sub> (sequences per run assigned at test time), listed in Table 3.
 
 | Feature set | *n*UC | *K* | *n*CAP |
 |-|-|-|-|
@@ -280,9 +281,9 @@ and that replacing the linear classification head with an MLP head (256 hidden u
 ### Classification with HyenaDNA: Modeled sequence length
 
 For each task (cancer diagnosis and cancer type) we trained separate classification heads on the same backbone (multitask model).
-We varied the length per set (up to 1k, 2k, 4k, 8k, and 16k positions) to study how much sequence context per run matters.
-A single large cache (16k length each) was built from consecutive sequences without within-FASTA shuffling;
-shorter training configurations were obtained from that cache by truncating to the target length.
+We varied the length per set (up to 1k, 2k, 4k, 8k, 16k, and 32k positions) to study how much sequence context per run matters.
+A single large cache (32k length for each sequence set) was built from randomly sampled FASTA sequences after skipping the first 1000 in each run.
+Shorter training configurations were obtained from that cache by truncating to the target length.
 
 Figure 2 shows AUC on the test and holdout splits as a function of length per set, within each task (columns).
 Holdout performance is generally weaker than test performance.

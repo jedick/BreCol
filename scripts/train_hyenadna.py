@@ -6,8 +6,8 @@ Uses a pre-built feature-only per-run tensor cache under paths.run_tensors_dir/ 
 scripts/build_run_tensors.py, joins labels/splits from shared metadata at runtime, and reports
 run-level AUROC on the test and holdout splits (one score per Run).
 
-Training logs (`*_training.json`) record per-epoch loss and AUROC metrics aligned with
-console output (task-suffixed keys in multitask mode). Checkpoints are
+Training logs (`*_training.json`) record per-epoch loss, binary F1, and AUROC metrics
+aligned with console output (task-suffixed keys in multitask mode). Checkpoints are
 selected by ``train_hyenadna.tuning_metric`` (default ``auroc``); for ``task: multitask``,
 ``tuning_ratio`` (with ``tuning_metric``) sets the blend of diagnosis vs type validation scores for checkpointing.
 
@@ -53,7 +53,6 @@ import yaml
 from hyenadna import HyenaDNAPreTrainedModel
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
@@ -282,7 +281,6 @@ def training_loss(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     ce_weight: Optional[torch.Tensor],
-    label_smoothing: float,
     study_train_kw: Optional[Mapping[str, object]] = None,
 ) -> torch.Tensor:
     loss_sum, denom, _ = training_loss_sum_and_count(
@@ -292,7 +290,6 @@ def training_loss(
         amp_enabled=amp_enabled,
         amp_dtype=amp_dtype,
         ce_weight=ce_weight,
-        label_smoothing=label_smoothing,
         study_train_kw=study_train_kw,
     )
     if denom <= 0:
@@ -308,7 +305,6 @@ def training_loss_sum_and_count(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     ce_weight: Optional[torch.Tensor] = None,
-    label_smoothing: float = 0.0,
     study_train_kw: Optional[Mapping[str, object]] = None,
     ce_weight_ct: Optional[torch.Tensor] = None,
     loss_ratio: float = 1.0,
@@ -322,7 +318,6 @@ def training_loss_sum_and_count(
             amp_dtype=amp_dtype,
             ce_weight_cd=ce_weight,
             ce_weight_ct=ce_weight_ct,
-            label_smoothing=label_smoothing,
             study_train_kw=study_train_kw,
             loss_ratio=float(loss_ratio),
             study_ignore_index=STUDY_IGNORE_INDEX,
@@ -373,8 +368,6 @@ def training_loss_sum_and_count(
             device=flat_logits.device,
             dtype=flat_logits.dtype,
         )
-    if label_smoothing > 0.0:
-        ce_kw["label_smoothing"] = float(label_smoothing)
     task_ce = F.cross_entropy(flat_logits, flat_y, **ce_kw)
     n_task = int(flat_y.shape[0])
 
@@ -531,7 +524,6 @@ def _eval_mean_ce_loss(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     ce_weight: Optional[torch.Tensor],
-    label_smoothing: float,
     ce_weight_ct: Optional[torch.Tensor] = None,
     loss_ratio: float = 1.0,
 ) -> float:
@@ -547,7 +539,6 @@ def _eval_mean_ce_loss(
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
                 ce_weight=ce_weight,
-                label_smoothing=label_smoothing,
                 study_train_kw=None,
                 ce_weight_ct=ce_weight_ct,
                 loss_ratio=loss_ratio,
@@ -649,32 +640,6 @@ def _set_backbone_requires_grad(model: torch.nn.Module, trainable: bool) -> None
             p.requires_grad = True
 
 
-def _make_lr_scheduler(
-    optimizer: torch.optim.Optimizer,
-    *,
-    schedule: str,
-    epochs: int,
-    warmup_epochs: int,
-    base_lr: float,
-    min_lr_ratio: float,
-) -> Optional[Any]:
-    sched = str(schedule or "none").strip().lower()
-    if sched == "none":
-        return None
-    if sched == "warmup_cosine":
-        wu = max(int(warmup_epochs), 0)
-        if wu >= epochs:
-            raise SystemExit("warmup_epochs must be < epochs when using warmup_cosine.")
-        min_lr = float(base_lr) * float(min_lr_ratio)
-        rem = max(epochs - wu, 1)
-        cosine = CosineAnnealingLR(optimizer, T_max=rem, eta_min=min_lr)
-        if wu == 0:
-            return cosine
-        warmup = LinearLR(optimizer, start_factor=1e-8, end_factor=1.0, total_iters=wu)
-        return SequentialLR(optimizer, [warmup, cosine], milestones=[wu])
-    raise SystemExit(f"Unknown lr_schedule {schedule!r} (use none or warmup_cosine).")
-
-
 def _optimizer_step(
     optimizer: torch.optim.Optimizer,
     scaler: Optional[torch.amp.GradScaler],
@@ -697,7 +662,6 @@ def train_epoch(
     amp_dtype: torch.dtype,
     scaler: Optional[torch.amp.GradScaler],
     ce_weight: Optional[torch.Tensor],
-    label_smoothing: float,
     study_train_kw: Optional[Mapping[str, object]] = None,
     ce_weight_ct: Optional[torch.Tensor] = None,
     loss_ratio: float = 1.0,
@@ -725,7 +689,6 @@ def train_epoch(
                     amp_enabled=amp_enabled,
                     amp_dtype=amp_dtype,
                     ce_weight=ce_weight,
-                    label_smoothing=label_smoothing,
                     study_train_kw=study_train_kw,
                     ce_weight_ct=ce_weight_ct,
                     loss_ratio=loss_ratio,
@@ -748,7 +711,6 @@ def train_epoch(
                     amp_enabled=amp_enabled,
                     amp_dtype=amp_dtype,
                     ce_weight=ce_weight,
-                    label_smoothing=label_smoothing,
                     study_train_kw=study_train_kw,
                     ce_weight_ct=ce_weight_ct,
                     loss_ratio=loss_ratio,
@@ -773,7 +735,6 @@ def train_epoch(
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
                 ce_weight=ce_weight,
-                label_smoothing=label_smoothing,
                 study_train_kw=study_train_kw,
                 ce_weight_ct=ce_weight_ct,
                 loss_ratio=loss_ratio,
@@ -826,12 +787,6 @@ def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        "--override-max-length",
-        type=int,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
         "--override-task",
         type=str,
         default=None,
@@ -848,43 +803,52 @@ def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     return args
 
 
-def _parse_int_grid(raw: object) -> Optional[List[int]]:
+def _parse_seed_grid(raw: object) -> Optional[List[int]]:
+    if raw is None:
+        return None
     if isinstance(raw, int):
         return [int(raw)]
-    if isinstance(raw, str):
-        text = raw.strip()
-        if not text:
-            return None
-        parts = [p.strip() for p in text.split(",")]
-        if len(parts) <= 1:
-            return None
+    if isinstance(raw, (list, tuple)):
+        if not raw:
+            raise SystemExit("random_seed grid must not be empty.")
         try:
-            return [int(p) for p in parts if p]
-        except ValueError as exc:
+            return [int(x) for x in raw]
+        except (TypeError, ValueError) as exc:
             raise SystemExit(
-                f"Grid override values must be comma-separated integers; got {raw!r}."
+                f"random_seed grid must be a list of integers; got {raw!r}."
             ) from exc
-    return None
+    raise SystemExit(
+        f"random_seed must be an integer or a YAML list of integers; got {type(raw).__name__}."
+    )
 
 
 def _parse_task_grid(raw: object) -> Optional[List[str]]:
     if raw is None:
         return None
     if isinstance(raw, str):
-        text = raw.strip()
-        if not text:
+        task = raw.strip()
+        if not task:
             return None
-        parts = [p.strip() for p in text.split(",") if p.strip()]
-        if len(parts) <= 1:
-            return None
-        bad = [p for p in parts if p not in _HYENADNA_TASK_GRID_VALUES]
+        if task not in _HYENADNA_TASK_GRID_VALUES:
+            raise SystemExit(
+                f"Unknown train_hyenadna.task {task!r} "
+                "(use cancer_diagnosis, cancer_type, or multitask)."
+            )
+        return [task]
+    if isinstance(raw, (list, tuple)):
+        if not raw:
+            raise SystemExit("task grid must not be empty.")
+        tasks = [str(t).strip() for t in raw]
+        bad = [p for p in tasks if p not in _HYENADNA_TASK_GRID_VALUES]
         if bad:
             raise SystemExit(
                 "train_hyenadna task grid must list only cancer_diagnosis, "
                 f"cancer_type, and/or multitask; unknown value(s): {bad!r}."
             )
-        return parts
-    return None
+        return tasks
+    raise SystemExit(
+        f"task must be a string or a YAML list of task names; got {type(raw).__name__}."
+    )
 
 
 def _format_hyenadna_results_template(
@@ -988,6 +952,12 @@ def _write_training_log(
         if multitask:
             entry.update(
                 {
+                    "val_f1_cd": _float_or_none(float(row["val_f1_cd"])),
+                    "val_f1_ct": _float_or_none(float(row["val_f1_ct"])),
+                    "test_f1_cd": _float_or_none(float(row["test_f1_cd"])),
+                    "test_f1_ct": _float_or_none(float(row["test_f1_ct"])),
+                    "holdout_f1_cd": _float_or_none(float(row["holdout_f1_cd"])),
+                    "holdout_f1_ct": _float_or_none(float(row["holdout_f1_ct"])),
                     "val_auroc_cd": _float_or_none(float(row["val_auroc_cd"])),
                     "val_auroc_ct": _float_or_none(float(row["val_auroc_ct"])),
                     "test_auroc_cd": _float_or_none(float(row["test_auroc_cd"])),
@@ -999,6 +969,9 @@ def _write_training_log(
         else:
             entry.update(
                 {
+                    "val_f1": _float_or_none(float(row["val_f1"])),
+                    "test_f1": _float_or_none(float(row["test_f1"])),
+                    "holdout_f1": _float_or_none(float(row["holdout_f1"])),
                     "val_auroc": _float_or_none(float(row["val_auroc"])),
                     "test_auroc": _float_or_none(float(row["test_auroc"])),
                     "holdout_auroc": _float_or_none(float(row["holdout_auroc"])),
@@ -1048,8 +1021,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         merged = {**merged, "task": str(cli.override_task).strip()}
     if cli.override_random_seed is not None:
         merged = {**merged, "random_seed": int(cli.override_random_seed)}
-    if cli.override_max_length is not None:
-        merged = {**merged, "max_length": int(cli.override_max_length)}
 
     if expt > 0 and not cli.child_run:
         experiments_cfg = yaml.safe_load(experiments_path.read_text(encoding="utf-8")) or {}
@@ -1069,12 +1040,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise SystemExit("train_hyenadna experiment overrides must be a mapping.")
 
         task_grid = _parse_task_grid(overrides.get("task")) or [str(merged["task"]).strip()]
-        seed_grid = _parse_int_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
-        max_len_grid = _parse_int_grid(overrides.get("max_length"))
-        if max_len_grid is None:
-            max_len_grid = [int(model_max_length(str(merged["model"]).strip(), merged.get("max_length")))]
+        seed_grid = _parse_seed_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
+        grid_max_length = int(
+            model_max_length(str(merged["model"]).strip(), merged.get("max_length"))
+        )
 
-        if len(task_grid) > 1 or len(seed_grid) > 1 or len(max_len_grid) > 1:
+        if len(task_grid) > 1 or len(seed_grid) > 1:
             template = _tpl if isinstance(_tpl, str) and _tpl.strip() else None
             if template is None:
                 raise SystemExit(
@@ -1087,60 +1058,55 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "--results-json cannot be used with multi-run train_hyenadna grid experiments."
                 )
 
-            total = int(len(task_grid) * len(max_len_grid) * len(seed_grid))
+            total = int(len(task_grid) * len(seed_grid))
             completed = 0
             skipped = 0
             print(
-                f"Running EXPT={expt} grid: {len(task_grid)} task(s) x {len(max_len_grid)} "
-                f"max_length x {len(seed_grid)} seed(s) = {total} run(s) "
-                "(outer: task, inner: seed).",
+                f"Running EXPT={expt} grid: {len(task_grid)} task(s) x {len(seed_grid)} seed(s) "
+                f"= {total} run(s) (max_length={grid_max_length}; outer: task, inner: seed).",
                 flush=True,
             )
             for task_v in task_grid:
-                for max_length in max_len_grid:
-                    for seed in seed_grid:
-                        out_rel = _format_hyenadna_results_template(
-                            template,
-                            task=str(task_v),
-                            name=str(exp_name),
-                            seed=int(seed),
-                            max_length=int(max_length),
-                        )
-                        out_path = resolve_repo_path(repo_root, out_rel)
-                        if out_path.is_file():
-                            skipped += 1
-                            print(
-                                f"Skipping EXPT={expt} task={task_v} seed={seed} "
-                                f"max_length={max_length}: {out_path} already exists.",
-                                flush=True,
-                            )
-                            continue
-                        cmd = [
-                            sys.executable,
-                            str(Path(__file__).resolve()),
-                            "--expt",
-                            str(expt),
-                            "--child-run",
-                            "--override-task",
-                            str(task_v),
-                            "--override-random-seed",
-                            str(seed),
-                            "--override-max-length",
-                            str(max_length),
-                            "--results-json",
-                            str(out_path),
-                        ]
+                for seed in seed_grid:
+                    out_rel = _format_hyenadna_results_template(
+                        template,
+                        task=str(task_v),
+                        name=str(exp_name),
+                        seed=int(seed),
+                        max_length=grid_max_length,
+                    )
+                    out_path = resolve_repo_path(repo_root, out_rel)
+                    if out_path.is_file():
+                        skipped += 1
                         print(
-                            f"Launching EXPT={expt} task={task_v} seed={seed} "
-                            f"max_length={max_length} -> {out_path}",
+                            f"Skipping EXPT={expt} task={task_v} seed={seed}: "
+                            f"{out_path} already exists.",
                             flush=True,
                         )
-                        _run_grid_child_check(
-                            cmd,
-                            repo_root,
-                            sigsegv_retries=merged.get("sigsegv_retries"),
-                        )
-                        completed += 1
+                        continue
+                    cmd = [
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "--expt",
+                        str(expt),
+                        "--child-run",
+                        "--override-task",
+                        str(task_v),
+                        "--override-random-seed",
+                        str(seed),
+                        "--results-json",
+                        str(out_path),
+                    ]
+                    print(
+                        f"Launching EXPT={expt} task={task_v} seed={seed} -> {out_path}",
+                        flush=True,
+                    )
+                    _run_grid_child_check(
+                        cmd,
+                        repo_root,
+                        sigsegv_retries=merged.get("sigsegv_retries"),
+                    )
+                    completed += 1
             print(
                 f"Finished EXPT={expt} grid: launched={completed}, skipped_existing={skipped}, total={total}.",
                 flush=True,
@@ -1328,7 +1294,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     lr = float(merged["learning_rate"])
     wd = float(merged["weight_decay"])
-    label_smoothing = float(merged.get("label_smoothing") or 0.0)
     raw_blm = merged.get("backbone_lr_mult")
     backbone_lr_mult = 1.0 if raw_blm is None else float(raw_blm)
     train_sampler = str(merged.get("train_sampler") or "random").strip().lower()
@@ -1350,9 +1315,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             label_getter=lambda e: e.ct_label,
         )
     transition_n = int(merged.get("freeze_backbone_epochs") or 0)
-    head_arch = str(merged.get("head_arch") or "linear").strip().lower()
-    raw_hh = merged.get("head_hidden")
-    head_hidden = int(raw_hh) if raw_hh is not None else None
+    if "head_hidden" not in merged:
+        raise SystemExit("train_hyenadna.head_hidden is required in defaults.yaml.")
+    try:
+        head_hidden = int(merged["head_hidden"])
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            "train_hyenadna.head_hidden must be an integer (0 = linear, >0 = one-layer MLP)."
+        ) from exc
+    if head_hidden < 0:
+        raise SystemExit("train_hyenadna.head_hidden must be >= 0.")
     head_dropout = float(merged.get("head_dropout") or 0.0)
 
     train_ds = RunTensorDataset(
@@ -1414,8 +1386,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "device": str(device),
         "use_head": True,
         "head_pooling_mode": head_mode,
-        "head_arch": head_arch,
-        "head_hidden": head_hidden if head_arch == "mlp" else None,
+        "head_hidden": head_hidden,
         "head_dropout": head_dropout,
         "use_study_adv": study_adv_enabled,
         "n_study_classes": n_study_classes,
@@ -1451,7 +1422,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     opt: Optional[torch.optim.Optimizer] = None
-    scheduler: Optional[Any] = None
 
     results_path = _results_json_out_path(
         repo_root,
@@ -1462,9 +1432,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if results_path is not None:
         training_log_path = _training_log_path_from_results(results_path)
 
-    schedule_key = str(merged.get("lr_schedule") or "none").strip().lower()
-    warmup_epochs_cfg = int(merged.get("warmup_epochs") or 0)
-    min_lr_ratio_cfg = float(merged.get("min_lr_ratio") or 0.1)
     for ep in range(1, epochs + 1):
         print(f"\n--- Epoch {ep}/{epochs} ---", flush=True)
 
@@ -1474,42 +1441,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _set_backbone_requires_grad(model, True)
 
         if ep == 1 or (transition_n > 0 and ep == transition_n + 1):
-            if transition_n > 0 and ep <= transition_n:
-                opt = _make_optimizer(
-                    model, lr=lr, weight_decay=wd, backbone_lr_mult=backbone_lr_mult
-                )
-                scheduler = None
-            elif transition_n > 0 and ep == transition_n + 1:
-                opt = _make_optimizer(
-                    model,
-                    lr=lr,
-                    weight_decay=wd,
-                    backbone_lr_mult=backbone_lr_mult,
-                )
-                rem_epochs = max(epochs - transition_n, 1)
-                scheduler = _make_lr_scheduler(
-                    opt,
-                    schedule=schedule_key,
-                    epochs=rem_epochs,
-                    warmup_epochs=min(warmup_epochs_cfg, max(rem_epochs - 1, 0)),
-                    base_lr=lr,
-                    min_lr_ratio=min_lr_ratio_cfg,
-                )
-            else:
-                opt = _make_optimizer(
-                    model,
-                    lr=lr,
-                    weight_decay=wd,
-                    backbone_lr_mult=backbone_lr_mult,
-                )
-                scheduler = _make_lr_scheduler(
-                    opt,
-                    schedule=schedule_key,
-                    epochs=epochs,
-                    warmup_epochs=warmup_epochs_cfg,
-                    base_lr=lr,
-                    min_lr_ratio=min_lr_ratio_cfg,
-                )
+            opt = _make_optimizer(
+                model,
+                lr=lr,
+                weight_decay=wd,
+                backbone_lr_mult=backbone_lr_mult,
+            )
 
         assert opt is not None
         study_phase = _resolve_study_adv_phase(
@@ -1540,7 +1477,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_dtype=amp_dtype,
             scaler=scaler,
             ce_weight=ce_weight,
-            label_smoothing=label_smoothing,
             study_train_kw=study_train_kw,
             ce_weight_ct=ce_weight_ct,
             loss_ratio=task_cfg.loss_ratio,
@@ -1554,7 +1490,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             ce_weight=ce_weight,
-            label_smoothing=label_smoothing,
             ce_weight_ct=ce_weight_ct,
             loss_ratio=task_cfg.loss_ratio,
         )
@@ -1583,7 +1518,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_dtype=amp_dtype,
         )
         primary_val = split_eval.val[task_cfg.primary_head]
-        val_w_fmeasure = primary_val.f1_weighted
         val_primary_curve = primary_val.auroc
         test_primary_curve = split_eval.test[task_cfg.primary_head].auroc
         hold_primary_curve = split_eval.holdout[task_cfg.primary_head].auroc
@@ -1600,6 +1534,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "learning_rate": lr_log,
                 "train_loss": float(last_loss),
                 "val_loss": float(val_loss),
+                "val_f1_cd": float(split_eval.val[HEAD_CD].f1),
+                "val_f1_ct": float(split_eval.val[HEAD_CT].f1),
+                "test_f1_cd": float(split_eval.test[HEAD_CD].f1),
+                "test_f1_ct": float(split_eval.test[HEAD_CT].f1),
+                "holdout_f1_cd": float(split_eval.holdout[HEAD_CD].f1),
+                "holdout_f1_ct": float(split_eval.holdout[HEAD_CT].f1),
                 "val_auroc_cd": float(split_eval.val[HEAD_CD].auroc),
                 "val_auroc_ct": float(split_eval.val[HEAD_CT].auroc),
                 "test_auroc_cd": float(split_eval.test[HEAD_CD].auroc),
@@ -1608,12 +1548,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "holdout_auroc_ct": float(split_eval.holdout[HEAD_CT].auroc),
             }
         else:
-            ts = tuning_score_single(val_w_fmeasure, val_primary_curve, tuning_metric)
+            ts = tuning_score_single(primary_val.f1, val_primary_curve, tuning_metric)
             epoch_row = {
                 "epoch": int(ep),
                 "learning_rate": lr_log,
                 "train_loss": float(last_loss),
                 "val_loss": float(val_loss),
+                "val_f1": float(split_eval.val["task"].f1),
+                "test_f1": float(split_eval.test["task"].f1),
+                "holdout_f1": float(split_eval.holdout["task"].f1),
                 "val_auroc": float(val_primary_curve),
                 "test_auroc": float(test_primary_curve),
                 "holdout_auroc": float(hold_primary_curve),
@@ -1648,9 +1591,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
 
-        if scheduler is not None:
-            scheduler.step()
-
         print(
             "  ".join(
                 epoch_progress_fields(
@@ -1660,6 +1600,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     val_loss=val_loss,
                     study_adv_enabled=study_adv_enabled,
                     val_study_acc=val_study_acc,
+                    best_epoch=best_epoch,
                 )
             ),
             flush=True,

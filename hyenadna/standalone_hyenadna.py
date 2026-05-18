@@ -764,22 +764,23 @@ class SequenceDecoder(nn.Module):
         l_output=None,
         use_lengths=False,
         mode="last",
-        mlp_hidden: Optional[int] = None,
-        mlp_dropout: float = 0.0,
+        head_hidden: int = 0,
+        head_dropout: float = 0.0,
     ):
         super().__init__()
 
         if d_output is None:
             self.output_transform = nn.Identity()
-        elif mlp_hidden is not None:
-            self.output_transform = nn.Sequential(
-                nn.Linear(d_model, mlp_hidden),
-                nn.GELU(),
-                nn.Dropout(mlp_dropout),
-                nn.Linear(mlp_hidden, d_output),
-            )
-        else:
+        elif int(head_hidden) <= 0:
             self.output_transform = nn.Linear(d_model, d_output)
+        else:
+            hidden = int(head_hidden)
+            self.output_transform = nn.Sequential(
+                nn.Linear(d_model, hidden),
+                nn.GELU(),
+                nn.Dropout(float(head_dropout)),
+                nn.Linear(hidden, d_output),
+            )
 
         if l_output is None:
             self.l_output = None
@@ -922,24 +923,18 @@ def _build_classification_output(
     d_model: int,
     n_classes: int,
     *,
-    head_arch: str,
-    head_hidden: Optional[int],
+    head_hidden: int,
     head_dropout: float,
 ) -> nn.Module:
-    arch = str(head_arch).strip().lower()
-    if arch == "linear":
+    if int(head_hidden) <= 0:
         return nn.Linear(d_model, int(n_classes))
-    if arch == "mlp":
-        if head_hidden is None:
-            raise ValueError("head_arch='mlp' requires head_hidden > 0")
-        hidden = int(head_hidden)
-        return nn.Sequential(
-            nn.Linear(d_model, hidden),
-            nn.GELU(),
-            nn.Dropout(float(head_dropout)),
-            nn.Linear(hidden, int(n_classes)),
-        )
-    raise ValueError(f"head_arch must be 'linear' or 'mlp'; got {head_arch!r}")
+    hidden = int(head_hidden)
+    return nn.Sequential(
+        nn.Linear(d_model, hidden),
+        nn.GELU(),
+        nn.Dropout(float(head_dropout)),
+        nn.Linear(hidden, int(n_classes)),
+    )
 
 
 class HyenaDNAModel(nn.Module):
@@ -950,8 +945,7 @@ class HyenaDNAModel(nn.Module):
                  layer_norm_epsilon: float = 1e-5, initializer_cfg=None,residual_in_fp32=False,
                  pad_vocab_size_multiple: int = 1, use_head=False, n_classes: int = 2,
                  head_pooling_mode: str = "pool",
-                 head_arch: str = "linear",
-                 head_hidden: Optional[int] = None,
+                 head_hidden: int = 0,
                  head_dropout: float = 0.0,
                  multitask_class_counts: Optional[Sequence[int]] = None,
                  use_study_adv: bool = False,
@@ -1003,7 +997,6 @@ class HyenaDNAModel(nn.Module):
                         _build_classification_output(
                             d_model,
                             int(n_cls),
-                            head_arch=head_arch,
                             head_hidden=head_hidden,
                             head_dropout=head_dropout,
                         )
@@ -1011,18 +1004,13 @@ class HyenaDNAModel(nn.Module):
                     ]
                 )
             else:
-                head_kw: Dict[str, object] = {}
-                if head_arch.strip().lower() == "mlp":
-                    if head_hidden is None:
-                        raise ValueError("head_arch='mlp' requires head_hidden > 0")
-                    head_kw["mlp_hidden"] = int(head_hidden)
-                    head_kw["mlp_dropout"] = float(head_dropout)
                 self.head = SequenceDecoder(
                     d_model=d_model,
                     d_output=n_classes,
                     l_output=0,
                     mode=head_pooling_mode,
-                    **head_kw,
+                    head_hidden=head_hidden,
+                    head_dropout=float(head_dropout),
                 )
 
         self.study_head: Optional[nn.Module] = None

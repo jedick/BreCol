@@ -13,7 +13,7 @@ metrics under ``cancer_diagnosis`` and ``cancer_type``.
 Consecutive YAML rows dedicated to diagnosis-only and type-only tasks are
 paired into **one table row** (diagnosis metrics from the first available slot,
 type metrics from the other). Multitask rows occupy a full row. A YAML row with
-comma-separated tasks ``cancer_diagnosis,cancer_type`` (grid, not multitask)
+a YAML task list ``[cancer_diagnosis, cancer_type]`` (grid, not multitask)
 also fills both sides from ``cd_*`` and ``ct_*`` files sharing the experiment
 ``name``.
 
@@ -46,14 +46,18 @@ import yaml
 # <sup>) and are intentionally not escaped when rendered into the <td>.
 ABLATION_DESCRIPTIONS: Dict[str, str] = {
     "best_recipe": "Best recipe (baseline)",
-    "high_lr": "Higher learning rate (10<sup>\u22124</sup> instead of 10<sup>\u22125</sup>)",
-    "study_adv": "With domain adversarial training (study head)",
-    "no_backbone_freezing": "No frozen backbone in first 5 epochs",
-    "loss_ratio_0.5": "Evenly weight diagnosis and task heads for loss",
+    "high_lr": "High learning rate (5e-4 instead of 2e-4)",
+    "dropout_0.2": "Add dropout to MLP classification head (0.2)",
+    "hidden_256": "MLP hidden layer width 256 (instead of 512)",
+    "unfrozen_backbone": "Unfrozen backbone (lr 2e-4)",
+    "unfrozen_backbone_low_lr": "Unfrozen backbone (lr 1e-5)",
+    "study_adv": "Domain adversarial training (study head GRL weight 0.2)",
+    #"no_dropout": "No dropout in classification heads",
+    #"hidden_64": "MLP with 64-width hidden layer",
+    #"low_lr": "Low learning rate (1e-5 instead of 2e-4)",
     #"no_study_balanced": "Random training sampler (no study-balanced sampling)",
     #"class_balanced": "Balanced class weighting",
     #"head_linear": "Linear classification head instead of MLP",
-    #"label_smoothing": "Label smoothing 0.1",
 }
 TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("cd", "Cancer diagnosis"),
@@ -184,19 +188,17 @@ def _parse_seed_spec(raw: object) -> Set[int]:
         return set()
     if isinstance(raw, int):
         return {raw}
-    txt = str(raw).strip()
-    if not txt:
-        return set()
-    seeds: Set[int] = set()
-    for token in txt.split(","):
-        token = token.strip()
-        if not token:
-            continue
+    if isinstance(raw, (list, tuple)):
         try:
-            seeds.add(int(token))
-        except ValueError as exc:
-            raise SystemExit(f"random_seed contains non-integer value {token!r}: {exc}")
-    return seeds
+            return {int(x) for x in raw}
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"random_seed must be a YAML list of integers; got {raw!r}."
+            ) from exc
+    raise SystemExit(
+        "random_seed must be an integer or a YAML list of integers; "
+        f"got {type(raw).__name__}."
+    )
 
 
 def _experiment_task_mode(merged_task: object) -> str:
@@ -208,12 +210,16 @@ def _experiment_task_mode(merged_task: object) -> str:
     cancer_diagnosis — cd_* only
     cancer_type      — ct_* only
     """
-    raw = str(merged_task or "").strip()
-    tokens = [
-        tok.strip().lower()
-        for tok in raw.split(",")
-        if str(tok).strip()
-    ]
+    if isinstance(merged_task, (list, tuple)):
+        tokens = [str(tok).strip().lower() for tok in merged_task if str(tok).strip()]
+    else:
+        task = str(merged_task or "").strip()
+        if not task:
+            tokens = []
+        elif task.lower() == MULTITASK_TASK:
+            tokens = [MULTITASK_TASK]
+        else:
+            tokens = [task.lower()]
 
     def _canonical_one(tok: str) -> Optional[str]:
         if tok == "multitask":
@@ -228,12 +234,12 @@ def _experiment_task_mode(merged_task: object) -> str:
     for t in tokens:
         c = _canonical_one(t)
         if c is None:
-            raise SystemExit(f"Unsupported train_hyenadna task token {t!r} in {raw!r}.")
+            raise SystemExit(f"Unsupported train_hyenadna task token {t!r}.")
         if c == MULTITASK_TASK:
             if len(tokens) > 1:
                 raise SystemExit(
-                    "Multitask must not appear in a comma-separated task grid "
-                    f"({raw!r}). Use task: multitask alone."
+                    "Multitask must not be combined with other tasks in one experiment row; "
+                    "use task: multitask alone."
                 )
             return "multitask_file"
         seen.add(c)
@@ -244,7 +250,7 @@ def _experiment_task_mode(merged_task: object) -> str:
         return str(uniq[0])
     if uniq == ("cancer_diagnosis", "cancer_type"):
         return "dual_file"
-    raise SystemExit(f"Unsupported combined task specification {raw!r}.")
+    raise SystemExit(f"Unsupported combined task specification {tokens!r}.")
 
 
 def _experiment_rows(repo_root: Path) -> List[Dict[str, object]]:

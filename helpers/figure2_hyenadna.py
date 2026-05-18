@@ -36,7 +36,7 @@ TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("cancer_diagnosis", "Cancer diagnosis"),
     ("cancer_type", "Cancer type"),
 )
-LENGTHS_BP: Tuple[int, ...] = (1024, 2048, 4096, 8192, 16384)
+LENGTHS_BP: Tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768)
 RESULTS_GLOB = "mt_max_length_*_*_s*.json"
 _RESULT_RE = re.compile(r"mt_max_length_(\d+)_(\d+k)_s\d+\.json$")
 

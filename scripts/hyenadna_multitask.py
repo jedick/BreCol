@@ -80,7 +80,7 @@ class HeadScores:
     y_true: np.ndarray
     y_score: np.ndarray
     auroc: float
-    f1_weighted: float
+    f1: float
     all_entries: Tuple[RunRecord, ...] = ()
     all_scores: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.float64))
 
@@ -265,6 +265,26 @@ def _positive_class_score(logits: torch.Tensor, pos_class_index: int) -> float:
     return float(torch.softmax(agg, dim=-1)[pos_class_index].item())
 
 
+def _binary_f1(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    head: BinaryHeadSpec,
+) -> float:
+    """Positive-class F1 at threshold 0.5 on the positive-class score."""
+    if y_true.size == 0:
+        return float("nan")
+    y_pred = np.where(y_score >= 0.5, head.pos_label, head.neg_label)
+    return float(
+        f1_score(
+            y_true,
+            y_pred,
+            pos_label=head.pos_label,
+            average="binary",
+            zero_division=0,
+        )
+    )
+
+
 def _head_metrics(
     entries: Sequence[RunRecord],
     scores: np.ndarray,
@@ -308,11 +328,7 @@ def _head_metrics(
         y_score = np.asarray(sub_scores, dtype=np.float64)
 
     auroc = binary_auroc_from_scores(y_true, y_score, positive_label=head.pos_label)
-    if y_true.size == 0:
-        f1w = float("nan")
-    else:
-        y_pred = np.where(y_score >= 0.5, head.pos_label, head.neg_label)
-        f1w = float(f1_score(y_true, y_pred, average="weighted"))
+    f1 = _binary_f1(y_true, y_score, head)
     all_entries = tuple(entries)
     all_scores = np.asarray(scores, dtype=np.float64)
     return HeadScores(
@@ -320,7 +336,7 @@ def _head_metrics(
         y_true,
         y_score,
         float(auroc),
-        f1w,
+        f1,
         all_entries=all_entries,
         all_scores=all_scores,
     )
@@ -448,7 +464,6 @@ def multitask_training_loss_sum_and_count(
     amp_dtype: torch.dtype,
     ce_weight_cd: Optional[torch.Tensor],
     ce_weight_ct: Optional[torch.Tensor],
-    label_smoothing: float,
     study_train_kw: Optional[Mapping[str, object]],
     loss_ratio: float,
     study_ignore_index: int,
@@ -504,8 +519,6 @@ def multitask_training_loss_sum_and_count(
         ce_kw_cd["weight"] = ce_weight_cd.to(
             device=flat_cd_logits.device, dtype=flat_cd_logits.dtype
         )
-    if label_smoothing > 0.0:
-        ce_kw_cd["label_smoothing"] = float(label_smoothing)
     cd_ce_sum = F.cross_entropy(flat_cd_logits, flat_cd_y, **ce_kw_cd)
     n_cd = int(flat_cd_y.shape[0])
 
@@ -519,8 +532,6 @@ def multitask_training_loss_sum_and_count(
             ce_kw_ct["weight"] = ce_weight_ct.to(
                 device=flat_ct_logits.device, dtype=flat_ct_logits.dtype
             )
-        if label_smoothing > 0.0:
-            ce_kw_ct["label_smoothing"] = float(label_smoothing)
         ct_ce_sum = F.cross_entropy(
             flat_ct_logits[cancer_mask],
             flat_ct_y[cancer_mask].long(),
@@ -562,15 +573,15 @@ def multitask_training_loss_sum_and_count(
     }
 
 
-def tuning_score_single(weighted_f_measure: float, primary_curve: float, metric: str) -> float:
+def tuning_score_single(f1: float, primary_curve: float, metric: str) -> float:
     m = str(metric).strip()
     if m == "auroc":
         v = float(primary_curve)
-    elif m == "f1_weighted":
-        v = float(weighted_f_measure)
+    elif m == "f1":
+        v = float(f1)
     else:
         raise SystemExit(
-            f"Unknown tuning_metric {metric!r} (use auroc or f1_weighted)."
+            f"Unknown tuning_metric {metric!r} (use auroc or f1)."
         )
     return v if v == v else float("-inf")
 
@@ -589,11 +600,11 @@ def tuning_score_from_heads(
     if not 0.0 <= tr <= 1.0:
         raise SystemExit("train_hyenadna.tuning_ratio must be between 0 and 1.")
     if tr == 1.0:
-        return tuning_score_single(cd.f1_weighted, cd.auroc, tuning_metric)
+        return tuning_score_single(cd.f1, cd.auroc, tuning_metric)
     if tr == 0.0:
-        return tuning_score_single(ct.f1_weighted, ct.auroc, tuning_metric)
-    s_cd = tuning_score_single(cd.f1_weighted, cd.auroc, tuning_metric)
-    s_ct = tuning_score_single(ct.f1_weighted, ct.auroc, tuning_metric)
+        return tuning_score_single(ct.f1, ct.auroc, tuning_metric)
+    s_cd = tuning_score_single(cd.f1, cd.auroc, tuning_metric)
+    s_ct = tuning_score_single(ct.f1, ct.auroc, tuning_metric)
     w_cd = tr
     w_ct = 1.0 - tr
     num = 0.0
@@ -892,10 +903,10 @@ def write_run_artifacts(
         ct = best_val_scores[HEAD_CT]
         tuning_extra = {
             "cancer_diagnosis_score": _float_or_none(
-                tuning_score_single(cd.f1_weighted, cd.auroc, tuning_metric)
+                tuning_score_single(cd.f1, cd.auroc, tuning_metric)
             ),
             "cancer_type_score": _float_or_none(
-                tuning_score_single(ct.f1_weighted, ct.auroc, tuning_metric)
+                tuning_score_single(ct.f1, ct.auroc, tuning_metric)
             ),
             "combined_score": _float_or_none(float(best_tuning_score)),
         }
@@ -915,7 +926,7 @@ def write_run_artifacts(
         hv = best_val_scores[head.name]
         task_key = str(merged.get("task") or "").strip()
         head_score = _float_or_none(
-            tuning_score_single(hv.f1_weighted, hv.auroc, tuning_metric)
+            tuning_score_single(hv.f1, hv.auroc, tuning_metric)
         )
         if task_key == "cancer_type":
             tuning_extra = {
@@ -983,6 +994,7 @@ def epoch_progress_fields(
     val_loss: float,
     study_adv_enabled: bool,
     val_study_acc: float,
+    best_epoch: int,
 ) -> List[str]:
     fields = [f"train_loss={train_loss:.4f}", f"val_loss={val_loss:.4f}"]
     if study_adv_enabled:
@@ -1015,4 +1027,5 @@ def epoch_progress_fields(
                 f"holdout_auroc={h.auroc:.4f}",
             ]
         )
+    fields.append(f"best_epoch={int(best_epoch)}")
     return fields

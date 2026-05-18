@@ -48,8 +48,10 @@ alwaysApply: true
 - Any script that **iterates over many runs or large FASTAs** should expose **visible progress** (e.g. current study, run index / total, optional ETA or per-study summary); print a **newline** before unrelated output so progress lines do not corrupt the terminal.
 - **Tetramer counting** (`tetramer_counts`) is **CPU-heavy** (4-mer accumulation and **xz** compression of large per-run tables), not only I/O; budget wall time accordingly.
 
-## AUROC terminology
+## Metrics terminology
 
 - Use **AUROC** in prose, comments, docstrings, logs, and user-facing messages — not “ROC AUC”, “ROC-AUC”, or bare “AUC” when you mean area under the ROC curve.
-- In code and JSON keys, use snake_case **`auroc`** (for example `metrics.test.auroc`, `metrics.holdout.auroc`, `fit_classifier.tuning_metric: auroc`, `train_hyenadna.tuning_metric: auroc`, `binary_auroc_from_scores`).
-- **`tuning_metric`** selects the validation objective for hyperparameter search and checkpointing. Shared values include **`auroc`** and **`f1_weighted`**; classical ML (`fit_classifier`) also supports **`accuracy`** and **`f1_macro`**.
+- In code and JSON keys, use snake_case **`auroc`** (for example `metrics.test.auroc`, `metrics.holdout.auroc`, `binary_auroc_from_scores`).
+- **`tuning_metric`** selects the validation objective for hyperparameter search and checkpointing. Allowed values: **`auroc`** and **`f1`** (`fit_classifier` and `train_hyenadna`); **`fit_classifier`** also supports **`accuracy`**. Do not use removed names **`f1_weighted`** or **`f1_macro`**.
+- **`f1`** means **binary positive-class F1** at threshold **0.5** on the positive-class score. HyenaDNA: `HeadScores.f1` and per-epoch `*_training.json` keys `val_f1`, `test_f1`, `holdout_f1` (or `*_cd` / `*_ct` in multitask). Classical ML: same positive-class convention as `binary_auroc_from_scores` (lexicographically second class in the split when `positive_label` is omitted).
+- HyenaDNA console logs append **`best_epoch=N`** on each epoch line (best validation `tuning_metric` so far). Final results JSON still reports test/holdout **AUROC**; `*_training.json` holds per-epoch loss, F1, and AUROC.
