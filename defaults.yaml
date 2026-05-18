@@ -11,11 +11,12 @@ paths:
   results_dir: results
   # Ephemeral / local experiment outputs (gitignored); finalized copies go under results/
   results_scratch_dir: results/scratch
-  # Per-run sequence-level tetramer counts (scripts/count_tetramers.py).
-  tetramer_counts_dir: outputs/tetramer_counts
   # Run-level tetramer frequency table (input for scripts/fit_classifier.py --tetramer).
   tetramer_frequencies_csv: outputs/tetramer_frequencies.csv
-  uc_cap_root: outputs/uc_cap
+  # Hive-partitioned per-sequence tetramer cache (scripts/build_tetramer_cache.py).
+  tetramer_cache_dir: outputs/tetramer_cache
+  # UC/CAP cluster outputs (scripts/run_uc_cap_pipeline.py).
+  tetramer_uc_cap_root: outputs/tetramer_uc_cap
   # Feature-only per-run HyenaDNA tensors from scripts/build_run_tensors.py.
   run_tensors_dir: outputs/run_tensors
   # Consolidated frozen HyenaDNA embedding features from scripts/extract_embeddings.py.
@@ -74,18 +75,30 @@ fit_classifier:
   # Optional output path for metrics JSON; null disables JSON output (experiments may set via template).
   results_json: null
 
-# build_uc_cap_sequence_cache.py — rows kept per run in the Parquet cache.
-sequence_cache:
+# Shared sequence row selection for FASTA tensors and tetramer count caches.
+sequence_selection:
+  # Drop this many leading sequences per run before sampling; runs with fewer rows are skipped.
+  seq_offset: 1000
+  # Minimum sequence rows after seq_offset; runs with fewer rows are skipped.
+  min_seqs: 1000
+  # Row selection after offset: head (first rows) or random (deterministic per Run).
+  sample_mode: random
+  # Base seed when sample_mode is random (combined with a per-Run hash).
+  sampling_seed: 0
+  
+# build_tetramer_cache.py — rows kept per run in the partitioned Parquet cache.
+tetramer_cache:
   n_max_per_run: 10000
   parquet_compression: zstd
+  # Parallel worker processes (1 = sequential). Each run writes its own partition.
+  max_workers: 8
 
 # Baseline UC/CAP pipeline parameters. The script takes only --feat; list entries here are
 # merged in order into one baseline dict, then experiments.yaml rows merge over that for --feat >= 1 (Makefile FEAT=...).
 run_uc_cap_pipeline:
-  # n_uc: Number of cached sequences per run used to fit UC (MiniBatchKMeans on train runs only).
+  # n_uc: Cached sequences per train run for UC (MiniBatchKMeans).
   # n_clusters: K for k-means (number of cluster centroids / CAP feature dimension).
-  # n_cap: Sequences per run for CAP, or the string 'all' to stream every sequence from per-run
-  #   count files under paths.outputs_dir (see run_uc_cap_pipeline.py).
+  # n_cap: Sequences per run for CAP (must be <= tetramer_cache.n_max_per_run).
   - { n_uc: 10, n_clusters: 20, n_cap: 50 }
   # Remaining keys (second list fragment merges over the triple above).
   - random_state: 0 # Random seed for PCA and MiniBatchKMeans.
@@ -105,22 +118,10 @@ run_uc_cap_pipeline:
     batch_size: 8192
     # MiniBatchKMeans max iterations.
     max_iter: 200
-    # CSV row chunk size when n_cap is all (streaming from per-run count files).
-    chunk_size: 20000
 
 # Feature-only run tensor cache (scripts/build_run_tensors.py).
 # One .pt file per run under paths.run_tensors_dir/.
 run_tensors:
-  # Drop this many leading FASTA records per run before packing; runs with fewer records are skipped.
-  seq_offset: 1000
-  # Minimum FASTA record count after seq_offset; runs with fewer records are skipped.
-  min_seqs: 1000
-  # Sequence selection policy before packing sets:
-  # - head: keep original order (legacy behavior)
-  # - random: deterministic random subsample (seeded per run by sampling_seed + run hash)
-  sample_mode: random
-  # Base seed used when sample_mode is random.
-  sampling_seed: 0
   # If set, cap the number of post-offset sequences considered per run before set packing.
   # null uses all available post-offset sequences.
   max_sequences_per_run: null

@@ -46,19 +46,17 @@ Start with `make download_data` to download the 16S rRNA gene sequence data from
 See the list for a quick overview of the steps and read below for details.
 
 1. Installation: `pip install -r requirements.txt` installs dependencies including the local `hyenadna` package in editable mode.
-2. Download data: `make download_data` downloads 16S sequences from SRA (about 13 GB on disk).
-3. Tetramer counts: `make -j4 tetramer_counts` (sequence-level tetramer counting and xzipping output files is CPU-heavy; 10+ hours and 8 GB on disk).
-4. Tetramer frequencies: `make tetramer_frequencies` (calculates run-level percentages, saved in `outputs/tetramer_frequencies.csv`) (75 min / 3 MB on disk).
-5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (about 3 min).
-6. Sequence cache: `make sequence_cache` generates a Parquet file with tetramer counts for the first 10000 sequences in each run
-   (a few minutes / 80 GB RAM / 1.2 GB on disk).
-7. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/uc_cap` (about 18 min / 100GB RAM).
-8. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/uc_cap` (about 35 min).
-9. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (about 12 min).
-10. Frozen embeddings: `make extract_embeddings FEAT=0` builds consolidated embedding feature CSVs in `outputs/embeddings`.
-11. Embedding classifier: `make fit_embeddings FEAT=1 EXPT=1` fits the selected embedding feature set with the selected `fit_classifier` experiment.
-12. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 16 hr).
-13. Run `helpers/table*.py` and `helpers/figure*.py` from the repo root to refresh `manuscript/table*.html` and `manuscript/figure*` (PNG+SVG) from `results/` JSON and training logs.
+2. Download data: `make download_data` downloads 16S sequences from SRA (13 GB on disk).
+3. Tetramer cache: `make -j4 tetramer_cache` reads FASTA and writes hive-partitioned Parquet under `outputs/tetramer_cache/` (10 min / 1.5 GB on disk).
+4. Tetramer frequencies: `make tetramer_frequencies` sums cached sequences per run into `outputs/tetramer_frequencies.csv` (2 min).
+5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (3 min).
+6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/tetramer_uc_cap/` (23 min / 23 GB RAM).
+7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/uc_cap` (21 min).
+8. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
+9. Frozen embeddings: `make extract_embeddings FEAT=0` builds consolidated embedding feature CSVs in `outputs/embeddings`.
+10. Embedding classifier: `make fit_embeddings FEAT=1 EXPT=1` fits the selected embedding feature set with the selected `fit_classifier` experiment.
+11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
+12. Run `helpers/table*.py` and `helpers/figure*.py` from the repo root to refresh `manuscript/table*.html` and `manuscript/figure*` (PNG+SVG) from `results/` JSON and training logs.
 
 Notes:
 
@@ -66,7 +64,7 @@ Notes:
   Can add `-j` for parallel execution of non-GPU tasks.
 - `FEAT=0` is used to build all feature sets for the UC/CAP pipeline.
   Use e.g. `FEAT=1` or `EXPT=1` for a single feature set or experiment.
-- Steps 5 and 6 (sequence cache and UC/CAP pipeline) are the most memory-hungry steps.
+- Steps 3–6 (tetramer cache and UC/CAP pipeline) can be memory-hungry depending on settings.
 - Use the Cursor skill `/manuscript` (for example `table 1`, `figure 1`, `all tables`, `figures`) to rerun helpers;
   they overwrite the fixed `manuscript/table*.html` and `manuscript/figure*` assets.
 
@@ -86,11 +84,11 @@ Split proportions are configured in `defaults.yaml (currently 0.70/0.15/0.15 for
 
 `make download_data` reads study metadata files in `data/**/*.csv` and outputs FASTA files to `fasta/<study>/<Run>.fasta.gz`.
 
-### Tetramer counts and frequencies
+### Tetramer cache and frequencies
 
-`make tetramer_counts` reads `data/**/*.csv` (rows with `sample_used=TRUE`) and FASTA files under `fasta/<study>/<Run>.fasta.gz`, then writes missing per-sequence count tables under **`outputs/tetramer_counts/<cancer>/<study>/<Run>.csv.xz`** (256 integer columns per row, no header).
+`make tetramer_cache` reads `data/**/*.csv` (rows with `sample_used=TRUE`) and FASTA files under `fasta/<study>/<Run>.fasta.gz`, counts 4-mers per sequence (Numba when installed), applies **`sequence_selection`**, and writes hive-partitioned Parquet under **`outputs/tetramer_cache/n{n}/`** (per-run partitions with `sequence_index` plus 256 count columns).
 
-`make tetramer_frequencies` reads those count files, sums each run to a single profile, and appends new rows to **`outputs/tetramer_frequencies.csv`** (`Run` plus 256 **percentage** columns in lexicographic ACGT tetramer order). Run **`tetramer_counts` first** so count files exist.
+`make tetramer_frequencies` sums each run’s cached sequences to a single profile and appends new rows to **`outputs/tetramer_frequencies.csv`** (`Run` plus 256 **percentage** columns). Run **`make tetramer_cache` first**.
 
 ### Run-level tetramer classifier
 
@@ -108,10 +106,8 @@ Output files:
 
 This stage takes the per-run tetramer count files and generates feature sets (cluster abundance profiles) used for classification.
 
-- `make sequence_cache` builds a cached sequence-level tetramer table for UC/CAP exploration.
-  It reads per-run tetramer counts from **`outputs/tetramer_counts/<cancer>/<study>/<Run>.csv.xz`**, keeps the first 10000 rows (configured in `defaults.yaml`) from each run,
-  and saves the result in a Parquet table at `outputs/uc_cap/sequence_counts_first_10000_all_runs.parquet`.
-- `make run_uc_cap` without arguments builds a CSV at `outputs/uc_cap/uc{n}_k{k}/cap{n}.csv` with defaults from `defaults.yaml`.
+- `make run_uc_cap` reads the same Parquet cache built by **`make tetramer_cache`** (see above).
+- `make run_uc_cap` without arguments builds a CSV at **`outputs/tetramer_uc_cap/uc{n}_k{k}/cap{n}.csv`** with defaults from `defaults.yaml`.
   With `FEAT=N` / `FEAT=0`, it drives the same pipeline to generate one or all feature sets using parameters from `run_uc_cap_pipeline` in `experiments.yaml` .
   Each CSV row is a sequencing run; `cluster_*` columns are normalized per-run abundances.
     - Use `make run_uc_cap FEAT=0` to generate all UC/CAP feature sets.

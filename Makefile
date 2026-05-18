@@ -12,10 +12,11 @@ endef
 DATA_DIR := $(call yaml_section_value,paths,data_dir)
 DATASETS_CSV := $(ROOT)/$(call yaml_section_value,paths,datasets_csv)
 TETRAMER_FREQUENCIES_CSV := $(call yaml_section_value,paths,tetramer_frequencies_csv)
-UC_CAP_ROOT := $(call yaml_section_value,paths,uc_cap_root)
+TETRAMER_CACHE_DIR := $(call yaml_section_value,paths,tetramer_cache_dir)
+TETRAMER_UC_CAP_ROOT := $(call yaml_section_value,paths,tetramer_uc_cap_root)
 EMBEDDINGS_DIR := $(call yaml_section_value,paths,embeddings_dir)
 RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,run_tensors_dir)
-SEQUENCE_CACHE_N_MAX := $(call yaml_section_value,sequence_cache,n_max_per_run)
+TETRAMER_CACHE_N_MAX := $(call yaml_section_value,tetramer_cache,n_max_per_run)
 EXPT ?=
 EXPT_ARG := $(if $(strip $(EXPT)),--expt $(EXPT),)
 FEAT ?=
@@ -48,14 +49,14 @@ EMBEDDING_FEATURE_OUTPUT := $(if $(filter-out 0,$(strip $(FEAT))),$(word $(FEAT)
 EMBEDDINGS_SINGLE_EXPT_ALL_FEAT_OUTPUTS = $(if $(filter-out 0,$(strip $(EXPT))),$(foreach f,$(EMBEDDING_FEATURE_INDICES),$(ROOT)/results/embeddings/$(f)/$(word $(EXPT),$(EXPERIMENT_NAMES)).json),)
 
 TETRA_CSV := $(ROOT)/$(TETRAMER_FREQUENCIES_CSV)
-SEQ_CACHE := $(ROOT)/$(UC_CAP_ROOT)/sequence_counts_first_$(SEQUENCE_CACHE_N_MAX)_all_runs.parquet
+TETRAMER_CACHE := $(ROOT)/$(TETRAMER_CACHE_DIR)/n$(TETRAMER_CACHE_N_MAX)/_complete
 
 # Study metadata CSVs (typically small); used to rebuild tetramer frequencies when data change.
 DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help download_data tetramer_counts tetramer_frequencies sequence_cache fit_tetramer fit_uc_cap run_uc_cap \
+.PHONY: help download_data tetramer_frequencies tetramer_cache fit_tetramer fit_uc_cap run_uc_cap \
 	train_hyenadna audit_run_tensors extract_embeddings extract_embeddings_baseline \
 	fit_embeddings explain explain-%
 
@@ -65,18 +66,12 @@ help:
 	@echo "  make download_data"
 	@echo "      Run scripts/download_sra_data.py."
 	@echo ""
-	@echo "  make tetramer_counts"
-	@echo "      Count 4-mers per FASTA sequence; write missing"
-	@echo "      outputs/tetramer_counts/<cancer>/<study>/<Run>.csv.xz (compute-heavy)."
-	@echo "      FASTA inputs are not prerequisites (avoids huge dep lists)."
+	@echo "  make tetramer_cache"
+	@echo "      FASTA -> partitioned Parquet at $(TETRAMER_CACHE) via build_tetramer_cache.py."
 	@echo ""
 	@echo "  make tetramer_frequencies"
-	@echo "      Append missing Run rows to tetramer frequencies CSV from count files"
-	@echo "      (depends on data CSVs). Run tetramer_counts first so count files exist."
-	@echo "      Delete the frequencies CSV to force a full rebuild of that artifact."
-	@echo ""
-	@echo "  make sequence_cache"
-	@echo "      Build $(SEQ_CACHE) via build_uc_cap_sequence_cache.py."
+	@echo "      Append missing Run rows to tetramer frequencies CSV from the tetramer cache."
+	@echo "      Depends on make tetramer_cache. Delete the frequencies CSV to force a full rebuild."
 	@echo ""
 	@echo "  make fit_tetramer"
 	@echo "      Run scripts/fit_classifier.py --tetramer with defaults.yaml; default run passes"
@@ -120,28 +115,29 @@ help:
 	@echo ""
 	@echo "  make explain TARGET=<make_target>"
 	@echo "      Compact dependency/mtime explanation using make --trace."
-	@echo "      Examples: make explain TARGET=sequence_cache"
-	@echo "                make explain-sequence_cache"
+	@echo "      Examples: make explain TARGET=tetramer_cache"
+	@echo "                make explain-tetramer_cache"
 	@echo ""
 
-tetramer_counts: $(DATA_CSVS) $(ROOT)/scripts/count_tetramers.py
-	cd "$(ROOT)" && $(PYTHON) scripts/count_tetramers.py
-
-$(TETRA_CSV): $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py $(ROOT)/defaults.yaml
+$(TETRA_CSV): $(TETRAMER_CACHE) $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py \
+		$(ROOT)/scripts/tetramer_cache_io.py $(ROOT)/defaults.yaml
 	@mkdir -p "$(dir $(TETRA_CSV))"
 	cd "$(ROOT)" && $(PYTHON) scripts/calculate_tetramer_frequencies.py
 
 tetramer_frequencies: $(TETRA_CSV)
 	@echo "Up to date: $(TETRA_CSV)"
 
-$(SEQ_CACHE): $(ROOT)/scripts/build_uc_cap_sequence_cache.py $(ROOT)/defaults.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/build_uc_cap_sequence_cache.py
+$(TETRAMER_CACHE): $(DATA_CSVS) $(ROOT)/scripts/build_tetramer_cache.py \
+		$(ROOT)/scripts/sequence_sampling.py \
+		$(ROOT)/scripts/tetramer_cache_io.py \
+		$(ROOT)/defaults.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/build_tetramer_cache.py
 
-sequence_cache: $(SEQ_CACHE)
-	@echo "Up to date: $(SEQ_CACHE)"
+tetramer_cache: $(TETRAMER_CACHE)
+	@echo "Up to date: $(TETRAMER_CACHE)"
 
 # Real file target: default ``run_uc_cap`` depends on this path (no duplicate recipe for FEAT>=1 rows).
-$(UC_CAP_BASELINE_CAP_CSV): $(SEQ_CACHE) \
+$(UC_CAP_BASELINE_CAP_CSV): $(TETRAMER_CACHE) \
 		$(ROOT)/scripts/run_uc_cap_pipeline.py \
 		$(ROOT)/defaults.yaml \
 		$(ROOT)/helpers/list_uc_cap_feature_outputs.py
@@ -294,7 +290,7 @@ run_uc_cap: $(UC_CAP_BASELINE_CAP_CSV)
 endif
 
 define uc_cap_feature_rule
-$(word $(1),$(UC_CAP_FEATURE_OUTPUTS)): $(SEQ_CACHE) \
+$(word $(1),$(UC_CAP_FEATURE_OUTPUTS)): $(TETRAMER_CACHE) \
 		$(ROOT)/scripts/run_uc_cap_pipeline.py \
 		$(ROOT)/helpers/list_uc_cap_feature_outputs.py \
 		$(ROOT)/defaults.yaml \

@@ -227,16 +227,13 @@ We explored eight combinations of the three UC/CAP hyperparameters: *n*<sub>UC</
 
 | Feature set | *n*UC | *K* | *n*CAP |
 |-|-|-|-|
-| 1 | 1000 | 2000 | 5000 |
-| 2 | 2000 | 2000 | 5000 |
-| 3 | 1000 | 5000 | 5000 |
-| 4 | 2000 | 5000 | 5000 |
+| 1 |  500 | 1000 |   500 |
+| 2 |  500 | 1000 |  1000 |
+| 3 | 1000 | 1000 |  1000 |
+| 4 | 1000 | 2000 |  1000 |
 | 5 | 1000 | 2000 | 10000 |
-| 6 | 2000 | 2000 | 10000 |
-| 7 | 1000 | 5000 | 10000 |
-| 8 | 2000 | 5000 | 10000 |
 
-For cancer diagnosis, SVM consistently outperforms random forest across all eight feature sets in both test and holdout AUC (Figure 1).
+For cancer diagnosis, SVM consistently outperforms random forest across all five feature sets in both test and holdout AUC (Figure 1).
 For cancer type, both models show near-perfect in-study test performance across feature sets,
 but holdout values drop sharply—especially for random forest.
 Despite these drops, SVM holdout AUC remains comparatively stable across feature sets, making SVM the more reliable classifier under distribution shift.

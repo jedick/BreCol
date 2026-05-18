@@ -29,6 +29,7 @@ from hyenadna_fasta_data import (  # noqa: E402
     resolve_repo_path,
     run_to_tensors,
 )
+from sequence_sampling import load_sequence_selection
 from shared_utilities import build_run_table
 
 
@@ -184,6 +185,11 @@ def _build_tensor_cache(
     run_tensors_cfg = cfg.get("run_tensors")
     if not isinstance(run_tensors_cfg, dict):
         raise SystemExit(f"{defaults_path} must define run_tensors as a mapping.")
+    selection = load_sequence_selection(cfg)
+    seq_offset = selection["seq_offset"]
+    min_seqs = selection["min_seqs"]
+    sample_mode = selection["sample_mode"]
+    sampling_seed = selection["sampling_seed"]
     run_tensors_key = str(paths_cfg.get("run_tensors_dir", "outputs/run_tensors")).strip()
     run_tensors_root = resolve_repo_path(repo_root, run_tensors_key)
 
@@ -191,10 +197,6 @@ def _build_tensor_cache(
 
     num_sets = int(run_tensors_cfg["num_sets"])
     max_length = int(run_tensors_cfg["max_length"])
-    seq_offset = int(run_tensors_cfg.get("seq_offset", 0))
-    min_seqs = int(run_tensors_cfg.get("min_seqs", 0))
-    sample_mode = str(run_tensors_cfg.get("sample_mode", "head")).strip().lower()
-    sampling_seed = int(run_tensors_cfg.get("sampling_seed", 0))
     deduplicate_sequences = bool(run_tensors_cfg.get("deduplicate_sequences", False))
     raw_max_sequences = run_tensors_cfg.get("max_sequences_per_run", None)
     max_sequences_per_run: Optional[int]
@@ -207,12 +209,6 @@ def _build_tensor_cache(
         raise SystemExit("run_tensors.num_sets must be > 0.")
     if max_length <= 0:
         raise SystemExit("run_tensors.max_length must be > 0.")
-    if seq_offset < 0:
-        raise SystemExit("run_tensors.seq_offset must be >= 0.")
-    if min_seqs < 0:
-        raise SystemExit("run_tensors.min_seqs must be >= 0.")
-    if sample_mode not in ("head", "random"):
-        raise SystemExit("run_tensors.sample_mode must be 'head' or 'random'.")
     if max_sequences_per_run is not None and max_sequences_per_run <= 0:
         raise SystemExit("run_tensors.max_sequences_per_run must be > 0 when set.")
     if max_workers <= 0:

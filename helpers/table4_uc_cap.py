@@ -68,11 +68,7 @@ def resolve_feat_index(
         merged: Dict[str, Any] = {**base, **row}
         nu = int(merged["n_uc"])
         nk = int(merged["n_clusters"])
-        nc_raw = merged["n_cap"]
-        if isinstance(nc_raw, str) and str(nc_raw).strip().lower() == "all":
-            nc: Union[int, str] = "all"
-        else:
-            nc = int(nc_raw)
+        nc = int(merged["n_cap"])
         if nu == n_uc and nk == n_clusters and nc == n_cap:
             return i
     raise SystemExit(

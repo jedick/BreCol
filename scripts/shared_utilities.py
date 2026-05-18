@@ -42,7 +42,7 @@ SPLITS: Tuple[SplitName, ...] = (TRAIN, VAL, TEST, HOLDOUT)
 TETRAMERS: Tuple[str, ...] = tuple("".join(p) for p in itertools.product("ACGT", repeat=4))
 CANCER_LABELS: Tuple[str, str] = ("breast_cancer", "colorectal_cancer")
 
-# Matches count_tetramers.py / calculate_tetramer_frequencies.py / download_sra_data.py
+# Matches build_tetramer_cache.py / calculate_tetramer_frequencies.py / download_sra_data.py
 RUN_PATTERN = re.compile(r"^(SRR|ERR|DRR)\d+$")
 
 

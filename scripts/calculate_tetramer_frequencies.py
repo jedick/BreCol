@@ -2,27 +2,18 @@
 """
 Compute tetramer frequency profiles per sequencing run (Run), incrementally.
 
-For each CSV row under data/ with sample_used=TRUE (case-insensitive), reads the matching
-xzipped tetramer counts produced by count_tetramers.py
-(outputs/tetramer_counts/<cancer_type>/<study_name>/<Run>.csv.xz),
-sums counts for the run, converts to percentages (rounded to 3 decimals), and appends
-new rows to the path configured as paths.tetramer_frequencies_csv in defaults.yaml
-(typically outputs/tetramer_frequencies.csv) for ML training.
+For each CSV row under data/ with sample_used=TRUE (case-insensitive), reads the
+matching hive partition from the tetramer Parquet cache (build_tetramer_cache.py),
+sums selected sequence-level counts for the run, converts to percentages (rounded
+to 3 decimals), and appends new rows to paths.tetramer_frequencies_csv.
 
-That CSV is feature-only by design: one `Run` column plus
-the 256 lexicographic ACGT tetramer columns. Labels/splits are resolved from study
-CSV metadata via shared utilities downstream.
-
-Progress: prints each study data file and run count, updates a single-line counter
-while processing runs, then prints a short per-study summary.
+That CSV is feature-only: one Run column plus 256 lexicographic ACGT tetramer columns.
+Labels/splits come from study CSV metadata via shared utilities downstream.
 """
 
 from __future__ import annotations
 
 import csv
-import itertools
-import lzma
-import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -30,15 +21,11 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 
-RUN_PATTERN = re.compile(r"^(SRR|ERR|DRR)\d+$")
-
-TETRAMERS: Tuple[str, ...] = tuple(
-    "".join(p) for p in itertools.product("ACGT", repeat=4)
-)
+from shared_utilities import RUN_PATTERN, TETRAMERS
+from tetramer_cache_io import TetramerCacheReader, tetramer_cache_dataset_root
 
 
 def row_is_sample_used(row: Mapping[str, object]) -> bool:
-    """True when sample_used is TRUE (case-insensitive). Missing or other values are False."""
     return (row.get("sample_used") or "").strip().casefold() == "true"
 
 
@@ -50,7 +37,6 @@ def percentages_from_counts(counts: Sequence[int]) -> List[float]:
 
 
 def load_existing_runs(output_path: Path) -> set[str]:
-    """Read existing Run IDs from output CSV; empty set when file is missing."""
     if not output_path.is_file():
         return set()
     runs: set[str] = set()
@@ -63,45 +49,53 @@ def load_existing_runs(output_path: Path) -> set[str]:
     return runs
 
 
-def counts_from_sequence_rows(path: Path) -> Tuple[Optional[List[int]], Optional[str]]:
-    """Sum sequence-level 4-mer rows from an existing .csv.xz into run totals."""
-    try:
-        with lzma.open(path, "rt", newline="") as in_f:
-            arr = np.loadtxt(in_f, delimiter=",", dtype=np.int64)
-    except (OSError, ValueError) as exc:
-        return None, str(exc)
-
-    if arr.size == 0:
-        return None, "no data rows"
-    arr = np.atleast_2d(arr)
-    if arr.shape[1] != 256:
-        return None, f"expected 256 columns, got {arr.shape[1]}"
-
-    totals = arr.sum(axis=0).tolist()
-    return totals, None
+def _resolve_repo_path(repo_root: Path, raw: str) -> Path:
+    p = Path(str(raw).strip())
+    return p if p.is_absolute() else repo_root / p
 
 
-def _default_paths_from_defaults_yaml(repo_root: Path) -> Tuple[Path, Path, Path]:
-    """``(data_dir, tetramer_counts_dir, tetramer_frequencies_csv)`` from ``defaults.yaml``."""
+def _default_paths_from_defaults_yaml(
+    repo_root: Path,
+) -> Tuple[Path, Path, Path, int]:
+    """Return (data_dir, cache_root, tetramer_frequencies_csv, n_max)."""
     cfg_path = repo_root / "defaults.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     paths = cfg["paths"]
-
-    def _resolve(key: str) -> Path:
-        p = Path(str(paths[key]).strip())
-        return p if p.is_absolute() else repo_root / p
-
+    n_max = int(cfg["tetramer_cache"]["n_max_per_run"])
+    cache_dir = _resolve_repo_path(repo_root, str(paths["tetramer_cache_dir"]))
+    cache_root = tetramer_cache_dataset_root(cache_dir, n_max)
     return (
-        _resolve("data_dir"),
-        _resolve("tetramer_counts_dir"),
-        _resolve("tetramer_frequencies_csv"),
+        _resolve_repo_path(repo_root, str(paths["data_dir"])),
+        cache_root,
+        _resolve_repo_path(repo_root, str(paths["tetramer_frequencies_csv"])),
+        n_max,
     )
 
 
+def counts_from_cache_partition(
+    reader: TetramerCacheReader,
+    study_name: str,
+    run: str,
+) -> Tuple[Optional[List[int]], Optional[str]]:
+    try:
+        _, matrix = reader.load_run(study_name, run)
+    except OSError as exc:
+        return None, str(exc)
+    if matrix.shape[0] == 0:
+        return None, "no data rows"
+    totals = matrix.sum(axis=0).astype(np.int64).tolist()
+    return totals, None
+
+
 def main() -> int:
-    script_dir = Path(__file__).resolve().parent
-    repo_root = script_dir.parent
-    data_dir, counts_root, output_path = _default_paths_from_defaults_yaml(repo_root)
+    repo_root = Path(__file__).resolve().parent.parent
+    data_dir, cache_root, output_path, _n_max = _default_paths_from_defaults_yaml(repo_root)
+    complete_marker = cache_root / "_complete"
+
+    if not complete_marker.is_file():
+        raise SystemExit(
+            f"Tetramer cache not built: {cache_root} (run: make tetramer_cache)"
+        )
 
     if not data_dir.is_dir():
         print(f"Error: data directory not found: {data_dir}", file=sys.stderr)
@@ -112,15 +106,14 @@ def main() -> int:
         print(f"Error: no CSV files under {data_dir}", file=sys.stderr)
         return 1
 
+    reader = TetramerCacheReader(cache_root)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = ["Run", *list(TETRAMERS)]
-
     rows_written = 0
     rows_already_in_output = 0
     rows_missing_counts = 0
     rows_zero_kmers = 0
-
     status_width = 100
 
     def show_run_progress(run_i: int, n_runs: int, run: str, note: str = "") -> None:
@@ -141,11 +134,10 @@ def main() -> int:
             study_name = csv_path.stem
             rel_path = csv_path.relative_to(data_dir)
             data_file = rel_path.as_posix()
-            cancer_type = rel_path.parent.name if len(rel_path.parts) >= 2 else ""
 
             with open(csv_path, newline="") as in_f:
-                reader = csv.DictReader(in_f)
-                rows = list(reader)
+                reader_csv = csv.DictReader(in_f)
+                rows = list(reader_csv)
 
             n_runs = sum(
                 1
@@ -175,34 +167,22 @@ def main() -> int:
                     show_run_progress(run_i, n_runs, run, "skipped: row already exists")
                     continue
 
-                run_counts_path = counts_root / cancer_type / study_name / f"{run}.csv.xz"
-                if not run_counts_path.is_file():
+                counts, err = counts_from_cache_partition(reader, study_name, run)
+                if err is not None or counts is None:
                     print(
-                        f"Warning: missing tetramer counts for {study_name}/{run} "
-                        f"(expected {run_counts_path}); run `make tetramer_counts` first",
+                        f"Warning: missing tetramer cache for {study_name}/{run}: {err}",
                         file=sys.stderr,
                     )
                     rows_missing_counts += 1
                     study_missing += 1
-                    show_run_progress(run_i, n_runs, run, "skipped: no count file")
-                    continue
-
-                counts, seq_err = counts_from_sequence_rows(run_counts_path)
-                if seq_err is not None or counts is None:
-                    print(
-                        f"Warning: could not read {run_counts_path}: {seq_err}",
-                        file=sys.stderr,
-                    )
-                    rows_missing_counts += 1
-                    study_missing += 1
-                    show_run_progress(run_i, n_runs, run, "skipped: read error")
+                    show_run_progress(run_i, n_runs, run, "skipped: no cache partition")
                     continue
 
                 if sum(counts) == 0:
                     rows_zero_kmers += 1
                     study_zero += 1
                     print(
-                        f"Warning: zero tetramers in count file for {study_name}/{run}",
+                        f"Warning: zero tetramers in cache for {study_name}/{run}",
                         file=sys.stderr,
                     )
 
@@ -220,7 +200,7 @@ def main() -> int:
             sys.stdout.flush()
             print(
                 f"  Finished: wrote {study_written}, "
-                f"skipped (missing/unreadable counts) {study_missing}, "
+                f"skipped (missing cache) {study_missing}, "
                 f"zero tetramer totals {study_zero}",
                 flush=True,
             )
@@ -228,7 +208,7 @@ def main() -> int:
     print(f"Appended {rows_written} new rows to {output_path}")
     print(f"Rows already in output: {rows_already_in_output}")
     if rows_missing_counts:
-        print(f"Skipped (missing/unreadable count files): {rows_missing_counts}")
+        print(f"Skipped (missing cache partitions): {rows_missing_counts}")
     if rows_zero_kmers:
         print(f"Runs with zero tetramer totals: {rows_zero_kmers}")
     return 0

@@ -25,15 +25,11 @@ def merge_run_uc_cap_baseline(defaults_cfg: Mapping[str, Any]) -> Dict[str, Any]
 
 def cap_csv_path(repo_root: Path, defaults_cfg: Mapping[str, Any], merged: Mapping[str, Any]) -> str:
     """Return repo-relative POSIX path to the CAP CSV for ``merged`` UC/CAP parameters."""
-    uc_root = str(defaults_cfg["paths"]["uc_cap_root"]).strip()
+    uc_root = str(defaults_cfg["paths"]["tetramer_uc_cap_root"]).strip()
     n_uc = int(merged["n_uc"])
     n_clusters = int(merged["n_clusters"])
-    n_cap = merged["n_cap"]
-    tag = (
-        "all"
-        if isinstance(n_cap, str) and str(n_cap).strip().lower() == "all"
-        else str(int(n_cap))
-    )
+    n_cap = int(merged["n_cap"])
+    tag = str(n_cap)
     cap_transform = str(merged["cap_transform"]).strip()
     stem = f"cap{tag}" if cap_transform == "none" else f"cap{tag}_{cap_transform}"
     path = repo_root / uc_root / f"uc{n_uc}_k{n_clusters}" / f"{stem}.csv"

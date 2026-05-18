@@ -47,7 +47,7 @@ The cost of one ignored column is negligible. The cost of two divergent implemen
 
 ## Feature data versus metadata
 
-In this project, **feature files** (`tetramer_frequencies.csv`, per-run sequence counts under **`paths.tetramer_counts_dir`**, UC/CAP CSVs, torch tensor caches) carry **Run identifiers and feature columns only**. Labels and splits are always derived from study CSVs via `scripts/shared_utilities.py`.
+In this project, **feature files** (`tetramer_frequencies.csv`, the hive-partitioned tetramer Parquet cache under **`paths.tetramer_cache_dir`**, UC/CAP CSVs, torch tensor caches) carry **Run identifiers and feature columns only**. Labels and splits are always derived from study CSVs via `scripts/shared_utilities.py`.
 
 Consuming scripts follow this pattern:
 1. Call `build_run_task_table(task)` to get the canonical metadata table.

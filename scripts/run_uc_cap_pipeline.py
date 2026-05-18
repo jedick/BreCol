@@ -3,44 +3,39 @@
 Run UC/CAP with decoupled sequence budgets for clustering vs abundance profiling.
 
 UC (unsupervised clustering):
-  - Fit MiniBatchKMeans on the first n_uc sequences per run from a cache Parquet.
+  - Fit MiniBatchKMeans on the first n_uc sequences per train run from the tetramer cache.
 
 CAP (cluster abundance profiles):
   - Assign n_cap sequences per run to nearest centroid and aggregate K-dimensional
     cluster count/abundance vectors per run.
-  - n_cap may be an integer or "all". When "all", sequence rows are streamed from
-    per-run sequence count files under outputs/tetramer_counts/<cancer_type>/<study_name>/<Run>.csv(.xz).
 
-Input sequence features are tetramer count vectors (256 columns).
+Input sequence features are tetramer count vectors (256 columns) from the partitioned
+Parquet cache under paths.tetramer_cache_dir.
 
 Configuration is read from <repo>/defaults.yaml (run_uc_cap_pipeline baseline list,
-merged in order, then overlaid by experiments.yaml when --feat is set)
-and optional <repo>/experiments.yaml (--feat 1-based index into the flat list there,
-merged shallowly over the baseline). The only CLI flag is --feat.
+merged in order, then overlaid by experiments.yaml when --feat is set).
+The only CLI flag is --feat.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import pickle
-import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-import pyarrow.dataset as ds
-import pyarrow.compute as pc
 import yaml
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.decomposition import PCA
-from shared_utilities import RUN_PATTERN, TETRAMERS, build_run_table
 
-
-RUN_FILE_PATTERN = RUN_PATTERN
+from shared_utilities import TETRAMERS, build_run_table
+from tetramer_cache_io import TetramerCacheReader, tetramer_cache_dataset_root
 
 
 class SequenceTransform:
@@ -60,53 +55,19 @@ class SequenceTransform:
         return Z
 
 
-def parse_n_cap(raw: str) -> Union[int, str]:
-    if raw.strip().lower() == "all":
-        return "all"
-    value = int(raw)
-    if value <= 0:
-        raise ValueError("n_cap must be positive or 'all'")
-    return value
-
-
-def _default_cache_parquet(repo_root: Path, defaults_cfg: Mapping[str, Any]) -> Path:
+def _default_cache_root(repo_root: Path, defaults_cfg: Mapping[str, Any]) -> Path:
     try:
         paths_cfg = defaults_cfg["paths"]
-        uc_cap_root_rel = str(paths_cfg["uc_cap_root"]).strip()
-        n_max = int(defaults_cfg["sequence_cache"]["n_max_per_run"])
+        cache_dir_rel = str(paths_cfg["tetramer_cache_dir"]).strip()
+        n_max = int(defaults_cfg["tetramer_cache"]["n_max_per_run"])
     except (TypeError, KeyError, ValueError) as exc:
-        raise SystemExit(f"Invalid pipeline config for cache path defaults: {exc}") from exc
-    return repo_root / uc_cap_root_rel / f"sequence_counts_first_{n_max}_all_runs.parquet"
-
-
-def iter_run_files(outputs_dir: Path) -> Iterable[Tuple[str, str, Path]]:
-    """Yield (study_name, run, path) for per-run sequence count files."""
-    for path in sorted(outputs_dir.rglob("*")):
-        if not path.is_file() or path.name.startswith("."):
-            continue
-        run = ""
-        if path.name.endswith(".csv.xz"):
-            run = path.name[: -len(".csv.xz")]
-        elif path.name.endswith(".csv"):
-            run = path.name[: -len(".csv")]
-        if not run or not RUN_FILE_PATTERN.match(run):
-            continue
-        study_name = path.parent.name
-        yield study_name, run, path
-
-
-def load_cache_subset(cache_parquet: Path, n_limit: int) -> pd.DataFrame:
-    cols = ["study_name", "Run", "sequence_index"] + list(TETRAMERS)
-    dataset = ds.dataset(str(cache_parquet), format="parquet")
-    table = dataset.to_table(
-        columns=cols,
-        filter=pc.field("sequence_index") <= pc.scalar(n_limit),
-    )
-    return table.to_pandas()
+        raise SystemExit(f"Invalid pipeline config for tetramer cache path: {exc}") from exc
+    cache_dir = repo_root / cache_dir_rel
+    return tetramer_cache_dataset_root(cache_dir, n_max)
 
 
 def fit_uc_model(
-    uc_df: pd.DataFrame,
+    X: np.ndarray,
     *,
     n_clusters: int,
     random_state: int,
@@ -116,7 +77,6 @@ def fit_uc_model(
     batch_size: int,
     max_iter: int,
 ) -> Tuple[MiniBatchKMeans, PCA, np.ndarray]:
-    X = uc_df.loc[:, list(TETRAMERS)].to_numpy(dtype=np.float64, copy=False)
     X_t = transform.transform(X)
     if pca_components is not None:
         pca = PCA(n_components=pca_components, random_state=random_state)
@@ -163,64 +123,28 @@ def update_run_cluster_counts(
 
 def build_cap_from_cache(
     *,
-    cache_df: pd.DataFrame,
+    cache: TetramerCacheReader,
+    run_keys: Sequence[Tuple[str, str]],
     n_cap: int,
     transform: SequenceTransform,
     pca: PCA,
     km: MiniBatchKMeans,
     n_clusters: int,
 ) -> Dict[Tuple[str, str], np.ndarray]:
-    subset = cache_df[cache_df["sequence_index"] <= n_cap]
     run_cluster_counts: Dict[Tuple[str, str], np.ndarray] = {}
-    for (study_name, run), grp in subset.groupby(["study_name", "Run"], sort=True):
-        X = grp.loc[:, list(TETRAMERS)].to_numpy(dtype=np.float64, copy=False)
-        cluster_ids = assign_matrix(X, transform=transform, pca=pca, km=km)
+    n_runs = len(run_keys)
+    for i, (study_name, run) in enumerate(run_keys, start=1):
+        line = f"  CAP: {i}/{n_runs} runs (current: {study_name}/{run})"
+        sys.stdout.write("\r" + line.ljust(100))
+        sys.stdout.flush()
+        _, X = cache.load_run(study_name, run)
+        if X.shape[0] == 0:
+            continue
+        n = min(n_cap, X.shape[0])
+        cluster_ids = assign_matrix(X[:n], transform=transform, pca=pca, km=km)
         update_run_cluster_counts(
             run_cluster_counts, (study_name, run), cluster_ids, n_clusters
         )
-    return run_cluster_counts
-
-
-def stream_cap_all_sequences(
-    *,
-    outputs_dir: Path,
-    transform: SequenceTransform,
-    pca: PCA,
-    km: MiniBatchKMeans,
-    n_clusters: int,
-    chunk_size: int,
-) -> Dict[Tuple[str, str], np.ndarray]:
-    run_files = list(iter_run_files(outputs_dir))
-    if not run_files:
-        raise SystemExit(f"No per-run sequence count files found under {outputs_dir}")
-
-    run_cluster_counts: Dict[Tuple[str, str], np.ndarray] = {}
-    n_runs = len(run_files)
-    for i, (study_name, run, path) in enumerate(run_files, start=1):
-        line = f"  CAP all-seq: {i}/{n_runs} runs (current: {study_name}/{run})"
-        sys.stdout.write("\r" + line.ljust(100))
-        sys.stdout.flush()
-        try:
-            chunks: Iterator[pd.DataFrame] = pd.read_csv(
-                path,
-                header=None,
-                chunksize=chunk_size,
-                dtype="int64",
-                compression="infer",
-            )
-            for chunk in chunks:
-                if chunk.shape[1] != 256:
-                    raise SystemExit(
-                        f"Expected 256 columns in {path}, found {chunk.shape[1]}"
-                    )
-                X = chunk.to_numpy(dtype=np.float64, copy=False)
-                cluster_ids = assign_matrix(X, transform=transform, pca=pca, km=km)
-                update_run_cluster_counts(
-                    run_cluster_counts, (study_name, run), cluster_ids, n_clusters
-                )
-        except Exception as exc:
-            sys.stdout.write("\n")
-            raise SystemExit(f"Failed reading/assigning {path}: {exc}") from exc
     sys.stdout.write("\n")
     return run_cluster_counts
 
@@ -263,12 +187,22 @@ def summarize_cap_sparsity(
     return float(nnz.mean()), float(np.median(nnz)), int(nnz.min()), int(nnz.max())
 
 
-def _n_cap_raw_to_str(raw: object) -> str:
-    if isinstance(raw, str):
-        return raw.strip()
+def _parse_n_cap(raw: object) -> int:
     if isinstance(raw, int):
-        return str(raw)
-    raise SystemExit(f"n_cap must be an int or string, got {type(raw).__name__}")
+        value = raw
+    elif isinstance(raw, str):
+        text = raw.strip().lower()
+        if text == "all":
+            raise SystemExit(
+                "n_cap='all' is no longer supported; raise tetramer_cache.n_max_per_run "
+                "or lower n_cap so CAP fits in the cache."
+            )
+        value = int(text)
+    else:
+        raise SystemExit(f"n_cap must be an int, got {type(raw).__name__}")
+    if value <= 0:
+        raise SystemExit("n_cap must be positive.")
+    return value
 
 
 _FEAT_HELP = (
@@ -293,7 +227,6 @@ def _shallow_merge_uc_cap(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict
 
 
 def merge_defaults_uc_cap_baseline_fragments(baseline_rows: List[Any]) -> Dict[str, Any]:
-    """Merge defaults.yaml run_uc_cap_pipeline (list of dicts) in order into one mapping."""
     merged: Dict[str, Any] = {}
     for i, frag in enumerate(baseline_rows):
         if not isinstance(frag, dict):
@@ -305,7 +238,6 @@ def merge_defaults_uc_cap_baseline_fragments(baseline_rows: List[Any]) -> Dict[s
 
 
 def load_merged_uc_cap_config(repo_root: Path, *, feat: int) -> Tuple[Dict[str, Any], int]:
-    """Return (merged pipeline dict, feature_index for logging). feat 0 = baseline only."""
     defaults_path = repo_root / "defaults.yaml"
     experiments_path = repo_root / "experiments.yaml"
     try:
@@ -355,6 +287,65 @@ def _uc_refit_error(uc_dir: Path, uc_assign_out: Path, model_out: Path, reason: 
     )
 
 
+def _write_uc_assignments(
+    path: Path,
+    rows: Sequence[Tuple[str, str, int, int]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["study_name", "Run", "sequence_index", "cluster_id"])
+        writer.writerows(rows)
+
+
+def _fit_uc_from_cache(
+    *,
+    cache: TetramerCacheReader,
+    train_keys: Sequence[Tuple[str, str]],
+    n_uc: int,
+    n_clusters: int,
+    random_state: int,
+    transform: SequenceTransform,
+    pca_components: Optional[int],
+    pca_variance: float,
+    batch_size: int,
+    max_iter: int,
+) -> Tuple[MiniBatchKMeans, PCA, List[Tuple[str, str, int, int]]]:
+    X_parts: List[np.ndarray] = []
+    run_slices: List[Tuple[str, str, np.ndarray, int]] = []
+    for study_name, run in train_keys:
+        seq_index, X = cache.load_run(study_name, run)
+        if X.shape[0] == 0:
+            continue
+        n = min(n_uc, X.shape[0])
+        if n == 0:
+            continue
+        X_parts.append(X[:n])
+        run_slices.append((study_name, run, seq_index[:n], n))
+    if not X_parts:
+        raise SystemExit("No UC training sequences found in tetramer cache for train runs.")
+    X_all = np.vstack(X_parts)
+    km, pca, labels = fit_uc_model(
+        X_all,
+        n_clusters=n_clusters,
+        random_state=random_state,
+        transform=transform,
+        pca_components=pca_components,
+        pca_variance=pca_variance,
+        batch_size=batch_size,
+        max_iter=max_iter,
+    )
+    assignment_rows: List[Tuple[str, str, int, int]] = []
+    offset = 0
+    for study_name, run, seq_index, n in run_slices:
+        for i in range(n):
+            assignment_rows.append(
+                (study_name, run, int(seq_index[i]), int(labels[offset + i]))
+            )
+        offset += n
+    return km, pca, assignment_rows
+
+
 def run_pipeline_from_merged(
     repo_root: Path,
     *,
@@ -370,6 +361,7 @@ def run_pipeline_from_merged(
 
     try:
         n_uc = int(merged["n_uc"])
+        n_cap = _parse_n_cap(merged["n_cap"])
         n_clusters = int(merged["n_clusters"])
         random_state = int(merged["random_state"])
         pca_variance = float(merged["pca_variance"])
@@ -382,20 +374,12 @@ def run_pipeline_from_merged(
         clr_pseudocount = float(merged["clr_pseudocount"])
         batch_size = int(merged["batch_size"])
         max_iter = int(merged["max_iter"])
-        chunk_size = int(merged["chunk_size"])
-        outputs_dir = _resolve_cfg_path(paths_cfg["outputs_dir"])
-        out_dir = _resolve_cfg_path(paths_cfg["uc_cap_root"])
+        out_dir = _resolve_cfg_path(paths_cfg["tetramer_uc_cap_root"])
     except (KeyError, TypeError, ValueError) as exc:
         raise SystemExit(f"Invalid merged run_uc_cap_pipeline config: {exc}") from exc
 
     if cap_transform not in ("none", "clr"):
         raise SystemExit(f"cap_transform must be 'none' or 'clr', got {cap_transform!r}")
-
-    n_cap_raw = _n_cap_raw_to_str(merged["n_cap"])
-    try:
-        n_cap = parse_n_cap(n_cap_raw)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
 
     if n_uc <= 0:
         raise SystemExit("n_uc must be positive.")
@@ -407,33 +391,49 @@ def run_pipeline_from_merged(
         raise SystemExit("pca_variance must be in (0, 1].")
     if clr_pseudocount <= 0:
         raise SystemExit("clr_pseudocount must be positive.")
-    if batch_size <= 0 or max_iter <= 0 or chunk_size <= 0:
-        raise SystemExit("batch_size, max_iter, and chunk_size must be positive.")
+    if batch_size <= 0 or max_iter <= 0:
+        raise SystemExit("batch_size and max_iter must be positive.")
 
     defaults_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    cache_parquet = _default_cache_parquet(repo_root, defaults_cfg)
-    if not cache_parquet.is_file():
-        raise SystemExit(f"Cache parquet not found: {cache_parquet}")
+    n_max = int(defaults_cfg["tetramer_cache"]["n_max_per_run"])
+    if n_uc > n_max:
+        raise SystemExit(
+            f"n_uc ({n_uc}) exceeds tetramer_cache.n_max_per_run ({n_max})."
+        )
+    if n_cap > n_max:
+        raise SystemExit(
+            f"n_cap ({n_cap}) exceeds tetramer_cache.n_max_per_run ({n_max})."
+        )
+    cache_root = _default_cache_root(repo_root, defaults_cfg)
+    complete_marker = cache_root / "_complete"
+    if not complete_marker.is_file():
+        raise SystemExit(
+            f"Tetramer cache not built: {cache_root} (run: make tetramer_cache)"
+        )
 
     prefix = f"F{feature_index} " if feature_index > 0 else ""
-    print(f"{prefix}n_uc={n_uc} n_clusters={n_clusters} n_cap={n_cap_raw}", flush=True)
+    print(f"{prefix}n_uc={n_uc} n_clusters={n_clusters} n_cap={n_cap}", flush=True)
 
     start = time.perf_counter()
     transform = SequenceTransform(normalize=seq_normalize, log1p=seq_log1p)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    n_needed_from_cache = max(n_uc, n_cap if isinstance(n_cap, int) else n_uc)
-    print(
-        f"Loading cache rows with sequence_index <= {n_needed_from_cache}",
-        flush=True,
-    )
-    cache_df = load_cache_subset(cache_parquet, n_needed_from_cache)
-    if cache_df.empty:
-        raise SystemExit("No sequence rows found in cache for requested settings.")
-    if len(cache_df.columns) != 259:
-        raise SystemExit("Cache schema mismatch: expected 259 columns.")
+    cache = TetramerCacheReader(cache_root)
     run_meta = build_run_table(config_path=config_path)
     train_runs = set(run_meta.loc[run_meta["split"] == "train", "Run"])
+    train_keys = [
+        (str(row["study_name"]), str(row["Run"]))
+        for _, row in run_meta.loc[run_meta["Run"].isin(train_runs)]
+        .drop_duplicates(subset=["study_name", "Run"])
+        .sort_values(["study_name", "Run"])
+        .iterrows()
+    ]
+    all_keys = [
+        (str(row["study_name"]), str(row["Run"]))
+        for _, row in run_meta.drop_duplicates(subset=["study_name", "Run"])
+        .sort_values(["study_name", "Run"])
+        .iterrows()
+    ]
 
     uc_dir = out_dir / f"uc{n_uc}_k{n_clusters}"
     uc_dir.mkdir(parents=True, exist_ok=True)
@@ -481,20 +481,16 @@ def run_pipeline_from_merged(
                 model_out,
                 "Existing UC model sequence transform settings do not match config.",
             )
-        uc_df = pd.read_csv(uc_assign_out)
+        uc_n_seqs = sum(1 for _ in uc_assign_out.open(encoding="utf-8")) - 1
     else:
-        uc_df = cache_df[
-            (cache_df["sequence_index"] <= n_uc) & (cache_df["Run"].isin(train_runs))
-        ]
-        if uc_df.empty:
-            raise SystemExit(f"No UC rows found for training runs with n_uc={n_uc}")
         print(
-            f"UC fit set (train runs only): {len(uc_df)} sequences, "
-            f"{uc_df[['study_name', 'Run']].drop_duplicates().shape[0]} runs",
+            f"UC fit (train runs): {len(train_keys)} runs, up to {n_uc} sequences each",
             flush=True,
         )
-        km, pca, uc_labels = fit_uc_model(
-            uc_df,
+        km, pca, assignment_rows = _fit_uc_from_cache(
+            cache=cache,
+            train_keys=train_keys,
+            n_uc=n_uc,
             n_clusters=n_clusters,
             random_state=random_state,
             transform=transform,
@@ -503,9 +499,8 @@ def run_pipeline_from_merged(
             batch_size=batch_size,
             max_iter=max_iter,
         )
-        uc_df = uc_df.loc[:, ["study_name", "Run", "sequence_index"]].copy()
-        uc_df["cluster_id"] = uc_labels
-        uc_df.to_csv(uc_assign_out, index=False)
+        _write_uc_assignments(uc_assign_out, assignment_rows)
+        uc_n_seqs = len(assignment_rows)
         with open(model_out, "wb") as f:
             pickle.dump(
                 {
@@ -521,29 +516,23 @@ def run_pipeline_from_merged(
                 f,
             )
 
-    uc_unique_clusters = int(uc_df["cluster_id"].nunique())
+    uc_unique_clusters = int(
+        pd.read_csv(uc_assign_out, usecols=["cluster_id"])["cluster_id"].nunique()
+    )
+    print(f"UC training sequences: {uc_n_seqs}", flush=True)
     print(f"PCA components retained: {pca.n_components_}", flush=True)
     pca_components_used = int(pca.n_components_)
 
     print("Building CAP", flush=True)
-    if isinstance(n_cap, int):
-        run_cluster_counts = build_cap_from_cache(
-            cache_df=cache_df,
-            n_cap=n_cap,
-            transform=transform,
-            pca=pca,
-            km=km,
-            n_clusters=n_clusters,
-        )
-    else:
-        run_cluster_counts = stream_cap_all_sequences(
-            outputs_dir=outputs_dir,
-            transform=transform,
-            pca=pca,
-            km=km,
-            n_clusters=n_clusters,
-            chunk_size=chunk_size,
-        )
+    run_cluster_counts = build_cap_from_cache(
+        cache=cache,
+        run_keys=all_keys,
+        n_cap=n_cap,
+        transform=transform,
+        pca=pca,
+        km=km,
+        n_clusters=n_clusters,
+    )
 
     cap_df = make_cap_dataframe(
         run_cluster_counts,
@@ -565,9 +554,8 @@ def run_pipeline_from_merged(
         run_cluster_counts
     )
 
-    run_tag = "all" if n_cap == "all" else str(n_cap)
     cap_name = (
-        f"cap{run_tag}" if cap_transform == "none" else f"cap{run_tag}_{cap_transform}"
+        f"cap{n_cap}" if cap_transform == "none" else f"cap{n_cap}_{cap_transform}"
     )
     cap_out = uc_dir / f"{cap_name}.csv"
     config_out = uc_dir / f"{cap_name}.json"
@@ -580,8 +568,7 @@ def run_pipeline_from_merged(
     with open(config_out, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "cache_parquet": str(cache_parquet),
-                "outputs_dir": str(outputs_dir),
+                "tetramer_cache_root": str(cache_root),
                 "datasets_csv": str(datasets_csv_abs),
                 "data_dir": str(data_dir_abs),
                 "n_uc": n_uc,
@@ -597,7 +584,6 @@ def run_pipeline_from_merged(
                 "clr_pseudocount": clr_pseudocount,
                 "batch_size": batch_size,
                 "max_iter": max_iter,
-                "chunk_size": chunk_size,
                 "cap_output_csv": str(cap_out),
                 "uc_assignments_csv": str(uc_assign_out),
                 "uc_model_pkl": str(model_out),
@@ -623,7 +609,8 @@ def run_pipeline_from_merged(
     )
     print(
         "CAP nonzero clusters per run "
-        f"(mean/median/min/max): {cap_nnz_mean:.2f}/{cap_nnz_median:.1f}/{cap_nnz_min}/{cap_nnz_max}",
+        f"(mean/median/min/max): {cap_nnz_mean:.2f}/{cap_nnz_median:.1f}/"
+        f"{cap_nnz_min}/{cap_nnz_max}",
         flush=True,
     )
     print(f"Output directory: {uc_dir}")
