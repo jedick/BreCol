@@ -29,7 +29,7 @@ from hyenadna_fasta_data import (  # noqa: E402
     resolve_repo_path,
     run_to_tensors,
 )
-from sequence_sampling import load_sequence_selection
+from cache_operations import load_sequence_row_selection
 from shared_utilities import build_run_table
 
 
@@ -185,7 +185,7 @@ def _build_tensor_cache(
     run_tensors_cfg = cfg.get("run_tensors")
     if not isinstance(run_tensors_cfg, dict):
         raise SystemExit(f"{defaults_path} must define run_tensors as a mapping.")
-    selection = load_sequence_selection(cfg)
+    selection = load_sequence_row_selection(cfg)
     seq_offset = selection["seq_offset"]
     min_seqs = selection["min_seqs"]
     sample_mode = selection["sample_mode"]

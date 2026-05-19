@@ -35,9 +35,13 @@ import yaml
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.decomposition import PCA
 
-from embedding_cache_io import EmbeddingCacheReader, embedding_cache_dataset_root
+from cache_operations import (
+    EmbeddingCacheReader,
+    TetramerCacheReader,
+    embedding_cache_dataset_root,
+    tetramer_cache_dataset_root,
+)
 from shared_utilities import TETRAMERS, build_run_table
-from tetramer_cache_io import TetramerCacheReader, tetramer_cache_dataset_root
 
 
 class SequenceTransform:
@@ -78,6 +82,33 @@ def _cache_root(
         raise SystemExit(f"Invalid pipeline config for {kind} cache path: {exc}") from exc
 
 
+def _parse_pca_variance(raw: object) -> Optional[float]:
+    """Return None to skip PCA, or a float in (0, 1) for explained-variance ratio."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise SystemExit("pca_variance must be null, 1, or a float in (0, 1).")
+    if isinstance(raw, int):
+        if raw == 1:
+            return None
+        raise SystemExit(
+            "pca_variance must be null, 1, or a float in (0, 1); "
+            f"got integer {raw} (use pca_components for a fixed component count)."
+        )
+    if isinstance(raw, float):
+        if raw == 1.0:
+            raise SystemExit(
+                "pca_variance 1.0 is not valid for sklearn PCA "
+                "(use null or integer 1 to disable PCA, or a float in (0, 1))."
+            )
+        if not (0.0 < raw < 1.0):
+            raise SystemExit("pca_variance must be null, 1, or a float in (0, 1).")
+        return raw
+    raise SystemExit(
+        f"pca_variance must be null, 1, or a float in (0, 1); got {type(raw).__name__}."
+    )
+
+
 def fit_uc_model(
     X: np.ndarray,
     *,
@@ -85,16 +116,20 @@ def fit_uc_model(
     random_state: int,
     transform: SequenceTransform,
     pca_components: Optional[int],
-    pca_variance: float,
+    pca_variance: Optional[float],
     batch_size: int,
     max_iter: int,
-) -> Tuple[MiniBatchKMeans, PCA, np.ndarray]:
+) -> Tuple[MiniBatchKMeans, Optional[PCA], np.ndarray]:
     X_t = transform.transform(X)
     if pca_components is not None:
         pca = PCA(n_components=pca_components, random_state=random_state)
-    else:
+        X_fit = pca.fit_transform(X_t)
+    elif pca_variance is not None:
         pca = PCA(n_components=pca_variance, random_state=random_state)
-    X_fit = pca.fit_transform(X_t)
+        X_fit = pca.fit_transform(X_t)
+    else:
+        pca = None
+        X_fit = X_t
 
     km = MiniBatchKMeans(
         n_clusters=n_clusters,
@@ -112,11 +147,12 @@ def assign_matrix(
     X_counts: np.ndarray,
     *,
     transform: SequenceTransform,
-    pca: PCA,
+    pca: Optional[PCA],
     km: MiniBatchKMeans,
 ) -> np.ndarray:
     X_t = transform.transform(X_counts)
-    X_t = pca.transform(X_t)
+    if pca is not None:
+        X_t = pca.transform(X_t)
     return km.predict(X_t)
 
 
@@ -139,7 +175,7 @@ def build_cap_from_cache(
     run_keys: Sequence[Tuple[str, str]],
     n_cap: int,
     transform: SequenceTransform,
-    pca: PCA,
+    pca: Optional[PCA],
     km: MiniBatchKMeans,
     n_clusters: int,
 ) -> Dict[Tuple[str, str], np.ndarray]:
@@ -325,10 +361,10 @@ def _fit_uc_from_cache(
     random_state: int,
     transform: SequenceTransform,
     pca_components: Optional[int],
-    pca_variance: float,
+    pca_variance: Optional[float],
     batch_size: int,
     max_iter: int,
-) -> Tuple[MiniBatchKMeans, PCA, List[Tuple[str, str, int, int]]]:
+) -> Tuple[MiniBatchKMeans, Optional[PCA], List[Tuple[str, str, int, int]]]:
     X_parts: List[np.ndarray] = []
     run_slices: List[Tuple[str, str, np.ndarray, int]] = []
     for study_name, run in train_keys:
@@ -383,7 +419,7 @@ def run_pipeline_from_merged(
         n_cap = _parse_n_cap(merged["n_cap"])
         n_clusters = int(merged["n_clusters"])
         random_state = int(merged["random_state"])
-        pca_variance = float(merged["pca_variance"])
+        pca_variance = _parse_pca_variance(merged.get("pca_variance"))
         pca_components = merged.get("pca_components")
         if pca_components is not None:
             pca_components = int(pca_components)
@@ -407,8 +443,6 @@ def run_pipeline_from_merged(
         raise SystemExit("n_clusters must be > 1.")
     if pca_components is not None and pca_components <= 0:
         raise SystemExit("pca_components must be positive when provided.")
-    if not (0.0 < pca_variance <= 1.0):
-        raise SystemExit("pca_variance must be in (0, 1].")
     if clr_pseudocount <= 0:
         raise SystemExit("clr_pseudocount must be positive.")
     if batch_size <= 0 or max_iter <= 0:
@@ -549,8 +583,12 @@ def run_pipeline_from_merged(
         pd.read_csv(uc_assign_out, usecols=["cluster_id"])["cluster_id"].nunique()
     )
     print(f"UC training sequences: {uc_n_seqs}", flush=True)
-    print(f"PCA components retained: {pca.n_components_}", flush=True)
-    pca_components_used = int(pca.n_components_)
+    if pca is None:
+        print("PCA: disabled", flush=True)
+        pca_components_used = None
+    else:
+        print(f"PCA components retained: {pca.n_components_}", flush=True)
+        pca_components_used = int(pca.n_components_)
 
     print("Building CAP", flush=True)
     run_cluster_counts = build_cap_from_cache(

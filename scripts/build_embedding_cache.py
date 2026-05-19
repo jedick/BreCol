@@ -3,7 +3,7 @@
 Build a hive-partitioned per-sequence HyenaDNA embedding cache from FASTA files.
 
 For each data/ CSV row with sample_used=TRUE, reads fasta/<study_name>/<Run>.fasta.gz,
-applies sequence_selection from defaults.yaml, runs the pretrained backbone (use_head=False),
+applies sequence_cache row selection from defaults.yaml, runs the pretrained backbone (use_head=False),
 and writes Parquet under paths.embedding_cache_dir.
 
 Downstream: run_uc_cap_pipeline.py with --emb.
@@ -28,17 +28,21 @@ import yaml
 from hyenadna import HyenaDNAPreTrainedModel
 from tqdm import tqdm
 
-from embedding_cache_io import write_run_partition
-from fasta_cache_common import iter_selected_fasta_sequences, row_is_sample_used
+from cache_operations import (
+    cache_dataset_root,
+    count_fasta_records,
+    iter_selected_fasta_sequences,
+    load_sequence_row_selection,
+    partition_is_up_to_date,
+    row_is_sample_used,
+    run_partition_dir,
+    select_row_indices_0based,
+    skip_reason,
+    split_jobs_by_cache_state,
+    write_embedding_run_partition,
+)
 from hyenadna_fasta_data import fasta_path_for_run, model_max_length, resolve_repo_path
 from hyenadna_sequence_embeddings import embeddings_from_sequences
-from sequence_cache_io import (
-    cache_dataset_root,
-    partition_is_up_to_date,
-    run_partition_dir,
-    split_jobs_by_cache_state,
-)
-from sequence_sampling import load_sequence_selection, select_row_indices_0based, skip_reason
 from shared_utilities import RUN_PATTERN
 
 _WORKER: Dict[str, Any] = {}
@@ -127,7 +131,6 @@ def selected_sequences_from_fasta(
     sampling_seed: int,
     run: str,
 ) -> Tuple[Optional[np.ndarray], Optional[List[str]]]:
-    from fasta_cache_common import count_fasta_records
 
     n_raw = count_fasta_records(fasta_gz)
     if skip_reason(n_raw, seq_offset=seq_offset, min_seqs=min_seqs) is not None:
@@ -269,7 +272,7 @@ def _build_one_run_partition(
         if part_dir.is_dir():
             shutil.rmtree(part_dir)
 
-    write_run_partition(
+    write_embedding_run_partition(
         cache_root=cache_root,
         study_name=study_name,
         run=run,
@@ -321,7 +324,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         data_dir = _resolve_repo_path(repo_root, str(paths["data_dir"]))
         fasta_dir_key = str(paths["fasta_dir"]).strip()
         cache_dir = _resolve_repo_path(repo_root, str(paths["embedding_cache_dir"]))
-        selection = load_sequence_selection(cfg)
+        selection = load_sequence_row_selection(cfg)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         print(f"Invalid pipeline config in {cfg_path}: {exc}", file=sys.stderr)
         return 1

@@ -22,7 +22,7 @@ import numpy as np
 import yaml
 
 from shared_utilities import RUN_PATTERN, TETRAMERS
-from tetramer_cache_io import TetramerCacheReader, tetramer_cache_dataset_root
+from cache_operations import TetramerCacheReader, tetramer_cache_dataset_root
 
 
 def row_is_sample_used(row: Mapping[str, object]) -> bool:

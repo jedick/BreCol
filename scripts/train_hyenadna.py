@@ -54,7 +54,7 @@ from hyenadna_fasta_data import (
     model_max_length,
     resolve_repo_path,
 )
-from sequence_sampling import load_sequence_selection
+from cache_operations import load_sequence_row_selection
 from hyenadna_multitask import (
     HEAD_CD,
     HEAD_CT,
@@ -961,7 +961,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     cache_num_sets = int(run_tensors_cfg["num_sets"])
     cache_max_len = int(run_tensors_cfg["max_length"])
-    selection = load_sequence_selection(defaults_cfg)
+    selection = load_sequence_row_selection(defaults_cfg)
     cache_seq_offset = selection["seq_offset"]
     cache_min_seqs = selection["min_seqs"]
 
@@ -1397,8 +1397,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "dir": str(run_tensors_root),
                 "run_tensors_num_sets": cache_num_sets,
                 "run_tensors_max_length": cache_max_len,
-                "sequence_selection_seq_offset": cache_seq_offset,
-                "sequence_selection_min_seqs": cache_min_seqs,
+                "sequence_cache_seq_offset": cache_seq_offset,
+                "sequence_cache_min_seqs": cache_min_seqs,
                 "n_cached_runs": len(all_records),
             },
             task_cfg=task_cfg,

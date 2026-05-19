@@ -3,7 +3,7 @@
 Build a hive-partitioned per-sequence tetramer count cache from FASTA files.
 
 For each data/ CSV row with sample_used=TRUE, reads fasta/<study_name>/<Run>.fasta.gz,
-applies sequence_selection from defaults.yaml, then counts 4-mers (Numba when available)
+applies sequence_cache row selection from defaults.yaml, then counts 4-mers (Numba when available)
 only for selected sequences and writes Parquet under paths.tetramer_cache_dir.
 
 Downstream: calculate_tetramer_frequencies.py (run-level sums) and run_uc_cap_pipeline.py.
@@ -66,20 +66,21 @@ except ImportError:
 
 _USE_NUMBA_COUNTING = False
 
-from fasta_cache_common import (  # noqa: E402
+from cache_operations import (  # noqa: E402
     count_fasta_records,
     iter_selected_fasta_sequences,
+    load_sequence_row_selection,
+    partition_is_up_to_date,
     row_is_sample_used,
-)
-from hyenadna_fasta_data import fasta_path_for_run, resolve_repo_path
-from sequence_sampling import (  # noqa: E402
-    load_sequence_selection,
+    run_partition_dir,
     select_row_indices_0based,
     skip_reason,
+    split_jobs_by_cache_state,
+    tetramer_cache_dataset_root,
+    write_tetramer_run_partition,
 )
-from sequence_cache_io import partition_is_up_to_date, run_partition_dir, split_jobs_by_cache_state
+from hyenadna_fasta_data import fasta_path_for_run, resolve_repo_path
 from shared_utilities import RUN_PATTERN
-from tetramer_cache_io import tetramer_cache_dataset_root, write_run_partition  # noqa: E402
 
 _BASE_BITS = {"A": 0, "C": 1, "G": 2, "T": 3}
 
@@ -240,7 +241,7 @@ def _build_one_run_partition(
         if part_dir.is_dir():
             shutil.rmtree(part_dir)
 
-    write_run_partition(
+    write_tetramer_run_partition(
         cache_root=cache_root,
         study_name=study_name,
         run=run,
@@ -303,7 +304,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         data_dir = _resolve_repo_path(repo_root, str(paths["data_dir"]))
         fasta_dir_key = str(paths["fasta_dir"]).strip()
         cache_dir = _resolve_repo_path(repo_root, str(paths["tetramer_cache_dir"]))
-        selection = load_sequence_selection(cfg)
+        selection = load_sequence_row_selection(cfg)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         print(f"Invalid pipeline config in {cfg_path}: {exc}", file=sys.stderr)
         return 1

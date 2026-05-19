@@ -6,7 +6,7 @@ CONFIG := $(ROOT)/defaults.yaml
 
 # Read a top-level YAML section key from defaults.yaml via awk.
 define yaml_section_value
-$(strip $(shell awk -F': *' 'BEGIN{inside=0} $$1=="$(1)"{inside=1; next} inside && $$0 !~ /^  /{inside=0} inside && $$1=="  $(2)"{print $$2; exit}' "$(CONFIG)"))
+$(strip $(shell awk -F': *' 'BEGIN{inside=0} $$1=="$(1)"{inside=1; next} inside && NF && $$0 !~ /^  /{inside=0} inside && $$1=="  $(2)"{print $$2; exit}' "$(CONFIG)"))
 endef
 
 DATA_DIR := $(call yaml_section_value,paths,data_dir)
@@ -109,7 +109,7 @@ help:
 	@echo ""
 
 $(TETRA_CSV): $(TETRAMER_CACHE) $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py \
-		$(ROOT)/scripts/tetramer_cache_io.py $(ROOT)/defaults.yaml
+		$(ROOT)/scripts/cache_operations.py $(ROOT)/defaults.yaml
 	@mkdir -p "$(dir $(TETRA_CSV))"
 	cd "$(ROOT)" && $(PYTHON) scripts/calculate_tetramer_frequencies.py
 
@@ -117,10 +117,7 @@ tetramer_frequencies: $(TETRA_CSV)
 	@echo "Up to date: $(TETRA_CSV)"
 
 $(TETRAMER_CACHE): $(DATA_CSVS) $(ROOT)/scripts/build_tetramer_cache.py \
-		$(ROOT)/scripts/fasta_cache_common.py \
-		$(ROOT)/scripts/sequence_sampling.py \
-		$(ROOT)/scripts/sequence_cache_io.py \
-		$(ROOT)/scripts/tetramer_cache_io.py \
+		$(ROOT)/scripts/cache_operations.py \
 		$(ROOT)/defaults.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_tetramer_cache.py
 
@@ -128,12 +125,9 @@ tetramer_cache: $(TETRAMER_CACHE)
 	@echo "Up to date: $(TETRAMER_CACHE)"
 
 $(EMBEDDING_CACHE): $(DATA_CSVS) $(ROOT)/scripts/build_embedding_cache.py \
-		$(ROOT)/scripts/embedding_cache_io.py \
-		$(ROOT)/scripts/fasta_cache_common.py \
+		$(ROOT)/scripts/cache_operations.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
 		$(ROOT)/scripts/hyenadna_sequence_embeddings.py \
-		$(ROOT)/scripts/sequence_sampling.py \
-		$(ROOT)/scripts/sequence_cache_io.py \
 		$(ROOT)/defaults.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_embedding_cache.py
 
@@ -175,6 +169,7 @@ endef
 $(foreach i,$(CLASSIFIER_EXPERIMENT_INDICES),$(eval $(call tetramer_experiment_rule,$(i))))
 
 $(RUN_TENSORS_DIR): $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/build_run_tensors.py \
+		$(ROOT)/scripts/cache_operations.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml
@@ -189,6 +184,7 @@ audit_run_tensors: $(ROOT)/scripts/audit_run_tensors.py \
 	cd "$(ROOT)" && $(PYTHON) scripts/audit_run_tensors.py
 
 train_hyenadna: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/train_hyenadna.py \
+		$(ROOT)/scripts/cache_operations.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
