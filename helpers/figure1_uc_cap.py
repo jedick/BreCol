@@ -3,7 +3,7 @@
 Build Figure 1: UC/CAP feature-set stability across test vs holdout AUROC.
 
 Writes ``manuscript/figure1_uc_cap.png`` and ``manuscript/figure1_uc_cap.svg`` from
-JSON metrics under ``results/uc_cap/<feat_index>/``.
+JSON metrics under ``results/tetramer_uc_cap/<feat_index>/``.
 
 Run from the repository root: ``python helpers/figure1_uc_cap.py``
 """
@@ -139,7 +139,7 @@ def build_plot(
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
-    uc_cap_dir = repo_root / "results" / "uc_cap"
+    uc_cap_dir = repo_root / "results" / "tetramer_uc_cap"
     if not uc_cap_dir.is_dir():
         raise SystemExit(f"Not a directory: {uc_cap_dir}")
 

@@ -3,7 +3,7 @@
 Build Table 4 (UC/CAP classifiers, selected feature triple) as HTML under
 manuscript/table4_uc_cap.html.
 
-Resolves ``results/uc_cap/<feat>/`` using ``experiments.yaml`` ``run_uc_cap_pipeline``
+Resolves ``results/tetramer_uc_cap/<feat>/`` using ``experiments.yaml`` ``run_uc_cap_pipeline``
 rows merged over ``defaults.yaml`` (same ordering as ``helpers/list_uc_cap_feature_outputs.py``),
 then loads KNN, SVM, and random forest for both tasks.
 
@@ -157,7 +157,7 @@ def format_table_html(
 
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
-    uc_cap_dir = root / "results" / "uc_cap"
+    uc_cap_dir = root / "results" / "tetramer_uc_cap"
     if not uc_cap_dir.is_dir():
         raise SystemExit(f"Not a directory: {uc_cap_dir}")
 

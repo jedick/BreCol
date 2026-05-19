@@ -43,19 +43,13 @@ fit_classifier:
 
 # Flat list merged shallowly over the defaults.yaml run_uc_cap_pipeline baseline (feature sets; --feat 1..N).
 run_uc_cap_pipeline:
-  - { n_uc:  500, n_clusters: 1000, n_cap:   500 }
-  - { n_uc:  500, n_clusters: 1000, n_cap:  1000 }
-  - { n_uc: 1000, n_clusters: 1000, n_cap:  1000 }
-  - { n_uc: 1000, n_clusters: 2000, n_cap:  1000 }
-  - { n_uc: 1000, n_clusters: 2000, n_cap: 10000 }
+  - { n_uc:  500, n_clusters: 1000, n_cap: 1000 }
+  - { n_uc: 1000, n_clusters: 1000, n_cap: 1000 }
+  - { n_uc: 1000, n_clusters: 2000, n_cap: 1000 }
+  - { n_uc: 1000, n_clusters: 1000, n_cap: 5000 }
+  - { n_uc: 1000, n_clusters: 2000, n_cap: 5000 }
+  - { n_uc: 1000, n_clusters: 3000, n_cap: 5000 }
 
-extract_embeddings:
-  - { num_sets: 5, max_length: 1024 }
-  - { num_sets: 5, max_length: 2048 }
-  - { num_sets: 5, max_length: 4096 }
-  - { num_sets: 5, max_length: 8192 }
-  - { num_sets: 5, max_length: 16384 }
-  
 train_hyenadna:
   results_json_template: results/hyenadna/{task_abbrv}_{name}_{max_length/1024}k_s{seed}.json
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)

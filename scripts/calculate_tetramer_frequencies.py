@@ -61,7 +61,7 @@ def _default_paths_from_defaults_yaml(
     cfg_path = repo_root / "defaults.yaml"
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     paths = cfg["paths"]
-    n_max = int(cfg["tetramer_cache"]["n_max_per_run"])
+    n_max = int(cfg["sequence_cache"]["n_max_per_run"])
     cache_dir = _resolve_repo_path(repo_root, str(paths["tetramer_cache_dir"]))
     cache_root = tetramer_cache_dataset_root(cache_dir, n_max)
     return (

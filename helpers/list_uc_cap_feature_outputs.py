@@ -23,9 +23,18 @@ def merge_run_uc_cap_baseline(defaults_cfg: Mapping[str, Any]) -> Dict[str, Any]
     return merged
 
 
-def cap_csv_path(repo_root: Path, defaults_cfg: Mapping[str, Any], merged: Mapping[str, Any]) -> str:
+def cap_csv_path(
+    repo_root: Path,
+    defaults_cfg: Mapping[str, Any],
+    merged: Mapping[str, Any],
+    *,
+    use_embeddings: bool,
+) -> str:
     """Return repo-relative POSIX path to the CAP CSV for ``merged`` UC/CAP parameters."""
-    uc_root = str(defaults_cfg["paths"]["tetramer_uc_cap_root"]).strip()
+    paths = defaults_cfg["paths"]
+    uc_root = str(
+        paths["embedding_uc_cap_root" if use_embeddings else "tetramer_uc_cap_root"]
+    ).strip()
     n_uc = int(merged["n_uc"])
     n_clusters = int(merged["n_clusters"])
     n_cap = int(merged["n_cap"])
@@ -33,7 +42,6 @@ def cap_csv_path(repo_root: Path, defaults_cfg: Mapping[str, Any], merged: Mappi
     cap_transform = str(merged["cap_transform"]).strip()
     stem = f"cap{tag}" if cap_transform == "none" else f"cap{tag}_{cap_transform}"
     path = repo_root / uc_root / f"uc{n_uc}_k{n_clusters}" / f"{stem}.csv"
-    # No .resolve() so Make's $(ROOT)/... matches this target string when the repo is symlinked.
     return path.as_posix()
 
 
@@ -66,14 +74,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print only the baseline CAP path (defaults.yaml merge; no experiments row).",
     )
+    parser.add_argument(
+        "--emb",
+        action="store_true",
+        help="Use embedding_uc_cap_root instead of tetramer_uc_cap_root.",
+    )
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root
     defaults_cfg = _load_defaults(repo_root)
     base = merge_run_uc_cap_baseline(defaults_cfg)
+    use_embeddings = bool(args.emb)
 
     if args.baseline:
-        print(cap_csv_path(repo_root, defaults_cfg, base))
+        print(cap_csv_path(repo_root, defaults_cfg, base, use_embeddings=use_embeddings))
         return 0
 
     experiments_cfg = _load_experiments(repo_root)
@@ -83,7 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(row, dict):
             raise SystemExit("experiments.yaml run_uc_cap_pipeline entries must be mappings")
         merged = {**base, **row}
-        paths.append(cap_csv_path(repo_root, defaults_cfg, merged))
+        paths.append(
+            cap_csv_path(repo_root, defaults_cfg, merged, use_embeddings=use_embeddings)
+        )
     print(" ".join(paths))
     return 0
 

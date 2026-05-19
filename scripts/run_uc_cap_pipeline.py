@@ -9,12 +9,13 @@ CAP (cluster abundance profiles):
   - Assign n_cap sequences per run to nearest centroid and aggregate K-dimensional
     cluster count/abundance vectors per run.
 
-Input sequence features are tetramer count vectors (256 columns) from the partitioned
-Parquet cache under paths.tetramer_cache_dir.
+Input sequence features come from a hive-partitioned Parquet cache:
+  tetramer counts (256 columns) under paths.tetramer_cache_dir (default), or
+  HyenaDNA backbone embeddings under paths.embedding_cache_dir (--emb).
 
 Configuration is read from <repo>/defaults.yaml (run_uc_cap_pipeline baseline list,
 merged in order, then overlaid by experiments.yaml when --feat is set).
-The only CLI flag is --feat.
+CLI: --feat (optional), --emb (embedding cache instead of tetramer).
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import yaml
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.decomposition import PCA
 
+from embedding_cache_io import EmbeddingCacheReader, embedding_cache_dataset_root
 from shared_utilities import TETRAMERS, build_run_table
 from tetramer_cache_io import TetramerCacheReader, tetramer_cache_dataset_root
 
@@ -55,15 +57,25 @@ class SequenceTransform:
         return Z
 
 
-def _default_cache_root(repo_root: Path, defaults_cfg: Mapping[str, Any]) -> Path:
+def _cache_root(
+    repo_root: Path,
+    defaults_cfg: Mapping[str, Any],
+    *,
+    use_embeddings: bool,
+) -> Path:
     try:
         paths_cfg = defaults_cfg["paths"]
+        n_max = int(defaults_cfg["sequence_cache"]["n_max_per_run"])
+        if use_embeddings:
+            cache_dir_rel = str(paths_cfg["embedding_cache_dir"]).strip()
+            cache_dir = repo_root / cache_dir_rel
+            return embedding_cache_dataset_root(cache_dir, n_max)
         cache_dir_rel = str(paths_cfg["tetramer_cache_dir"]).strip()
-        n_max = int(defaults_cfg["tetramer_cache"]["n_max_per_run"])
+        cache_dir = repo_root / cache_dir_rel
+        return tetramer_cache_dataset_root(cache_dir, n_max)
     except (TypeError, KeyError, ValueError) as exc:
-        raise SystemExit(f"Invalid pipeline config for tetramer cache path: {exc}") from exc
-    cache_dir = repo_root / cache_dir_rel
-    return tetramer_cache_dataset_root(cache_dir, n_max)
+        kind = "embedding" if use_embeddings else "tetramer"
+        raise SystemExit(f"Invalid pipeline config for {kind} cache path: {exc}") from exc
 
 
 def fit_uc_model(
@@ -194,7 +206,7 @@ def _parse_n_cap(raw: object) -> int:
         text = raw.strip().lower()
         if text == "all":
             raise SystemExit(
-                "n_cap='all' is no longer supported; raise tetramer_cache.n_max_per_run "
+                "n_cap='all' is no longer supported; raise sequence_cache.n_max_per_run "
                 "or lower n_cap so CAP fits in the cache."
             )
         value = int(text)
@@ -211,13 +223,19 @@ _FEAT_HELP = (
 )
 
 
-def _parse_feature_cli(argv: Optional[Sequence[str]]) -> int:
+def _parse_feature_cli(argv: Optional[Sequence[str]]) -> Tuple[int, bool]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--feat", type=int, default=None, help=_FEAT_HELP)
+    parser.add_argument(
+        "--emb",
+        action="store_true",
+        help="Use embedding_cache (HyenaDNA per-sequence embeddings) instead of tetramer cache.",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.feat is not None and args.feat <= 0:
         raise SystemExit("--feat must be a positive integer (1-based index), or omit it.")
-    return int(args.feat) if args.feat is not None else 0
+    feat = int(args.feat) if args.feat is not None else 0
+    return feat, bool(args.emb)
 
 
 def _shallow_merge_uc_cap(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
@@ -352,6 +370,7 @@ def run_pipeline_from_merged(
     config_path: Path,
     merged: Dict[str, Any],
     feature_index: int,
+    use_embeddings: bool,
 ) -> int:
     paths_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))["paths"]
 
@@ -374,7 +393,8 @@ def run_pipeline_from_merged(
         clr_pseudocount = float(merged["clr_pseudocount"])
         batch_size = int(merged["batch_size"])
         max_iter = int(merged["max_iter"])
-        out_dir = _resolve_cfg_path(paths_cfg["tetramer_uc_cap_root"])
+        uc_root_key = "embedding_uc_cap_root" if use_embeddings else "tetramer_uc_cap_root"
+        out_dir = _resolve_cfg_path(paths_cfg[uc_root_key])
     except (KeyError, TypeError, ValueError) as exc:
         raise SystemExit(f"Invalid merged run_uc_cap_pipeline config: {exc}") from exc
 
@@ -395,30 +415,38 @@ def run_pipeline_from_merged(
         raise SystemExit("batch_size and max_iter must be positive.")
 
     defaults_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    n_max = int(defaults_cfg["tetramer_cache"]["n_max_per_run"])
+    n_max = int(defaults_cfg["sequence_cache"]["n_max_per_run"])
     if n_uc > n_max:
         raise SystemExit(
-            f"n_uc ({n_uc}) exceeds tetramer_cache.n_max_per_run ({n_max})."
+            f"n_uc ({n_uc}) exceeds sequence_cache.n_max_per_run ({n_max})."
         )
     if n_cap > n_max:
         raise SystemExit(
-            f"n_cap ({n_cap}) exceeds tetramer_cache.n_max_per_run ({n_max})."
+            f"n_cap ({n_cap}) exceeds sequence_cache.n_max_per_run ({n_max})."
         )
-    cache_root = _default_cache_root(repo_root, defaults_cfg)
+    cache_root = _cache_root(repo_root, defaults_cfg, use_embeddings=use_embeddings)
     complete_marker = cache_root / "_complete"
+    cache_target = "embedding_cache" if use_embeddings else "tetramer_cache"
     if not complete_marker.is_file():
         raise SystemExit(
-            f"Tetramer cache not built: {cache_root} (run: make tetramer_cache)"
+            f"{cache_target} not built: {cache_root} (run: make {cache_target})"
         )
 
     prefix = f"F{feature_index} " if feature_index > 0 else ""
-    print(f"{prefix}n_uc={n_uc} n_clusters={n_clusters} n_cap={n_cap}", flush=True)
+    mode = "embeddings" if use_embeddings else "tetramer"
+    print(f"{prefix}[{mode}] n_uc={n_uc} n_clusters={n_clusters} n_cap={n_cap}", flush=True)
 
     start = time.perf_counter()
-    transform = SequenceTransform(normalize=seq_normalize, log1p=seq_log1p)
+    if use_embeddings:
+        transform = SequenceTransform(normalize=False, log1p=False)
+    else:
+        transform = SequenceTransform(normalize=seq_normalize, log1p=seq_log1p)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cache = TetramerCacheReader(cache_root)
+    if use_embeddings:
+        cache = EmbeddingCacheReader(cache_root)
+    else:
+        cache = TetramerCacheReader(cache_root)
     run_meta = build_run_table(config_path=config_path)
     train_runs = set(run_meta.loc[run_meta["split"] == "train", "Run"])
     train_keys = [
@@ -512,6 +540,7 @@ def run_pipeline_from_merged(
                     },
                     "split_train_runs": sorted(train_runs),
                     "tetramers": list(TETRAMERS),
+                    "use_embeddings": use_embeddings,
                 },
                 f,
             )
@@ -568,7 +597,8 @@ def run_pipeline_from_merged(
     with open(config_out, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "tetramer_cache_root": str(cache_root),
+                "sequence_cache_root": str(cache_root),
+                "use_embeddings": use_embeddings,
                 "datasets_csv": str(datasets_csv_abs),
                 "data_dir": str(data_dir_abs),
                 "n_uc": n_uc,
@@ -621,7 +651,7 @@ def run_pipeline_from_merged(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     config_path = repo_root / "defaults.yaml"
-    feat = _parse_feature_cli(argv)
+    feat, use_embeddings = _parse_feature_cli(argv)
     merged, feature_index = load_merged_uc_cap_config(repo_root, feat=feat)
     if feature_index == 0:
         print("Baseline config (defaults.yaml only)", flush=True)
@@ -630,6 +660,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         config_path=config_path,
         merged=merged,
         feature_index=feature_index,
+        use_embeddings=use_embeddings,
     )
 
 

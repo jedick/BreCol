@@ -39,4 +39,4 @@ Use this rule when editing `README.md`. Keep sections short, practical, and easy
 Use this structure for classifier sections:
 1) what the script fits and on which input table,
 2) the main **task or output-defining** switch in plain words,
-3) one short line describing how the output metrics files were generated (for example finalized JSON under `results/tetramer/` or `results/uc_cap/` from `experiments.yaml` `results_json_template` (`results/{features}/{name}.json`) and `make fit_tetramer` / `fit_classifier.py`).
+3) one short line describing how the output metrics files were generated (for example finalized JSON under `results/tetramer/` or `results/tetramer_uc_cap/` from `experiments.yaml` `results_json_template` (`results/{features}/{name}.json`) and `make fit_tetramer` / `fit_classifier.py`).

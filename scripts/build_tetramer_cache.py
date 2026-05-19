@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import gzip
 import shutil
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import List, Mapping, Optional, Sequence, Tuple, Union
 
 import yaml
 from tqdm import tqdm
@@ -67,35 +66,26 @@ except ImportError:
 
 _USE_NUMBA_COUNTING = False
 
+from fasta_cache_common import (  # noqa: E402
+    count_fasta_records,
+    iter_selected_fasta_sequences,
+    row_is_sample_used,
+)
+from hyenadna_fasta_data import fasta_path_for_run, resolve_repo_path
 from sequence_sampling import (  # noqa: E402
     load_sequence_selection,
     select_row_indices_0based,
     skip_reason,
 )
+from sequence_cache_io import partition_is_up_to_date, run_partition_dir, split_jobs_by_cache_state
 from shared_utilities import RUN_PATTERN
-from tetramer_cache_io import (  # noqa: E402
-    partition_is_up_to_date,
-    run_partition_dir,
-    tetramer_cache_dataset_root,
-    write_run_partition,
-)
+from tetramer_cache_io import tetramer_cache_dataset_root, write_run_partition  # noqa: E402
 
 _BASE_BITS = {"A": 0, "C": 1, "G": 2, "T": 3}
 
 
-def row_is_sample_used(row: Mapping[str, object]) -> bool:
-    return (row.get("sample_used") or "").strip().casefold() == "true"
-
-
 def _resolve_repo_path(repo_root: Path, raw: str) -> Path:
-    p = Path(str(raw).strip())
-    return p if p.is_absolute() else repo_root / p
-
-
-def fasta_path_for_run(
-    repo_root: Path, fasta_dir_key: str, study_name: str, run: str
-) -> Path:
-    return _resolve_repo_path(repo_root, fasta_dir_key) / study_name / f"{run}.fasta.gz"
+    return resolve_repo_path(repo_root, raw)
 
 
 def count_tetramers_in_sequence(seq: str, counts: List[int]) -> None:
@@ -150,45 +140,6 @@ def accumulate_tetramers_from_sequence(
         _count_tetramers_numba(buf, counts_buffer, _BASE_LUT_NUMBA)
     else:
         count_tetramers_in_sequence(seq, counts_buffer)  # type: ignore[arg-type]
-
-
-def count_fasta_records(fasta_gz: Path) -> int:
-    """Count FASTA records by header lines only (no sequence assembly)."""
-    n = 0
-    with gzip.open(fasta_gz, "rt", encoding="ascii", errors="replace") as handle:
-        for raw in handle:
-            if raw.strip().startswith(">"):
-                n += 1
-    return n
-
-
-def iter_selected_fasta_sequences(
-    fasta_gz: Path,
-    wanted: set[int],
-    max_index: int,
-) -> Iterable[Tuple[int, str]]:
-    """Yield (0-based sequence index, sequence) for selected indices only."""
-    seq_index = -1
-    collecting = False
-    chunks: List[str] = []
-    with gzip.open(fasta_gz, "rt", encoding="ascii", errors="replace") as handle:
-        for raw in handle:
-            line = raw.strip()
-            if not line:
-                continue
-            if line.startswith(">"):
-                if collecting and chunks:
-                    yield seq_index, "".join(chunks)
-                seq_index += 1
-                if seq_index > max_index:
-                    return
-                collecting = seq_index in wanted
-                chunks = []
-                continue
-            if collecting:
-                chunks.append(line)
-        if collecting and chunks:
-            yield seq_index, "".join(chunks)
 
 
 def _count_one_sequence(seq: str) -> np.ndarray:
@@ -344,7 +295,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cfg_path = repo_root / "defaults.yaml"
     try:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        cache_cfg = cfg["tetramer_cache"]
+        cache_cfg = cfg["sequence_cache"]
         n_max = int(cache_cfg["n_max_per_run"])
         compression_raw = str(cache_cfg["parquet_compression"]).strip()
         max_workers = int(cache_cfg.get("max_workers", 1))
@@ -360,16 +311,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     valid_compression = frozenset(("zstd", "snappy", "gzip", "brotli", "lz4", "none"))
     if compression_raw not in valid_compression:
         print(
-            f"Invalid tetramer_cache.parquet_compression in {cfg_path}: "
+            f"Invalid sequence_cache.parquet_compression in {cfg_path}: "
             f"{compression_raw!r}",
             file=sys.stderr,
         )
         return 1
     if n_max <= 0:
-        print("tetramer_cache.n_max_per_run must be a positive integer", file=sys.stderr)
+        print("sequence_cache.n_max_per_run must be a positive integer", file=sys.stderr)
         return 1
     if max_workers < 1:
-        print("tetramer_cache.max_workers must be >= 1", file=sys.stderr)
+        print("sequence_cache.max_workers must be >= 1", file=sys.stderr)
         return 1
 
     if not data_dir.is_dir():
@@ -396,8 +347,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Error: no eligible runs under {data_dir}", file=sys.stderr)
         return 1
 
+    n_eligible = len(jobs)
+    all_jobs = jobs
+    _, n_skipped_upfront = split_jobs_by_cache_state(
+        all_jobs, cache_root, force=args.force
+    )
+    if n_skipped_upfront and not args.force:
+        print(
+            f"Resuming: {n_skipped_upfront}/{n_eligible} partition(s) up-to-date "
+            f"(FASTA not newer than cache); {n_eligible - n_skipped_upfront} run(s) remaining.",
+            flush=True,
+        )
+    if n_skipped_upfront == n_eligible and not args.force:
+        complete_marker.write_text("ok\n", encoding="utf-8")
+        print(
+            f"Tetramer cache complete: all {n_eligible} partition(s) up-to-date under {cache_root}.",
+            flush=True,
+        )
+        return 0
+
     start = time.perf_counter()
-    n_runs = len(jobs)
     n_rows_total = 0
     n_written = 0
     n_skipped_existing = 0
@@ -405,7 +374,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     n_missing_fasta = 0
 
     print(
-        f"Building tetramer cache ({n_runs} runs) -> {cache_root}; "
+        f"Building tetramer cache ({n_eligible} runs) -> {cache_root}; "
         f"n_max={n_max}, sample_mode={selection['sample_mode']}, "
         f"max_workers={max_workers}, force={args.force}.",
         flush=True,
@@ -435,7 +404,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             n_missing_fasta += 1
 
     if max_workers == 1:
-        for study_name, run, fasta_gz in tqdm(jobs, total=n_runs, desc="tetramer cache", unit="run"):
+        for study_name, run, fasta_gz in tqdm(
+            all_jobs, total=n_eligible, desc="tetramer cache", unit="run"
+        ):
             try:
                 status, n_rows = _build_one_run_partition(
                     fasta_path_s=str(fasta_gz),
@@ -457,11 +428,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     run=run,
                     **worker_kwargs,
                 )
-                for study_name, run, fasta_gz in jobs
+                for study_name, run, fasta_gz in all_jobs
             ]
             for fut in tqdm(
                 as_completed(futures),
-                total=n_runs,
+                total=n_eligible,
                 desc="tetramer cache",
                 unit="run",
             ):
