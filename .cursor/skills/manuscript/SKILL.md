@@ -18,8 +18,8 @@ This skill only **executes** matching `helpers/table*.py` and `helpers/figure*.p
 
 Numbers refer to the **digit immediately after `table` or `figure` in the basename**, before the next `_`.
 
-- **Tables:** resolve *n* with glob `helpers/table{n}_*.py` (one underscore after the digits, then any suffix). Examples: `table2_tetramer.py` → *n* = 2; `table4_uc_cap.py` → *n* = 4.
-- **Figures:** resolve *n* with glob `helpers/figure{n}_*.py`. Example: `figure1_uc_cap.py` → *n* = 1.
+- **Tables:** resolve *n* with glob `helpers/table{n}_*.py` (one underscore after the digits, then any suffix). Examples: `table2_tetramer.py` → *n* = 2; `table4_tetramer_uc_cap.py` → *n* = 4; `table6_embedding_uc_cap.py` → *n* = 6.
+- **Figures:** resolve *n* with glob `helpers/figure{n}_*.py`. Examples: `figure1_tetramer_uc_cap.py` → *n* = 1; `figure3_embedding_uc_cap.py` → *n* = 3.
 
 **Do not** use 1-based index into a sorted list of all `table*.py` files. Only the **filename number** *n* matters.
 

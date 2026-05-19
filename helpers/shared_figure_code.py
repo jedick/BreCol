@@ -1,42 +1,33 @@
-#!/usr/bin/env python3
-"""
-Build Figure 1: UC/CAP feature-set stability across test vs holdout AUROC.
-
-Writes ``manuscript/figure1_uc_cap.png`` and ``manuscript/figure1_uc_cap.svg`` from
-JSON metrics under ``results/tetramer_uc_cap/<feat_index>/``.
-
-Run from the repository root: ``python helpers/figure1_uc_cap.py``
-"""
+"""Shared UC/CAP stability figure logic for tetramer and embedding result trees."""
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import yaml
 
-
 TASKS: List[Tuple[str, str]] = [
     ("cancer_diagnosis", "Cancer diagnosis"),
     ("cancer_type", "Cancer type"),
 ]
-MODELS: List[Tuple[str, str]] = [
-    ("knn", "KNN"),
+MODELS_SVM_KNN: List[Tuple[str, str]] = [
     ("svm", "SVM"),
+    ("knn", "KNN"),
 ]
-
-OUTPUT_PNG = Path("manuscript") / "figure1_uc_cap.png"
-OUTPUT_SVG = Path("manuscript") / "figure1_uc_cap.svg"
+MODELS_SVM_RF: List[Tuple[str, str]] = [
+    ("svm", "SVM"),
+    ("random_forest", "Random Forest"),
+]
 
 
 def _load_yaml(path: Path) -> Dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _feature_count(repo_root: Path) -> int:
+def feature_count(repo_root: Path) -> int:
     cfg = _load_yaml(repo_root / "experiments.yaml")
     rows = cfg.get("run_uc_cap_pipeline") or []
     if not isinstance(rows, list) or not rows:
@@ -59,11 +50,13 @@ def _load_metrics(json_path: Path) -> Tuple[float, float]:
 
 
 def collect_series(
-    uc_cap_dir: Path, n_features: int
+    uc_cap_dir: Path,
+    n_features: int,
+    models: List[Tuple[str, str]],
 ) -> Dict[Tuple[str, str], Tuple[List[float], List[float]]]:
     out: Dict[Tuple[str, str], Tuple[List[float], List[float]]] = {}
     for task, _ in TASKS:
-        for model, _ in MODELS:
+        for model, _ in models:
             test_vals: List[float] = []
             holdout_vals: List[float] = []
             for feat_idx in range(1, n_features + 1):
@@ -78,13 +71,14 @@ def collect_series(
 def build_plot(
     series: Dict[Tuple[str, str], Tuple[List[float], List[float]]],
     n_features: int,
+    models: List[Tuple[str, str]],
     output_path: Path,
 ) -> None:
     x = list(range(1, n_features + 1))
     fig, axes = plt.subplots(2, 2, figsize=(10, 7), sharex=True, sharey=True)
 
     for row, (task_key, task_label) in enumerate(TASKS):
-        for col, (model_key, model_label) in enumerate(MODELS):
+        for col, (model_key, model_label) in enumerate(models):
             ax = axes[row, col]
             test_vals, holdout_vals = series[(task_key, model_key)]
 
@@ -137,22 +131,23 @@ def build_plot(
     plt.close(fig)
 
 
-def main() -> int:
-    repo_root = Path(__file__).resolve().parent.parent
-    uc_cap_dir = repo_root / "results" / "tetramer_uc_cap"
+def write_uc_cap_stability_figure(
+    repo_root: Path,
+    *,
+    results_subdir: str,
+    models: List[Tuple[str, str]],
+    output_png: Path,
+    output_svg: Path,
+) -> Tuple[Path, Path]:
+    """Build PNG and SVG from ``results/<results_subdir>/<feat_index>/`` JSON metrics."""
+    uc_cap_dir = repo_root / "results" / results_subdir
     if not uc_cap_dir.is_dir():
         raise SystemExit(f"Not a directory: {uc_cap_dir}")
 
-    n_features = _feature_count(repo_root)
-    series = collect_series(uc_cap_dir, n_features=n_features)
-    png_path = repo_root / OUTPUT_PNG
-    svg_path = repo_root / OUTPUT_SVG
-    build_plot(series, n_features=n_features, output_path=png_path)
-    build_plot(series, n_features=n_features, output_path=svg_path)
-    print(png_path)
-    print(svg_path)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    n_features = feature_count(repo_root)
+    series = collect_series(uc_cap_dir, n_features=n_features, models=models)
+    png_path = repo_root / output_png
+    svg_path = repo_root / output_svg
+    build_plot(series, n_features=n_features, models=models, output_path=png_path)
+    build_plot(series, n_features=n_features, models=models, output_path=svg_path)
+    return png_path, svg_path

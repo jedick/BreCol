@@ -50,9 +50,9 @@ See the list for a quick overview of the steps and read below for details.
 3. Tetramer cache: `make -j4 tetramer_cache` reads FASTA and writes hive-partitioned Parquet under `outputs/tetramer_cache/` (16 min / 1.5 GB on disk).
 4. Tetramer frequencies: `make tetramer_frequencies` sums cached sequences per run into `outputs/tetramer_frequencies.csv` (2 min).
 5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (3 min).
-6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/tetramer_uc_cap/` (29 min / 23 GB RAM).
+6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/tetramer_uc_cap/` (29 min / 13 GB RAM).
 7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/tetramer_uc_cap` (24 min).
-8. Embedding cache: `make embedding_cache` writes per-sequence HyenaDNA embeddings to `outputs/embedding_cache/` (3.5 hr).
+8. Embedding cache: `make embedding_cache` writes per-sequence HyenaDNA embeddings to `outputs/embedding_cache/` (3.5 hr / 13 GB on disk).
 9. Embedding+UC/CAP classifier: `make run_uc_cap EMB=1` / `make fit_uc_cap EMB=1` drive the embedding UC/CAP path.
 10. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
 11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).

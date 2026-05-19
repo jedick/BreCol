@@ -99,7 +99,7 @@ fit_classifier:
   lr_solver_grid: "lbfgs,liblinear"
   # Comma-separated logistic regression class_weight grid (use 'none' for default).
   lr_class_weight_grid: "none,balanced"
-  # Comma-separated SVM RBF/linear/etc. C grid (shared for tetramer and UC/CAP).
+  # Comma-separated SVM RBF/linear/etc. C grid.
   svm_c_grid: "1.0,10.0"
   # Comma-separated SVM gamma grid (sklearn string tokens scale/auto or floats).
   svm_gamma_grid: "scale"
