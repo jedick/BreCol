@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Build Table 4 (tetramer UC/CAP classifiers) as HTML under manuscript/table4_tetramer_uc_cap.html.
+Build Table 6 (tetramer UC/CAP classifiers) as HTML under manuscript/table6_tetramer_uc_cap.html.
 
 For each task, scans the 3×6 model × feature-set holdout AUROC grid, picks the feature set
 that contains the single best holdout value, then reports test and holdout AUROC for every
 model on that feature set only.
 
-Run from the repository root: ``python helpers/table4_tetramer_uc_cap.py``
+Run from the repository root: ``python helpers/table6_tetramer_uc_cap.py``
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from shared_table_code import write_uc_cap_table
 
-OUTPUT_REL = Path("manuscript") / "table4_tetramer_uc_cap.html"
+OUTPUT_REL = Path("manuscript") / "table6_tetramer_uc_cap.html"
 RESULTS_SUBDIR = "tetramer_uc_cap"
 
 

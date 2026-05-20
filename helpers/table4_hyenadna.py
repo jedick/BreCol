@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Table 5 (HyenaDNA ablations) as HTML under manuscript/table5_hyenadna.html.
+Build Table 4 (HyenaDNA ablations) as HTML under manuscript/table4_hyenadna.html.
 
 Reads ``experiments.yaml`` ``train_hyenadna.experiments`` (row order preserved)
 and aggregates tuning epoch plus ``metrics.test.auroc`` /
@@ -23,7 +23,7 @@ YAML ``random_seed`` lists the intended seeds; partial result trees are aggregat
 or raised as ``SystemExit`` when ablations are missing. Seed mismatches use a
 ``Warning:`` prefix; missing ablations use an ``Error:`` prefix.
 
-Run from the repository root: ``python helpers/table5_hyenadna.py``
+Run from the repository root: ``python helpers/table4_hyenadna.py``
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ METRIC_KEY_CT = "cancer_type"
 MULTITASK_TASK = "multitask"
 
 DECIMALS = 3
-OUTPUT_REL = Path("manuscript") / "table5_hyenadna.html"
+OUTPUT_REL = Path("manuscript") / "table4_hyenadna.html"
 MSG_SEEDS_HEADER = "Warning: Missing results for some seeds in experiments.yaml:"
 MSG_ABLATIONS_HEADER = "Error: Missing results for ablations:"
 
@@ -271,7 +271,7 @@ def _experiment_rows(repo_root: Path) -> List[Dict[str, object]]:
         if name not in ABLATION_DESCRIPTIONS:
             raise SystemExit(
                 f"experiments.yaml row {idx + 1}: unknown experiment name {name!r}; "
-                "add a description to ABLATION_DESCRIPTIONS in helpers/table5_hyenadna.py."
+                "add a description to ABLATION_DESCRIPTIONS in helpers/table4_hyenadna.py."
             )
         overrides = row.get("overrides") or {}
         if not isinstance(overrides, dict):

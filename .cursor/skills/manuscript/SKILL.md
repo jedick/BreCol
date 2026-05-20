@@ -3,7 +3,7 @@ name: manuscript
 description: >-
   Runs manuscript helper Python scripts from the repo root. User says /manuscript
   plus table N (filename number), figure N, optional multi-number batches, or
-  all tables / all figures — numbers match table2_, table4_, figure1_, etc.
+  all tables / all figures — numbers match table3_, table4_, figure1_, etc.
 ---
 
 # Manuscript (helper script runner)
@@ -18,7 +18,7 @@ This skill only **executes** matching `helpers/table*.py` and `helpers/figure*.p
 
 Numbers refer to the **digit immediately after `table` or `figure` in the basename**, before the next `_`.
 
-- **Tables:** resolve *n* with glob `helpers/table{n}_*.py` (one underscore after the digits, then any suffix). Examples: `table2_tetramer.py` → *n* = 2; `table4_tetramer_uc_cap.py` → *n* = 4; `table6_embedding_uc_cap.py` → *n* = 6.
+- **Tables:** resolve *n* with glob `helpers/table{n}_*.py` (one underscore after the digits, then any suffix). Examples: `table3_tetramer.py` → *n* = 3; `table6_tetramer_uc_cap.py` → *n* = 6; `table7_embedding_uc_cap.py` → *n* = 7.
 - **Figures:** resolve *n* with glob `helpers/figure{n}_*.py`. Examples: `figure1_tetramer_uc_cap.py` → *n* = 1; `figure3_embedding_uc_cap.py` → *n* = 3.
 
 **Do not** use 1-based index into a sorted list of all `table*.py` files. Only the **filename number** *n* matters.
@@ -35,7 +35,7 @@ After `/manuscript`, read the rest (case-insensitive keywords; flexible spacing)
 
 ### `table` + one or more numbers
 
-Examples: `table 4`, `table 4 and 5`, `table4`, `table 2, 4, 5`.
+Examples: `table 4`, `table 4 and 6`, `table4`, `table 3, 4, 6`.
 
 1. Collect every positive integer the user intends as a **table** number. Prefer parsing integers from phrases that mention **table** and digits (e.g. split on `and`, commas, whitespace; accept `table4` / `table 4`).
 2. For each number in **left-to-right order** as it appears in the message, resolve and run that script. If any resolution fails (zero or multiple matches), **stop** before running later numbers unless the user explicitly asked to continue on errors.

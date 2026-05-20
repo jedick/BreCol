@@ -6,10 +6,7 @@
 #   - Remove genomic-benchmarks import
 #   - Relative import of HyenaDNAModel (model code not inlined in this file)
 #   - Use weights_only=False for torch.load() (PyTorch >= 2.6)
-#   - from_pretrained: pass head_hidden, head_dropout, multitask_class_counts through to
-#     HyenaDNAModel (optional MLP head and multitask logits; see standalone_hyenadna.py)
-#   - download=False (default): use local weights when paths.checkpoint_dir/<model>/ exists;
-#     clone from Hugging Face if missing. download=True forces rm + re-clone when present.
+#   - Pass head_hidden, head_dropout, multitask_class_counts to HyenaDNAModel
 # Modified by: Jeffrey Dick
 
 #@title Huggingface Pretrained Wrapper

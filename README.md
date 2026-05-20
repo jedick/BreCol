@@ -52,7 +52,7 @@ See the list for a quick overview of the steps and read below for details.
 5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (3 min).
 6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/tetramer_uc_cap/` (29 min / 13 GB RAM).
 7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/tetramer_uc_cap` (24 min).
-8. Embedding cache: `make embedding_cache` writes per-sequence HyenaDNA embeddings to `outputs/embedding_cache/` (3.5 hr / 13 GB on disk).
+8. Embedding cache: `make embedding_cache` writes per-sequence HyenaDNA embeddings to `outputs/embedding_cache/` (3.5 hr / 9.5 GB on disk).
 9. Embedding+UC/CAP classifier: `make run_uc_cap EMB=1` / `make fit_uc_cap EMB=1` drive the embedding UC/CAP path.
 10. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
 11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
@@ -65,7 +65,7 @@ Notes:
 - `FEAT=0` is used to build all feature sets for the UC/CAP pipeline.
   Use e.g. `FEAT=1` or `EXPT=1` for a single feature set or experiment.
 - Steps 3–6 (tetramer cache and UC/CAP pipeline) can be memory-hungry depending on settings.
-- Use the Cursor skill `/manuscript` (for example `table 1`, `figure 1`, `all tables`, `figures`) to rerun helpers;
+- Use the Cursor skill `/manuscript` (for example `table 3`, `figure 1`, `all tables`, `figures`) to rerun helpers;
   they overwrite the fixed `manuscript/table*.html` and `manuscript/figure*` assets.
 
 If you want to see why Make would rebuild a target (including recursive prerequisite chains), use `make explain-<target>`.

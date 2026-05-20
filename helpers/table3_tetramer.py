@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Table 2 (tetramer classifiers) as HTML under manuscript/table2_tetramer.html.
+Build Table 3 (tetramer classifiers) as HTML under manuscript/table3_tetramer.html.
 
 Reads eight JSON files under results/tetramer/ named {task}_{model}.json
 (e.g. cancer_diagnosis_knn.json), as written by scripts/fit_classifier.py:
@@ -8,7 +8,7 @@ tasks cancer_diagnosis and cancer_type; models baseline, knn, svm, and
 random_forest. Each file must have metrics.test.auroc and
 metrics.holdout.auroc.
 
-Run from the repository root: ``python helpers/table2_tetramer.py``
+Run from the repository root: ``python helpers/table3_tetramer.py``
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 TASKS = ("cancer_diagnosis", "cancer_type")
 MODELS = ("baseline", "knn", "svm", "random_forest")
@@ -36,7 +36,7 @@ TASK_HEADER = {
 }
 
 DECIMALS = 3
-OUTPUT_REL = Path("manuscript") / "table2_tetramer.html"
+OUTPUT_REL = Path("manuscript") / "table3_tetramer.html"
 
 
 def _load_metrics(
@@ -85,6 +85,30 @@ def _fmt_cell(value: Optional[float], *, decimals: int) -> str:
     return f"{value:.{decimals}f}"
 
 
+def _render_cell(value: Optional[float], *, decimals: int, bold: bool) -> str:
+    text = html.escape(_fmt_cell(value, decimals=decimals))
+    return f"<strong>{text}</strong>" if bold else text
+
+
+def _models_at_max_auroc(
+    metrics: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]],
+    task: str,
+    *,
+    split_index: int,
+) -> Set[str]:
+    """Models tied for the highest AUROC in one (task, split) column."""
+    values: Dict[str, float] = {}
+    for model in MODELS:
+        v = metrics[(task, model)][split_index]
+        if v is None or not math.isfinite(v):
+            continue
+        values[model] = v
+    if not values:
+        return set()
+    best = max(values.values())
+    return {m for m, v in values.items() if math.isclose(v, best, rel_tol=0.0, abs_tol=1e-12)}
+
+
 def format_table_html(
     metrics: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]],
     *,
@@ -103,15 +127,26 @@ def format_table_html(
         "</tr>\n"
         "</thead>\n"
     )
+    bold_test = {task: _models_at_max_auroc(metrics, task, split_index=0) for task in TASKS}
+    bold_hold = {task: _models_at_max_auroc(metrics, task, split_index=1) for task in TASKS}
+
     body_rows = []
     for model in MODELS:
         label = html.escape(ROW_LABELS[model])
         cells = []
         for task in TASKS:
             test_v, hold_v = metrics[(task, model)]
-            cells.append(_fmt_cell(test_v, decimals=decimals))
-            cells.append(_fmt_cell(hold_v, decimals=decimals))
-        tds = "".join(f"<td>{html.escape(c)}</td>" for c in cells)
+            cells.append(
+                _render_cell(
+                    test_v, decimals=decimals, bold=model in bold_test[task]
+                )
+            )
+            cells.append(
+                _render_cell(
+                    hold_v, decimals=decimals, bold=model in bold_hold[task]
+                )
+            )
+        tds = "".join(f"<td>{c}</td>" for c in cells)
         body_rows.append(f"<tr>\n<td>{label}</td>{tds}\n</tr>")
     tbody = "<tbody>\n" + "\n".join(body_rows) + "\n</tbody>\n"
     return f"<table>\n{thead}{tbody}</table>\n"

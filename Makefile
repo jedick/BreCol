@@ -127,7 +127,6 @@ tetramer_cache: $(TETRAMER_CACHE)
 $(EMBEDDING_CACHE): $(DATA_CSVS) $(ROOT)/scripts/build_embedding_cache.py \
 		$(ROOT)/scripts/cache_operations.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
-		$(ROOT)/scripts/hyenadna_sequence_embeddings.py \
 		$(ROOT)/defaults.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_embedding_cache.py
 
