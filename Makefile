@@ -55,10 +55,11 @@ DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 .DEFAULT_GOAL := help
 
 .PHONY: help download_data tetramer_frequencies tetramer_cache embedding_cache fit_tetramer \
-	fit_uc_cap run_uc_cap train_hyenadna audit_run_tensors explain explain-%
+	fit_uc_cap run_uc_cap train_hyenadna audit_run_tensors explain explain-% \
+	manuscript_html manuscript_pdf manuscript_jekyll publish_blog
 
 help:
-	@echo "LM-cancer-detection Makefile (script defaults from defaults.yaml)"
+	@echo "BreCol Makefile (script defaults from defaults.yaml)"
 	@echo ""
 	@echo "  make download_data"
 	@echo "      Run scripts/download_sra_data.py."
@@ -106,6 +107,14 @@ help:
 	@echo "      Compact dependency/mtime explanation using make --trace."
 	@echo "      Examples: make explain TARGET=tetramer_cache"
 	@echo "                make explain-tetramer_cache"
+	@echo ""
+	@echo "  make manuscript_html | manuscript_pdf | manuscript_jekyll"
+	@echo "      Render manuscript/manuscript.md via Pandoc + BibTeX (references.bib, csl/nature.csl)."
+	@echo "      Outputs under manuscript/build/: manuscript.html, manuscript.pdf, manuscript.jekyll.md."
+	@echo ""
+	@echo "  make publish_blog BLOG_REPO=<path> [DATE=YYYY-MM-DD] [PUSH=1]"
+	@echo "      Render manuscript.jekyll.md and copy it (with figures and table HTML) into"
+	@echo "      <BLOG_REPO>/_posts/YYYY-MM-DD-brecol.md; add PUSH=1 to commit and push."
 	@echo ""
 
 $(TETRA_CSV): $(TETRAMER_CACHE) $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py \
@@ -283,3 +292,58 @@ explain:
 
 explain-%:
 	cd "$(ROOT)" && $(PYTHON) scripts/explain_make_trace.py "$*"
+
+# Manuscript rendering: Pandoc + BibTeX + CSL. Sources live in manuscript/.
+PANDOC ?= pandoc
+PDF_ENGINE ?= xelatex
+MANUSCRIPT_SRC := $(ROOT)/manuscript/manuscript.md
+MANUSCRIPT_BIB := $(ROOT)/manuscript/references.bib
+MANUSCRIPT_CSL := $(ROOT)/manuscript/csl/nature.csl
+MANUSCRIPT_BUILD_DIR := $(ROOT)/manuscript/build
+MANUSCRIPT_HTML := $(MANUSCRIPT_BUILD_DIR)/manuscript.html
+MANUSCRIPT_PDF := $(MANUSCRIPT_BUILD_DIR)/manuscript.pdf
+MANUSCRIPT_JEKYLL := $(MANUSCRIPT_BUILD_DIR)/manuscript.jekyll.md
+
+MANUSCRIPT_DEPS := $(MANUSCRIPT_SRC) $(MANUSCRIPT_BIB) $(MANUSCRIPT_CSL)
+
+$(MANUSCRIPT_BUILD_DIR):
+	@mkdir -p "$(MANUSCRIPT_BUILD_DIR)"
+
+$(MANUSCRIPT_HTML): $(MANUSCRIPT_DEPS) | $(MANUSCRIPT_BUILD_DIR)
+	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--citeproc --standalone --mathjax \
+		-o "$(MANUSCRIPT_HTML)"
+
+$(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) | $(MANUSCRIPT_BUILD_DIR)
+	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--citeproc --pdf-engine=$(PDF_ENGINE) \
+		-o "$(MANUSCRIPT_PDF)"
+
+$(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) | $(MANUSCRIPT_BUILD_DIR)
+	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--citeproc --to=gfm --wrap=preserve \
+		-o "$(MANUSCRIPT_JEKYLL)"
+
+manuscript_html: $(MANUSCRIPT_HTML)
+	@echo "Up to date: $(MANUSCRIPT_HTML)"
+
+manuscript_pdf: $(MANUSCRIPT_PDF)
+	@echo "Up to date: $(MANUSCRIPT_PDF)"
+
+manuscript_jekyll: $(MANUSCRIPT_JEKYLL)
+	@echo "Up to date: $(MANUSCRIPT_JEKYLL)"
+
+# Publish to a Minimal Mistakes blog repository.
+#   make publish_blog BLOG_REPO=~/github/your-blog            # write only
+#   make publish_blog BLOG_REPO=~/github/your-blog PUSH=1     # write + commit + push
+#   make publish_blog BLOG_REPO=... DATE=2026-05-20           # override post date
+BLOG_REPO ?=
+DATE ?=
+PUSH ?=
+BLOG_REPO_ARG := $(if $(strip $(BLOG_REPO)),--blog-repo $(BLOG_REPO),)
+DATE_ARG := $(if $(strip $(DATE)),--date $(DATE),)
+PUSH_ARG := $(if $(filter 1,$(strip $(PUSH))),--push,)
+
+publish_blog: $(MANUSCRIPT_JEKYLL) $(ROOT)/helpers/publish_blog.py
+	cd "$(ROOT)" && $(PYTHON) helpers/publish_blog.py \
+		$(BLOG_REPO_ARG) $(DATE_ARG) $(PUSH_ARG)

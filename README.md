@@ -1,4 +1,4 @@
-# Cancer detection from gut microbiomes using a DNA language model
+# Cancer classification benchmark using gut microbiome data
 
 **Goal:** Implement a cancer prediction and classification pipeline using 16S rRNA gene sequences from fecal samples.
 

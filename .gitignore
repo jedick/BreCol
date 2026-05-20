@@ -3,6 +3,7 @@ outputs
 checkpoints
 results
 manuscript/*.png
+manuscript/build
 
 # Packaging artifacts (editable installs, builds)
 *.egg-info/

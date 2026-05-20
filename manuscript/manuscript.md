@@ -1,3 +1,10 @@
+---
+title: "BreCol: Cancer classification benchmark using gut microbiome data"
+bibliography: references.bib
+csl: csl/nature.csl
+link-citations: true
+---
+
 # BreCol: Cancer classification benchmark using gut microbiome data
 
 ## Abstract
@@ -39,11 +46,11 @@ test sets are almost always constructed by random sampling from the same studies
 This creates optimistically biased performance estimates that do not reflect real-world deployment,
 in much the same way that spatial autocorrelation inflates apparent model skill in geographic prediction tasks.
 In microbiome studies the bias is especially severe because technical factors—primer choice, sequencing platform, library preparation, regional microbiome variation—
-introduce large study-level signals that a model can exploit without learning any biology [1].
+introduce large study-level signals that a model can exploit without learning any biology [@whalen2022pitfalls].
 For multi-class cancer-type prediction the problem is structural: breast and colorectal cancer samples almost always come from entirely separate studies,
 so a classifier can achieve near-perfect in-study accuracy simply by identifying the study of origin rather than the disease.
 Evaluating such a model on held-out samples from the same studies dramatically overestimates generalization.
-A reliable benchmark must therefore evaluate models on studies they have never encountered during training [1].
+A reliable benchmark must therefore evaluate models on studies they have never encountered during training [@whalen2022pitfalls].
 
 We address this directly. We curate a multi-study compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer, 13 colorectal cancer),
 covering healthy controls and two cancer types across studies from 2013 to 2026.
@@ -60,7 +67,7 @@ all 4-mer counts aggregated across the raw reads of each sequencing run, convert
 This is a sequence-level representation that requires no taxonomic reference database.
 We then introduce unsupervised clustering and cluster abundance profiles (UC/CAP), a reference-free method that preserves within-run compositional structure—
 analogous in purpose to OTU-based approaches but operating entirely on sequence composition without taxonomic assignment.
-For deep learning we fine-tune HyenaDNA [2], a long-range genomic sequence model pre-trained on the human reference genome, directly on raw 16S reads.
+For deep learning we fine-tune HyenaDNA [@nguyen2024hyenadna], a long-range genomic sequence model pre-trained on the human reference genome, directly on raw 16S reads.
 Naïve fine-tuning proves unstable: the model achieves strong in-study test performance but fails to generalize across studies.
 We show that this instability arises from shortcut learning of study-level confounders rather than from optimization noise alone,
 
@@ -391,13 +398,13 @@ On the feature side, UC/CAP parameters (*K*, *n*<sub>CAP</sub>) could be tuned j
 and soft cluster assignments (Gaussian mixture or fuzzy *k*-means) might better represent the continuous composition of microbial communities.
 For HyenaDNA, additional pre-training on 16S rRNA sequences specifically (rather than the human genome)
 would better align the model's learned representations with the target domain.
-We could also consider using other embedding models, e.g. SetBERT which has specifically be trained on 16S rRNA sequences [3]. 
+We could also consider using other embedding models, e.g. SetBERT which has specifically be trained on 16S rRNA sequences [@setbert2024]. 
 
 More broadly, our results underscore a general lesson for machine learning applied to genomic and microbiome data:
 evaluation quality matters as much as model sophistication.
 Metrics computed on within-study test splits can be misleading by a wide margin.
 In our benchmark, cancer type AUC falls by more than 0.4 points from test to holdout for the strongest classical classifiers.
-Robust evaluation against temporally and geographically diverse holdout cohorts should be a standard requirement in this field [1].
+Robust evaluation against temporally and geographically diverse holdout cohorts should be a standard requirement in this field [@whalen2022pitfalls].
 
 ## Acknowledgments
 
@@ -406,11 +413,5 @@ All contributors to those studies are acknowledged for making this study possibl
 
 ## References
 
-1. Whalen S, Schreiber J, Noble WS, Pollard KS (2022). Navigating the pitfalls of applying machine learning in genomics.
-*Nature Reviews Genetics*, 23(3), 169–181. https://doi.org/10.1038/s41576-021-00434-9
-
-2. Nguyen E, Poli M, Faizi M, Thomas A, Wornow M, Birch-Sykes C, Massaroli S, Patel A, Rabideau M, Bengio Y, Ermon S, Ré C, Hie B (2024).
-HyenaDNA: Long-range genomic sequence modeling at single nucleotide resolution.
-*Advances in Neural Information Processing Systems*, 36. https://arxiv.org/abs/2306.15794
-
-3. SetBERT paper
+::: {#refs}
+:::
