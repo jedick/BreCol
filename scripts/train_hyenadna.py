@@ -77,8 +77,6 @@ from hyenadna_multitask import (
 )
 
 HEAD_MODES = ("last", "first", "pool", "sum")
-HALF_BATCH_SIZE = 0.5
-SET_SPLIT_INDEX = 5
 
 _HYENADNA_TASK_GRID_VALUES = frozenset(
     {"cancer_diagnosis", "cancer_type", "multitask"}
@@ -316,45 +314,11 @@ def training_loss_sum_and_count(
     return task_ce, int(flat_y.shape[0]), None
 
 
-def _slice_batch_sets(
-    batch: Mapping[str, object],
-    *,
-    start: int,
-    end: int,
-) -> Dict[str, object]:
-    batch_input_ids = batch["input_ids"]
-    batch_attention_mask = batch["attention_mask"]
-    batch_n_sets = batch["n_sets"]
-    sub_n_sets = torch.clamp(batch_n_sets - start, min=0, max=max(end - start, 0))
-    sub: Dict[str, object] = {
-        "input_ids": batch_input_ids[:, start:end, :],
-        "attention_mask": batch_attention_mask[:, start:end, :],
-        "n_sets": sub_n_sets,
-        "label": batch["label"],
-        "run": batch["run"],
-    }
-    if "ct_label" in batch:
-        sub["ct_label"] = batch["ct_label"]
-    return sub
-
-
-def _count_valid_sets(batch: Mapping[str, object]) -> int:
-    n_sets = batch["n_sets"]
-    if not isinstance(n_sets, torch.Tensor):
-        raise SystemExit("Expected batch n_sets to be a torch.Tensor.")
-    return int(n_sets.sum().item())
-
-
-def _resolve_train_batch_size(raw: object) -> Tuple[float, int, bool]:
+def _resolve_train_batch_size(raw: object) -> int:
     value = float(raw)
-    if value == HALF_BATCH_SIZE:
-        return value, 1, True
     if not value.is_integer() or value < 1:
-        raise SystemExit(
-            "train_hyenadna.batch_size must be a positive integer, or exactly 0.5 "
-            "to enable split-set microbatch mode."
-        )
-    return value, int(value), False
+        raise SystemExit("train_hyenadna.batch_size must be a positive integer.")
+    return int(value)
 
 
 def _resolve_amp_config(
@@ -520,7 +484,6 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     *,
-    split_set_microbatch: bool,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     scaler: Optional[torch.amp.GradScaler],
@@ -532,74 +495,26 @@ def train_epoch(
     total = 0.0
     n_batches = 0
     for batch in tqdm(loader, desc="Train", leave=False):
-        if split_set_microbatch:
-            first_half = _slice_batch_sets(batch, start=0, end=SET_SPLIT_INDEX)
-            second_half = _slice_batch_sets(batch, start=SET_SPLIT_INDEX, end=10)
-            denom_1 = _count_valid_sets(first_half)
-            denom_2 = _count_valid_sets(second_half)
-            denom = denom_1 + denom_2
-            if denom <= 0:
-                continue
-            optimizer.zero_grad(set_to_none=True)
-            if denom_1 > 0:
-                loss_sum_1, _, extra1 = training_loss_sum_and_count(
-                    model,
-                    first_half,
-                    device,
-                    amp_enabled=amp_enabled,
-                    amp_dtype=amp_dtype,
-                    ce_weight=ce_weight,
-                    ce_weight_ct=ce_weight_ct,
-                    loss_ratio=loss_ratio,
-                )
-                scaled_loss_1 = loss_sum_1 / float(denom)
-                if scaler is not None:
-                    scaler.scale(scaled_loss_1).backward()
-                else:
-                    scaled_loss_1.backward()
-            else:
-                loss_sum_1 = torch.zeros((), device=device)
-            if denom_2 > 0:
-                loss_sum_2, _, extra2 = training_loss_sum_and_count(
-                    model,
-                    second_half,
-                    device,
-                    amp_enabled=amp_enabled,
-                    amp_dtype=amp_dtype,
-                    ce_weight=ce_weight,
-                    ce_weight_ct=ce_weight_ct,
-                    loss_ratio=loss_ratio,
-                )
-                scaled_loss_2 = loss_sum_2 / float(denom)
-                if scaler is not None:
-                    scaler.scale(scaled_loss_2).backward()
-                else:
-                    scaled_loss_2.backward()
-            else:
-                loss_sum_2 = torch.zeros((), device=device)
-            _optimizer_step(optimizer, scaler)
-            total += float((loss_sum_1 + loss_sum_2).item() / float(denom))
+        loss_sum, denom, _extra = training_loss_sum_and_count(
+            model,
+            batch,
+            device,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+            ce_weight=ce_weight,
+            ce_weight_ct=ce_weight_ct,
+            loss_ratio=loss_ratio,
+        )
+        if denom <= 0:
+            raise SystemExit("Training batch has zero valid sets after masking.")
+        loss = loss_sum / float(denom)
+        optimizer.zero_grad(set_to_none=True)
+        if scaler is not None:
+            scaler.scale(loss).backward()
         else:
-            loss_sum, denom, extra_full = training_loss_sum_and_count(
-                model,
-                batch,
-                device,
-                amp_enabled=amp_enabled,
-                amp_dtype=amp_dtype,
-                ce_weight=ce_weight,
-                ce_weight_ct=ce_weight_ct,
-                loss_ratio=loss_ratio,
-            )
-            if denom <= 0:
-                raise SystemExit("Training batch has zero valid sets after masking.")
-            loss = loss_sum / float(denom)
-            optimizer.zero_grad(set_to_none=True)
-            if scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
-            _optimizer_step(optimizer, scaler)
-            total += float(loss.item())
+            loss.backward()
+        _optimizer_step(optimizer, scaler)
+        total += float(loss.item())
         n_batches += 1
     return total / max(n_batches, 1)
 
@@ -973,10 +888,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     model_name = str(merged["model"]).strip()
     num_sets = int(merged["num_sets"])
-    raw_batch_size = merged["batch_size"]
-    _batch_size_cfg, loader_batch_size, split_set_microbatch = _resolve_train_batch_size(
-        raw_batch_size
-    )
+    loader_batch_size = _resolve_train_batch_size(merged["batch_size"])
     max_len = model_max_length(model_name, merged.get("max_length"))
     head_mode = str(merged["head_pooling_mode"]).strip()
     if head_mode not in HEAD_MODES:
@@ -996,12 +908,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"Missing run tensors directory: {run_tensors_root}. "
             "Run: python scripts/build_run_tensors.py"
         )
-    if split_set_microbatch and num_sets != 10:
-        raise SystemExit(
-            "train_hyenadna.batch_size=0.5 requires train_hyenadna.num_sets=10 "
-            "to split each run into sets 0-4 and 5-9."
-        )
-
     multitask = is_multitask(task)
     ce_weight_ct: Optional[torch.Tensor] = None
     enc_ct: Optional[LabelEncoder] = None
@@ -1190,9 +1096,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pin_memory=device.type == "cuda",
     )
 
-    ckpt_dir = resolve_repo_path(repo_root, str(merged["checkpoint_dir"]).strip())
+    ckpt_dir = resolve_repo_path(
+        repo_root, str(paths_cfg["checkpoint_dir"]).strip()
+    )
     model_kw: Dict[str, object] = {
-        "download": bool(merged["download_pretrained"]),
         "config": None,
         "device": str(device),
         "use_head": True,
@@ -1262,7 +1169,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             train_loader,
             opt,
             device,
-            split_set_microbatch=split_set_microbatch,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             scaler=scaler,

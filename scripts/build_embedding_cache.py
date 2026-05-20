@@ -3,7 +3,8 @@
 Build a hive-partitioned per-sequence HyenaDNA embedding cache from FASTA files.
 
 For each data/ CSV row with sample_used=TRUE, reads fasta/<study_name>/<Run>.fasta.gz,
-applies sequence_cache row selection from defaults.yaml, runs the pretrained backbone (use_head=False),
+applies sequence_cache row selection from defaults.yaml, runs the pretrained backbone
+(use_head=False) from paths.checkpoint_dir (cloned from Hugging Face if missing),
 and writes Parquet under paths.embedding_cache_dir.
 
 Downstream: run_uc_cap_pipeline.py with --emb.
@@ -60,19 +61,14 @@ def _load_sequence_cache_cfg(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     return dict(cache_cfg)
 
 
-def _load_embedding_settings(
-    cfg: Mapping[str, Any],
-    train_hyenadna_cfg: Mapping[str, Any],
-) -> Dict[str, Any]:
+def _load_embedding_settings(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     cache_cfg = _load_sequence_cache_cfg(cfg)
+    paths_cfg = cfg.get("paths")
+    if not isinstance(paths_cfg, dict):
+        raise KeyError("paths must be a mapping")
     model_name = str(cache_cfg["model"]).strip()
     max_tokens = model_max_length(model_name, None)
-    checkpoint_dir_raw = cache_cfg.get("checkpoint_dir")
-    if checkpoint_dir_raw is None:
-        checkpoint_dir_raw = train_hyenadna_cfg.get("checkpoint_dir", "checkpoints")
-    download_pretrained = cache_cfg.get("download_pretrained")
-    if download_pretrained is None:
-        download_pretrained = train_hyenadna_cfg.get("download_pretrained", False)
+    checkpoint_dir = str(paths_cfg["checkpoint_dir"]).strip()
     device_raw = str(cache_cfg.get("device") or "").strip().lower()
     sequence_reduce = str(cache_cfg.get("sequence_reduce", "masked_mean")).strip().lower()
     if sequence_reduce not in ("masked_mean", "last"):
@@ -84,8 +80,7 @@ def _load_embedding_settings(
         "embedding_batch_size": int(cache_cfg["embedding_batch_size"]),
         "model_name": model_name,
         "max_tokens": max_tokens,
-        "checkpoint_dir": str(checkpoint_dir_raw).strip(),
-        "download_pretrained": bool(download_pretrained),
+        "checkpoint_dir": checkpoint_dir,
         "device_raw": device_raw,
         "sequence_reduce": sequence_reduce,
     }
@@ -102,14 +97,12 @@ def _load_model_on_device(
     *,
     model_name: str,
     checkpoint_dir: str,
-    download_pretrained: bool,
     device: torch.device,
 ) -> torch.nn.Module:
     checkpoint_path = resolve_repo_path(repo_root, checkpoint_dir)
     model = HyenaDNAPreTrainedModel.from_pretrained(
         str(checkpoint_path),
         model_name,
-        download=download_pretrained,
         config=None,
         device=str(device),
         use_head=False,
@@ -166,7 +159,6 @@ def _init_worker(
     repo_root_s: str,
     model_name: str,
     checkpoint_dir: str,
-    download_pretrained: bool,
     max_tokens: int,
     embedding_batch_size: int,
     sequence_reduce: str,
@@ -179,7 +171,6 @@ def _init_worker(
         repo_root,
         model_name=model_name,
         checkpoint_dir=checkpoint_dir,
-        download_pretrained=download_pretrained,
         device=device,
     )
     _WORKER.clear()
@@ -318,8 +309,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cfg_path = repo_root / "defaults.yaml"
     try:
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        train_hyenadna_cfg = cfg["train_hyenadna"]
-        settings = _load_embedding_settings(cfg, train_hyenadna_cfg)
+        settings = _load_embedding_settings(cfg)
         paths = cfg["paths"]
         data_dir = _resolve_repo_path(repo_root, str(paths["data_dir"]))
         fasta_dir_key = str(paths["fasta_dir"]).strip()
@@ -441,7 +431,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             str(repo_root),
             settings["model_name"],
             settings["checkpoint_dir"],
-            settings["download_pretrained"],
             settings["max_tokens"],
             embedding_batch_size,
             settings["sequence_reduce"],
@@ -480,7 +469,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             repo_root,
             model_name=settings["model_name"],
             checkpoint_dir=settings["checkpoint_dir"],
-            download_pretrained=settings["download_pretrained"],
             device=device,
         )
         tokenizer = make_character_tokenizer(settings["max_tokens"])

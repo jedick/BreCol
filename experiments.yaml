@@ -57,7 +57,7 @@ train_hyenadna:
   # Training script supports grids over task and random_seed
   # (e.g. task: [cancer_diagnosis,cancer_type], random_seed: [0,1,2])
   experiments:
-    # Timings to run 3 seeds over 10 epochs (5 sets and 2048 max_length):
+    # Timings (5 sets, max_length 2048, 10 epochs, 3 seeds):
     # - Unfrozen backbone (batch_size=20 for 15GB GPU memory):
     #   cancer_diagnosis (26 min), cancer_type (13 min), multitask (24 min)
     # - Frozen backbone (batch_size=80 for 15GB GPU memory):

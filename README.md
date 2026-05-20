@@ -17,7 +17,7 @@
 - *Run-averaged tetramer profiles:* 4-mer counts are summed across all sequences in a run and converted to percentages. This collapses within-run sequence heterogeneity into a single 256-dimensional vector per run.
 - *Sequence-level cluster abundance profiles (UC/CAP):* Sequences are individually characterized by their 4-mer composition, clustered unsupervised, and each run is then represented by the distribution of its sequences across clusters. This preserves within-run compositional structure that flat aggregation discards.
 
-**Classical ML models:** KNN, random forest, logistic regression, SVM
+**Classical ML models:** KNN, random forest, SVM
 
 ## Sample data, labeling, and exclusion
 
@@ -96,7 +96,7 @@ Split proportions are configured in `defaults.yaml (currently 0.70/0.15/0.15 for
 Default task/model and other settings are resolved from `fit_classifier` in `defaults.yaml` with results written to `results/scratch/`.
 Add `EXPT=N` to get experiment name and model configuration from `experiments.yaml` and write results to `results/tetramer/{name}.json`.
 Hyperparameters are chosen on validation (`fit_classifier.tuning_metric` in `defaults.yaml`), then AUROC is reported for test and holdout (`metrics.test.auroc` / `metrics.holdout.auroc` in each results JSON).
-Supported models are `baseline`, `knn`, `random_forest`, `logistic_regression`, and `svm`.
+Supported models are `baseline`, `knn`, `random_forest`, and `svm`.
 
 Output files:
 - Default run (`make fit_tetramer`) writes `results/scratch/tetramer_*.json`
@@ -134,11 +134,11 @@ Project execution:
 - Build per-sequence embedding cache: `make embedding_cache` writes hive-partitioned Parquet under `outputs/embedding_cache/` for the UC/CAP pipeline (`EMB=1`).
 - Train/evaluate HyenaDNA: `make train_hyenadna` uses defaults from `defaults.yaml`.
 - Experiments: `make train_hyenadna EXPT=N` runs the selected `train_hyenadna` experiment row from `experiments.yaml`.
-  If an experiment override uses comma-separated grids (for example seeds and/or `max_length`), the training script runs the full grid.
+  If an experiment override uses YAML list grids (for example `random_seed` and/or `max_length`), the training script runs the full grid.
 
 Inputs/outputs:
 - HyenaDNA classifier:
-  - Inputs: cached run tensors, run labels/splits from `scripts/shared_utilities.py`, and pretrained weights under `checkpoints/<model>/` (or download on demand).
+  - Inputs: cached run tensors, run labels/splits from `scripts/shared_utilities.py`, and pretrained weights under `paths.checkpoint_dir/<model>/` (cloned from Hugging Face on first use if missing).
   - Outputs:
       - Default `make train_hyenadna` writes `results/scratch/train_hyenadna_<task>_<timestamp>.json`.
       - Experiment runs (`make train_hyenadna EXPT=N`) write under the `train_hyenadna.results_json_template` path in `experiments.yaml` (for example `results/hyenadna/{name}_{max_length/1024}k_s{seed}.json`).

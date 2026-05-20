@@ -8,8 +8,9 @@ Modes (mutually exclusive):
                Optional --emb selects embedding-based CAP outputs (embedding_uc_cap_root).
 
 Both modes use scripts/shared_utilities.py for train/val/test/holdout, support the same
-model families and hyperparameter grids from defaults.yaml (section fit_classifier), and
-optional experiment overlays from experiments.yaml (fit_classifier.experiments).
+model families (baseline, knn, random_forest, svm), hyperparameter grids from
+defaults.yaml fit_classifier (YAML lists; validation tuning_metric, default auroc),
+and optional experiment overlays from experiments.yaml (fit_classifier.experiments).
 
 UC/CAP mode:
   --feat N   1-based index into experiments.yaml run_uc_cap_pipeline (merged over the
@@ -26,7 +27,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+
+# sklearn PCA n_components: None (all), int (fixed count), or float in (0, 1] (variance ratio).
+PcaNComponents = Optional[Union[int, float]]
 
 import numpy as np
 import pandas as pd
@@ -45,8 +49,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.decomposition import PCA
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import f1_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -54,10 +57,8 @@ from sklearn.svm import SVC
 
 
 # ----- Constants -----
-T = TypeVar("T")
-
-MODEL_CHOICES = ("baseline", "knn", "random_forest", "logistic_regression", "svm")
-TUNING_METRIC_CHOICES = ("accuracy", "f1", "auroc")
+MODEL_CHOICES = ("baseline", "knn", "random_forest", "svm")
+TUNING_METRIC_CHOICES = ("auroc", "f1")
 
 
 @dataclass(frozen=True)
@@ -78,14 +79,11 @@ class TaskSplits:
 
 @dataclass(frozen=True)
 class ModelGrids:
-    n_neighbors: List[int]
-    weights: List[str]
+    knn_n_neighbors: List[int]
+    knn_weights: List[str]
     rf_n_estimators: List[int]
     rf_max_depth: List[Optional[int]]
     rf_min_samples_leaf: List[int]
-    lr_c: List[float]
-    lr_solver: List[str]
-    lr_class_weight: List[Optional[str]]
     svm_c: List[float]
     svm_gamma: List[Union[float, str]]
     svm_kernel: List[str]
@@ -152,9 +150,7 @@ def _cap_csv_path(
     n_clusters = int(merged["n_clusters"])
     n_cap = int(merged["n_cap"])
     tag = str(n_cap)
-    cap_transform = str(merged["cap_transform"]).strip()
-    stem = f"cap{tag}" if cap_transform == "none" else f"cap{tag}_{cap_transform}"
-    return repo_root / uc_root / f"uc{n_uc}_k{n_clusters}" / f"{stem}.csv"
+    return repo_root / uc_root / f"uc{n_uc}_k{n_clusters}" / f"cap{tag}.csv"
 
 
 def _load_cap_csv(csv_path: Path) -> pd.DataFrame:
@@ -273,18 +269,29 @@ def _load_experiment_args(
         "no_scaler": not use_scaler,
         "no_clr": not use_clr,
         "clr_pseudocount": float(config["clr_pseudocount"]),
-        "pca_min_variance": float(config["pca_min_variance"]),
-        "n_neighbors": str(config["n_neighbors_grid"]).strip(),
-        "weights": str(config["weights_grid"]).strip(),
-        "rf_n_estimators": str(config["rf_n_estimators_grid"]).strip(),
-        "rf_max_depth": str(config["rf_max_depth_grid"]).strip(),
-        "rf_min_samples_leaf": str(config["rf_min_samples_leaf_grid"]).strip(),
-        "lr_c": str(config["lr_c_grid"]).strip(),
-        "lr_solver": str(config["lr_solver_grid"]).strip(),
-        "lr_class_weight": str(config["lr_class_weight_grid"]).strip(),
-        "svm_c": str(config["svm_c_grid"]).strip(),
-        "svm_gamma": str(config["svm_gamma_grid"]).strip(),
-        "svm_kernel": str(config["svm_kernel_grid"]).strip(),
+        "n_components_grid": _parse_pca_n_components_grid_list(
+            config["n_components_grid"], name="n_components_grid"
+        ),
+        "knn_n_neighbors": _parse_int_grid_list(
+            config["knn_n_neighbors_grid"], name="knn_n_neighbors_grid"
+        ),
+        "knn_weights": _parse_str_grid_list(
+            config["knn_weights_grid"], name="knn_weights_grid"
+        ),
+        "rf_n_estimators": _parse_int_grid_list(
+            config["rf_n_estimators_grid"], name="rf_n_estimators_grid"
+        ),
+        "rf_max_depth": _parse_optional_int_grid_list(
+            config["rf_max_depth_grid"], name="rf_max_depth_grid"
+        ),
+        "rf_min_samples_leaf": _parse_int_grid_list(
+            config["rf_min_samples_leaf_grid"], name="rf_min_samples_leaf_grid"
+        ),
+        "svm_c": _parse_float_grid_list(config["svm_c_grid"], name="svm_c_grid"),
+        "svm_gamma": _parse_svm_gamma_grid_list(config["svm_gamma_grid"], name="svm_gamma_grid"),
+        "svm_kernel": _parse_svm_kernel_grid_list(
+            config["svm_kernel_grid"], name="svm_kernel_grid"
+        ),
         "results_json": results_json,
         "experiment_index": expt,
         "experiment_overrides": dict(overrides),
@@ -313,8 +320,6 @@ def _print_experiment_line(args: argparse.Namespace) -> None:
 def _validate_basic_args(args: argparse.Namespace) -> None:
     if args.clr_pseudocount <= 0:
         raise SystemExit("--clr-pseudocount must be positive.")
-    if not 0.0 < args.pca_min_variance <= 1.0:
-        raise SystemExit("--pca-min-variance must be in (0, 1].")
     if args.model not in MODEL_CHOICES:
         raise SystemExit(f"Unknown model {args.model!r}. Expected one of {MODEL_CHOICES}.")
     if args.tuning_metric not in TUNING_METRIC_CHOICES:
@@ -328,89 +333,136 @@ def _prefixed(prefix: str, text: str) -> str:
     return f"{prefix} {text}" if prefix else text
 
 
-def _split_arg_list(raw: str, description: str) -> List[str]:
-    values = [part.strip() for part in raw.split(",") if part.strip()]
-    if not values:
-        raise SystemExit(f"Expected at least one value for {description}.")
-    return values
+def _normalize_grid(raw: object, *, name: str) -> List[object]:
+    """Accept a YAML list or a single scalar; reject comma-separated strings."""
+    if isinstance(raw, str):
+        raise SystemExit(
+            f"{name} must be a YAML list or scalar, not a string "
+            f"(got {raw!r}; use a list like [5, 15])."
+        )
+    if isinstance(raw, (list, tuple)):
+        if not raw:
+            raise SystemExit(f"{name} must not be empty.")
+        return list(raw)
+    return [raw]
 
 
-def _parse_arg_grid(
-    raw: str,
-    convert: Callable[[str], T],
-    *,
-    description: str,
-) -> List[T]:
-    return [convert(value) for value in _split_arg_list(raw, description)]
+def _coerce_optional_int(value: object, *, name: str) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() == "none":
+        return None
+    if isinstance(value, bool):
+        raise SystemExit(f"{name}: booleans are not valid integers.")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"{name}: expected an integer or none, got {value!r}."
+        ) from exc
 
 
-def _parse_int_grid(raw: str, description: str) -> List[int]:
-    return _parse_arg_grid(raw, int, description=description)
-
-
-def _parse_float_grid(raw: str, description: str) -> List[float]:
-    return _parse_arg_grid(raw, float, description=description)
-
-
-def _parse_str_grid(raw: str, description: str) -> List[str]:
-    return _split_arg_list(raw, description)
-
-
-def _parse_optional_int_grid(raw: str, description: str) -> List[Optional[int]]:
-    def convert(value: str) -> Optional[int]:
-        return None if value.lower() == "none" else int(value)
-
-    return _parse_arg_grid(raw, convert, description=description)
-
-
-def _parse_class_weight_grid(raw: str) -> List[Optional[str]]:
-    def convert(value: str) -> Optional[str]:
-        lowered = value.lower()
-        if lowered == "none":
-            return None
-        if lowered == "balanced":
-            return "balanced"
-        raise SystemExit("Class-weight grid values must be 'none' or 'balanced'.")
-
-    return _parse_arg_grid(raw, convert, description="logistic regression class weights")
-
-
-def _parse_svm_gamma_grid(raw: str) -> List[Union[float, str]]:
-    out: List[Union[float, str]] = []
-    for value in _split_arg_list(raw, "SVM gamma"):
-        lv = value.lower()
-        if lv in ("scale", "auto"):
-            out.append(lv)
-        else:
-            out.append(float(value))
+def _parse_int_grid_list(raw: object, *, name: str) -> List[int]:
+    out: List[int] = []
+    for item in _normalize_grid(raw, name=name):
+        if isinstance(item, bool):
+            raise SystemExit(f"{name}: booleans are not valid integers.")
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{name}: expected integers, got {item!r}.") from exc
     return out
 
 
-def _parse_svm_kernel_grid(raw: str) -> List[str]:
+def _parse_float_grid_list(raw: object, *, name: str) -> List[float]:
+    out: List[float] = []
+    for item in _normalize_grid(raw, name=name):
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"{name}: expected floats, got {item!r}.") from exc
+    return out
+
+
+def _parse_str_grid_list(raw: object, *, name: str) -> List[str]:
+    out: List[str] = []
+    for item in _normalize_grid(raw, name=name):
+        if not isinstance(item, str) or not item.strip():
+            raise SystemExit(f"{name}: expected non-empty strings, got {item!r}.")
+        out.append(item.strip())
+    return out
+
+
+def _parse_optional_int_grid_list(raw: object, *, name: str) -> List[Optional[int]]:
+    return [
+        _coerce_optional_int(item, name=name) for item in _normalize_grid(raw, name=name)
+    ]
+
+
+def _coerce_pca_n_components(value: object, *, name: str) -> PcaNComponents:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() == "none":
+        return None
+    if isinstance(value, bool):
+        raise SystemExit(f"{name}: booleans are not valid PCA n_components values.")
+    if isinstance(value, int):
+        if value < 1:
+            raise SystemExit(f"{name}: PCA component count must be >= 1, got {value}.")
+        return value
+    if isinstance(value, float):
+        if 0.0 < value <= 1.0:
+            return float(value)
+        raise SystemExit(
+            f"{name}: explained-variance ratio must be in (0, 1], got {value}."
+        )
+    raise SystemExit(
+        f"{name}: expected none, an integer >= 1, or a float in (0, 1]; got {value!r}."
+    )
+
+
+def _parse_pca_n_components_grid_list(raw: object, *, name: str) -> List[PcaNComponents]:
+    return [
+        _coerce_pca_n_components(item, name=name) for item in _normalize_grid(raw, name=name)
+    ]
+
+
+def _parse_svm_gamma_grid_list(raw: object, *, name: str) -> List[Union[float, str]]:
+    out: List[Union[float, str]] = []
+    for item in _normalize_grid(raw, name=name):
+        if isinstance(item, str):
+            lv = item.strip().lower()
+            if lv in ("scale", "auto"):
+                out.append(lv)
+                continue
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"{name}: each entry must be scale, auto, or a float; got {item!r}."
+            ) from exc
+    return out
+
+
+def _parse_svm_kernel_grid_list(raw: object, *, name: str) -> List[str]:
     allowed = {"rbf", "linear", "poly", "sigmoid"}
-    kernels = _parse_str_grid(raw, "SVM kernel")
+    kernels = _parse_str_grid_list(raw, name=name)
     bad = [k for k in kernels if k not in allowed]
     if bad:
-        raise SystemExit(f"Unsupported SVM kernel(s): {bad}. Allowed: {sorted(allowed)}.")
+        raise SystemExit(f"Unsupported SVM kernel(s) in {name}: {bad}. Allowed: {sorted(allowed)}.")
     return kernels
 
 
 def _build_model_grids(args: argparse.Namespace) -> ModelGrids:
     return ModelGrids(
-        n_neighbors=_parse_int_grid(args.n_neighbors, "KNN n_neighbors"),
-        weights=_parse_str_grid(args.weights, "KNN weights"),
-        rf_n_estimators=_parse_int_grid(args.rf_n_estimators, "random-forest n_estimators"),
-        rf_max_depth=_parse_optional_int_grid(args.rf_max_depth, "random-forest max_depth"),
-        rf_min_samples_leaf=_parse_int_grid(
-            args.rf_min_samples_leaf,
-            "random-forest min_samples_leaf",
-        ),
-        lr_c=_parse_float_grid(args.lr_c, "logistic regression C"),
-        lr_solver=_parse_str_grid(args.lr_solver, "logistic regression solvers"),
-        lr_class_weight=_parse_class_weight_grid(args.lr_class_weight),
-        svm_c=_parse_float_grid(args.svm_c, "SVM C"),
-        svm_gamma=_parse_svm_gamma_grid(args.svm_gamma),
-        svm_kernel=_parse_svm_kernel_grid(args.svm_kernel),
+        knn_n_neighbors=list(args.knn_n_neighbors),
+        knn_weights=list(args.knn_weights),
+        rf_n_estimators=list(args.rf_n_estimators),
+        rf_max_depth=list(args.rf_max_depth),
+        rf_min_samples_leaf=list(args.rf_min_samples_leaf),
+        svm_c=list(args.svm_c),
+        svm_gamma=list(args.svm_gamma),
+        svm_kernel=list(args.svm_kernel),
     )
 
 
@@ -504,85 +556,13 @@ class CLRTransformer(BaseEstimator, TransformerMixin):
         return log_x - np.mean(log_x, axis=1, keepdims=True)
 
 
-def _pre_pca_train_matrix(
-    X_train: np.ndarray,
-    *,
-    use_clr: bool,
-    pseudocount: float,
-    use_scaler: bool,
-) -> np.ndarray:
-    z = X_train
-    if use_clr:
-        z = CLRTransformer(pseudocount=pseudocount).fit_transform(z)
-    if use_scaler:
-        z = StandardScaler().fit_transform(z)
-    return z
-
-
-def build_pca_n_components_grid(
-    X_train: np.ndarray,
-    *,
-    use_clr: bool,
-    pseudocount: float,
-    use_scaler: bool,
-    min_explained_variance: float,
-    random_state: int,
-) -> List[int]:
-    """PCA component counts meeting ``min_explained_variance`` on the training fold.
-
-    ``max_comp`` is ``min(n_features, n_samples - 1)`` (standard PCA bound on the
-    training matrix). Candidates are distinct values in the floor-halving chain
-    ``max_comp, max_comp//2, ...`` down to ``1``.
-    """
-    n_samples, n_feat = X_train.shape
-    if n_samples < 2:
-        raise SystemExit("Training set too small for PCA (need at least 2 samples).")
-    max_comp = int(min(n_feat, n_samples - 1))
-    if max_comp < 1:
-        raise SystemExit("Cannot fit PCA: max components < 1.")
-
-    z_train = _pre_pca_train_matrix(
-        X_train,
-        use_clr=use_clr,
-        pseudocount=pseudocount,
-        use_scaler=use_scaler,
-    )
-    pca_full = PCA(
-        n_components=max_comp, svd_solver="full", random_state=random_state
-    )
-    pca_full.fit(z_train)
-    csum = np.cumsum(pca_full.explained_variance_ratio_)
-
-    def cumulative_var(k: int) -> float:
-        kk = min(max(k, 1), len(csum))
-        return float(csum[kk - 1])
-
-    raw_ks: List[int] = []
-    seen: set[int] = set()
-    k = int(max_comp)
-    while k >= 1:
-        if k not in seen:
-            seen.add(k)
-            raw_ks.append(k)
-        if k == 1:
-            break
-        k //= 2
-
-    candidates = [k for k in raw_ks if cumulative_var(k) >= min_explained_variance]
-    if not candidates:
-        raise SystemExit(
-            "No PCA component counts met pca_min_variance on the training fold."
-        )
-    return candidates
-
-
 def make_pipeline(
     *,
     model: str,
     use_clr: bool,
     pseudocount: float,
     use_scaler: bool,
-    pca_n_components: Optional[int],
+    pca_n_components: PcaNComponents,
     random_state: int,
 ) -> Pipeline:
     steps: List[Tuple[str, object]] = []
@@ -590,7 +570,7 @@ def make_pipeline(
         steps.append(("clr", CLRTransformer(pseudocount=pseudocount)))
     if use_scaler:
         steps.append(("scaler", StandardScaler()))
-    if pca_n_components is not None:
+    if model in ("knn", "svm"):
         steps.append(
             (
                 "pca",
@@ -605,10 +585,6 @@ def make_pipeline(
         steps.append(("clf", KNeighborsClassifier()))
     elif model == "random_forest":
         steps.append(("clf", RandomForestClassifier(random_state=random_state)))
-    elif model == "logistic_regression":
-        steps.append(
-            ("clf", LogisticRegression(random_state=random_state, max_iter=1000))
-        )
     elif model == "svm":
         steps.append(
             (
@@ -641,8 +617,6 @@ def _evaluation_scores(pipe: Pipeline, X: np.ndarray) -> np.ndarray:
 
 
 def _score_val(y_true: np.ndarray, y_pred: np.ndarray, tuning_metric: str) -> float:
-    if tuning_metric == "accuracy":
-        return float(accuracy_score(y_true, y_pred))
     if tuning_metric == "f1":
         classes = np.unique(np.asarray(y_true, dtype=object))
         if classes.size != 2:
@@ -670,7 +644,7 @@ def _validation_score(pipe: Pipeline, splits: TaskSplits, tuning_metric: str) ->
 def tune_knn_on_val(
     pipe: Pipeline,
     splits: TaskSplits,
-    n_components_list: Sequence[int],
+    n_components_list: Sequence[PcaNComponents],
     n_neighbors_list: Sequence[int],
     weights_list: Sequence[str],
     tuning_metric: str,
@@ -731,54 +705,10 @@ def tune_random_forest_on_val(
     return TuningResult(best_params=best_params, validation_score=best_score)
 
 
-def tune_logistic_regression_on_val(
-    pipe: Pipeline,
-    splits: TaskSplits,
-    n_components_list: Sequence[int],
-    c_list: Sequence[float],
-    solver_list: Sequence[str],
-    class_weight_list: Sequence[Optional[str]],
-    tuning_metric: str,
-) -> TuningResult:
-    allowed_solvers = {"lbfgs", "liblinear", "saga"}
-    bad_solvers = [s for s in solver_list if s not in allowed_solvers]
-    if bad_solvers:
-        raise SystemExit(
-            f"Unsupported logistic-regression solver(s): {bad_solvers}. "
-            "Allowed: lbfgs, liblinear, saga."
-        )
-
-    best_score = -1.0
-    best_params: Dict[str, object] = {}
-    for n_components, c_val, solver, class_weight in itertools.product(
-        n_components_list,
-        c_list,
-        solver_list,
-        class_weight_list,
-    ):
-        pipe.set_params(
-            pca__n_components=n_components,
-            clf__C=c_val,
-            clf__solver=solver,
-            clf__class_weight=class_weight,
-        )
-        pipe.fit(splits.X_train, splits.y_train)
-        score = _validation_score(pipe, splits, tuning_metric)
-        if score > best_score:
-            best_score = score
-            best_params = {
-                "n_components": n_components,
-                "C": c_val,
-                "solver": solver,
-                "class_weight": class_weight,
-            }
-    return TuningResult(best_params=best_params, validation_score=best_score)
-
-
 def tune_svm_on_val(
     pipe: Pipeline,
     splits: TaskSplits,
-    n_components_list: Sequence[int],
+    n_components_list: Sequence[PcaNComponents],
     c_list: Sequence[float],
     gamma_list: Sequence[Union[float, str]],
     kernel_list: Sequence[str],
@@ -817,7 +747,7 @@ def _tune_model_on_validation(
     args: argparse.Namespace,
     splits: TaskSplits,
     grids: ModelGrids,
-    n_components_grid: Sequence[int],
+    n_components_grid: Sequence[PcaNComponents],
 ) -> TuningResult:
     prefix = str(getattr(args, "log_prefix", ""))
     if args.model == "baseline":
@@ -840,7 +770,7 @@ def _tune_model_on_validation(
             _prefixed(
                 prefix,
                 f"Grid - n_components: {list(n_components_grid)}, "
-                f"n_neighbors: {grids.n_neighbors}, weights: {grids.weights}",
+                f"n_neighbors: {grids.knn_n_neighbors}, weights: {grids.knn_weights}",
             ),
             flush=True,
         )
@@ -848,8 +778,8 @@ def _tune_model_on_validation(
             pipe,
             splits,
             n_components_list=n_components_grid,
-            n_neighbors_list=grids.n_neighbors,
-            weights_list=grids.weights,
+            n_neighbors_list=grids.knn_n_neighbors,
+            weights_list=grids.knn_weights,
             tuning_metric=args.tuning_metric,
         )
         pipe.set_params(
@@ -907,32 +837,6 @@ def _tune_model_on_validation(
             clf__C=result.best_params["C"],
             clf__gamma=result.best_params["gamma"],
             clf__kernel=result.best_params["kernel"],
-        )
-        return result
-
-    if args.model == "logistic_regression":
-        print(
-            _prefixed(
-                prefix,
-                f"Grid - n_components: {list(n_components_grid)}, "
-                f"C: {grids.lr_c}, solver: {grids.lr_solver}, class_weight: {grids.lr_class_weight}",
-            ),
-            flush=True,
-        )
-        result = tune_logistic_regression_on_val(
-            pipe,
-            splits,
-            n_components_list=n_components_grid,
-            c_list=grids.lr_c,
-            solver_list=grids.lr_solver,
-            class_weight_list=grids.lr_class_weight,
-            tuning_metric=args.tuning_metric,
-        )
-        pipe.set_params(
-            pca__n_components=result.best_params["n_components"],
-            clf__C=result.best_params["C"],
-            clf__solver=result.best_params["solver"],
-            clf__class_weight=result.best_params["class_weight"],
         )
         return result
 
@@ -1060,7 +964,7 @@ def _write_results_json(
     path: Path,
     *,
     args: argparse.Namespace,
-    n_components_grid: Sequence[int],
+    n_components_grid: Sequence[PcaNComponents],
     tuning: TuningResult,
     evaluation: EvaluationResult,
     n_features: int,
@@ -1075,18 +979,15 @@ def _write_results_json(
         "no_scaler": args.no_scaler,
         "no_clr": args.no_clr,
         "clr_pseudocount": args.clr_pseudocount,
-        "pca_min_variance": args.pca_min_variance,
-        "n_neighbors": args.n_neighbors,
-        "weights": args.weights,
-        "rf_n_estimators": args.rf_n_estimators,
-        "rf_max_depth": args.rf_max_depth,
-        "rf_min_samples_leaf": args.rf_min_samples_leaf,
-        "lr_c": args.lr_c,
-        "lr_solver": args.lr_solver,
-        "lr_class_weight": args.lr_class_weight,
-        "svm_c": args.svm_c,
-        "svm_gamma": args.svm_gamma,
-        "svm_kernel": args.svm_kernel,
+        "n_components_grid": _jsonify_for_results(list(args.n_components_grid)),
+        "knn_n_neighbors": _jsonify_for_results(list(args.knn_n_neighbors)),
+        "knn_weights": _jsonify_for_results(list(args.knn_weights)),
+        "rf_n_estimators": _jsonify_for_results(list(args.rf_n_estimators)),
+        "rf_max_depth": _jsonify_for_results(list(args.rf_max_depth)),
+        "rf_min_samples_leaf": _jsonify_for_results(list(args.rf_min_samples_leaf)),
+        "svm_c": _jsonify_for_results(list(args.svm_c)),
+        "svm_gamma": _jsonify_for_results(list(args.svm_gamma)),
+        "svm_kernel": _jsonify_for_results(list(args.svm_kernel)),
         "tuning_metric": args.tuning_metric,
     }
     ex_idx = getattr(args, "experiment_index", None)
@@ -1103,7 +1004,7 @@ def _write_results_json(
         "split": "validation",
         "metric": args.tuning_metric,
         "score": float(tuning.validation_score),
-        "pca_n_components_candidates": [int(x) for x in n_components_grid],
+        "n_components_grid": _jsonify_for_results(list(n_components_grid)),
         "best_hyperparameters": _jsonify_for_results(dict(tuning.best_params)),
     }
     metrics_block: Dict[str, object] = {
@@ -1125,33 +1026,6 @@ def _write_results_json(
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")
-
-
-def _build_pca_grid(args: argparse.Namespace, splits: TaskSplits) -> List[int]:
-    prefix = str(getattr(args, "log_prefix", ""))
-    if args.model in ("random_forest", "baseline"):
-        print(_prefixed(prefix, "PCA - min_explained_variance: n/a, CLR: n/a"), flush=True)
-        return []
-
-    use_scaler = not args.no_scaler
-    use_clr = not args.no_clr
-    n_components_grid = build_pca_n_components_grid(
-        splits.X_train,
-        use_clr=use_clr,
-        pseudocount=args.clr_pseudocount,
-        use_scaler=use_scaler,
-        min_explained_variance=args.pca_min_variance,
-        random_state=args.random_state,
-    )
-    print(
-        _prefixed(
-            prefix,
-            f"PCA - min_explained_variance: {args.pca_min_variance}, "
-            f"CLR: {'on' if use_clr else 'off'}",
-        ),
-        flush=True,
-    )
-    return n_components_grid
 
 
 def run_classifier(args: argparse.Namespace, root: Path) -> int:
@@ -1194,7 +1068,22 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
     _print_dataset_summary(splits, prefix=prefix)
 
     grids = _build_model_grids(args)
-    n_components_grid = _build_pca_grid(args, splits)
+    if args.model in ("random_forest", "baseline"):
+        n_components_grid: List[PcaNComponents] = []
+        print(_prefixed(prefix, "PCA: not used for this model"), flush=True)
+    else:
+        n_components_grid = list(args.n_components_grid)
+        if not n_components_grid:
+            raise SystemExit("n_components_grid must not be empty for KNN and SVM.")
+        use_clr = not args.no_clr
+        print(
+            _prefixed(
+                prefix,
+                f"PCA n_components grid: {n_components_grid}, "
+                f"CLR: {'on' if use_clr else 'off'}",
+            ),
+            flush=True,
+        )
     pipe = make_pipeline(
         model=args.model,
         use_clr=not args.no_clr,

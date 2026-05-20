@@ -184,6 +184,7 @@ Because the sequence-level table is large, we first fit the unsupervised cluster
 drawing at most a fixed number of sequences per run.
 For each selected sequence we computed a 256-dimensional tetramer composition vector,
 then fit *k*-means to all selected sequences to obtain *K* centroids defining a sequence codebook.
+Dimensionality reduction with PCA before *k*-means was trialed and found to degrade downstream classification results, so it was not used here.
 
 To construct run-level features, we applied the same centroid assignments (without refitting)
 to a larger per-run sequence budget for every run in the sequence-level table, including validation, test, and holdout runs.

@@ -39,8 +39,7 @@ def cap_csv_path(
     n_clusters = int(merged["n_clusters"])
     n_cap = int(merged["n_cap"])
     tag = str(n_cap)
-    cap_transform = str(merged["cap_transform"]).strip()
-    stem = f"cap{tag}" if cap_transform == "none" else f"cap{tag}_{cap_transform}"
+    stem = f"cap{tag}"
     path = repo_root / uc_root / f"uc{n_uc}_k{n_clusters}" / f"{stem}.csv"
     return path.as_posix()
 

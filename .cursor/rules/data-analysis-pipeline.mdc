@@ -15,7 +15,9 @@ alwaysApply: true
 
 ## Make-driven scripts and CLI surface
 
-- **YAML first:** paths, split settings, classifier grids, tensor/sequence-cache settings, and UC/CAP baseline lists belong in **`defaults.yaml`**. Experiment names, `train_hyenadna` / `run_uc_cap_pipeline` rows, and merged feature overlays belong in **`experiments.yaml`**. Scripts invoked from Make should load these files from the repo root unless there is a rare, explicit reason not to.
+- **YAML first:** paths (including **`paths.checkpoint_dir`** for HyenaDNA weights), split settings, classifier grids, tensor/sequence-cache settings, and UC/CAP baseline lists belong in **`defaults.yaml`**. Experiment names, `train_hyenadna` / `run_uc_cap_pipeline` rows, and merged feature overlays belong in **`experiments.yaml`**. Scripts invoked from Make should load these files from the repo root unless there is a rare, explicit reason not to.
+- **`fit_classifier` grids** are YAML lists in **`defaults.yaml`** (for example `n_components_grid`, `knn_n_neighbors_grid`, `knn_weights_grid`); a scalar is allowed for a single value. Comma-separated strings are rejected. **`none`** in a grid means unlimited depth (`rf_max_depth_grid`) or all PCA components (`n_components_grid` for KNN/SVM).
+- **HyenaDNA weights:** training and embedding cache load from **`paths.checkpoint_dir/<model>/`**. Weights are cloned from Hugging Face on first use if that directory is missing.
 - **CLI minimalism:** keep **only** CLI flags that the **Makefile** (or a clearly documented Make variable) actually passes — for example **`EXPT`** → **`--expt`**, **`FEAT`** → **`--feat`**, **`EMB`** → **`--emb`**, and **mode** switches such as **`--tetramer`**, **`--uc_cap`**, plus **`--results-json`** when Make supplies the output path. Do **not** add or rely on duplicate switches for paths or hyperparameter grids that already live in YAML. Optional flags used only for local debugging (e.g. profiling, subset runs) are fine if they stay out of the documented Make workflow.
 - **Manuscript helpers** (`helpers/table*.py`, `helpers/figure*.py`): read fixed `results/` inputs and write fixed paths under **`manuscript/`**; **no CLI** for output locations or alternate results roots (same spirit as YAML-first pipeline scripts). Details live in **`manuscript-prose.mdc`** (section *Tables and figures*).
 - **Examples:** `build_tetramer_cache.py` uses **no CLI** for Make (optional debug flags only). `train_hyenadna.py` keeps **`--expt`** (and results-json wiring) for **`EXPT`**; training knobs come from YAML, not argv. Tetramer features: **`make tetramer_cache`** then **`make tetramer_frequencies`**, with paths from **`paths.tetramer_cache_dir`** and **`paths.tetramer_frequencies_csv`**. UC/CAP outputs live under **`paths.tetramer_uc_cap_root`**.
@@ -28,7 +30,7 @@ alwaysApply: true
 
 ## Pipeline artifact conventions
 
-- Per-sequence tetramer features for UC/CAP and run-level tetramer frequencies share the hive-partitioned Parquet cache under **`paths.tetramer_cache_dir`**. Per-sequence HyenaDNA embeddings for embedding UC/CAP live under **`paths.embedding_cache_dir`**. Shared row limits and workers are in **`sequence_cache`** in **`defaults.yaml`**.
+- Per-sequence tetramer features for UC/CAP and run-level tetramer frequencies share the hive-partitioned Parquet cache under **`paths.tetramer_cache_dir`**. Per-sequence HyenaDNA embeddings for embedding UC/CAP live under **`paths.embedding_cache_dir`**. Shared row limits and workers are in **`sequence_cache`** in **`defaults.yaml`**. UC/CAP clustering does **not** apply PCA before k-means (removed); CAP features are cluster abundances from raw transformed sequence features.
 - Scratch experiment JSON outputs are written under **`results/scratch/`** (gitignored); finalized artifacts are manually selected/copied into version-controlled `results/...`.
 
 ## Shared split assignment
@@ -53,6 +55,6 @@ alwaysApply: true
 
 - Use **AUROC** in prose, comments, docstrings, logs, and user-facing messages — not “ROC AUC”, “ROC-AUC”, or bare “AUC” when you mean area under the ROC curve.
 - In code and JSON keys, use snake_case **`auroc`** (for example `metrics.test.auroc`, `metrics.holdout.auroc`, `binary_auroc_from_scores`).
-- **`tuning_metric`** selects the validation objective for hyperparameter search and checkpointing. Allowed values: **`auroc`** and **`f1`** (`fit_classifier` and `train_hyenadna`); **`fit_classifier`** also supports **`accuracy`**. Do not use removed names **`f1_weighted`** or **`f1_macro`**.
+- **`tuning_metric`** selects the validation objective for hyperparameter search and checkpointing (default **`auroc`** in both **`fit_classifier`** and **`train_hyenadna`**). Allowed values: **`auroc`** and **`f1`**. Do not use removed names **`f1_weighted`**, **`f1_macro`**, or **`accuracy`**.
 - **`f1`** means **binary positive-class F1** at threshold **0.5** on the positive-class score. HyenaDNA: `HeadScores.f1` and per-epoch `*_training.json` keys `val_f1`, `test_f1`, `holdout_f1` (or `*_cd` / `*_ct` in multitask). Classical ML: same positive-class convention as `binary_auroc_from_scores` (lexicographically second class in the split when `positive_label` is omitted).
 - HyenaDNA console logs append **`best_epoch=N`** on each epoch line (best validation `tuning_metric` so far). Final results JSON still reports test/holdout **AUROC**; `*_training.json` holds per-epoch loss, F1, and AUROC.

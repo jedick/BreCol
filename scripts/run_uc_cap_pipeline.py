@@ -33,7 +33,6 @@ import numpy as np
 import pandas as pd
 import yaml
 from sklearn.cluster import MiniBatchKMeans
-from sklearn.decomposition import PCA
 
 from cache_operations import (
     EmbeddingCacheReader,
@@ -82,54 +81,16 @@ def _cache_root(
         raise SystemExit(f"Invalid pipeline config for {kind} cache path: {exc}") from exc
 
 
-def _parse_pca_variance(raw: object) -> Optional[float]:
-    """Return None to skip PCA, or a float in (0, 1) for explained-variance ratio."""
-    if raw is None:
-        return None
-    if isinstance(raw, bool):
-        raise SystemExit("pca_variance must be null, 1, or a float in (0, 1).")
-    if isinstance(raw, int):
-        if raw == 1:
-            return None
-        raise SystemExit(
-            "pca_variance must be null, 1, or a float in (0, 1); "
-            f"got integer {raw} (use pca_components for a fixed component count)."
-        )
-    if isinstance(raw, float):
-        if raw == 1.0:
-            raise SystemExit(
-                "pca_variance 1.0 is not valid for sklearn PCA "
-                "(use null or integer 1 to disable PCA, or a float in (0, 1))."
-            )
-        if not (0.0 < raw < 1.0):
-            raise SystemExit("pca_variance must be null, 1, or a float in (0, 1).")
-        return raw
-    raise SystemExit(
-        f"pca_variance must be null, 1, or a float in (0, 1); got {type(raw).__name__}."
-    )
-
-
 def fit_uc_model(
     X: np.ndarray,
     *,
     n_clusters: int,
     random_state: int,
     transform: SequenceTransform,
-    pca_components: Optional[int],
-    pca_variance: Optional[float],
     batch_size: int,
     max_iter: int,
-) -> Tuple[MiniBatchKMeans, Optional[PCA], np.ndarray]:
-    X_t = transform.transform(X)
-    if pca_components is not None:
-        pca = PCA(n_components=pca_components, random_state=random_state)
-        X_fit = pca.fit_transform(X_t)
-    elif pca_variance is not None:
-        pca = PCA(n_components=pca_variance, random_state=random_state)
-        X_fit = pca.fit_transform(X_t)
-    else:
-        pca = None
-        X_fit = X_t
+) -> Tuple[MiniBatchKMeans, np.ndarray]:
+    X_fit = transform.transform(X)
 
     km = MiniBatchKMeans(
         n_clusters=n_clusters,
@@ -140,19 +101,16 @@ def fit_uc_model(
     )
     km.fit(X_fit)
     labels = km.predict(X_fit)
-    return km, pca, labels
+    return km, labels
 
 
 def assign_matrix(
     X_counts: np.ndarray,
     *,
     transform: SequenceTransform,
-    pca: Optional[PCA],
     km: MiniBatchKMeans,
 ) -> np.ndarray:
     X_t = transform.transform(X_counts)
-    if pca is not None:
-        X_t = pca.transform(X_t)
     return km.predict(X_t)
 
 
@@ -175,7 +133,6 @@ def build_cap_from_cache(
     run_keys: Sequence[Tuple[str, str]],
     n_cap: int,
     transform: SequenceTransform,
-    pca: Optional[PCA],
     km: MiniBatchKMeans,
     n_clusters: int,
 ) -> Dict[Tuple[str, str], np.ndarray]:
@@ -189,7 +146,7 @@ def build_cap_from_cache(
         if X.shape[0] == 0:
             continue
         n = min(n_cap, X.shape[0])
-        cluster_ids = assign_matrix(X[:n], transform=transform, pca=pca, km=km)
+        cluster_ids = assign_matrix(X[:n], transform=transform, km=km)
         update_run_cluster_counts(
             run_cluster_counts, (study_name, run), cluster_ids, n_clusters
         )
@@ -200,8 +157,6 @@ def build_cap_from_cache(
 def make_cap_dataframe(
     run_cluster_counts: Dict[Tuple[str, str], np.ndarray],
     n_clusters: int,
-    cap_transform: str,
-    clr_pseudocount: float,
 ) -> pd.DataFrame:
     cluster_cols = [f"cluster_{i:03d}" for i in range(n_clusters)]
     rows: List[Dict[str, object]] = []
@@ -210,9 +165,6 @@ def make_cap_dataframe(
         abund = counts.astype(np.float64)
         if total > 0:
             abund /= total
-        if cap_transform == "clr":
-            abund = np.log(abund + clr_pseudocount)
-            abund = abund - abund.mean()
         row: Dict[str, object] = {
             "study_name": study_name,
             "Run": run,
@@ -360,11 +312,9 @@ def _fit_uc_from_cache(
     n_clusters: int,
     random_state: int,
     transform: SequenceTransform,
-    pca_components: Optional[int],
-    pca_variance: Optional[float],
     batch_size: int,
     max_iter: int,
-) -> Tuple[MiniBatchKMeans, Optional[PCA], List[Tuple[str, str, int, int]]]:
+) -> Tuple[MiniBatchKMeans, List[Tuple[str, str, int, int]]]:
     X_parts: List[np.ndarray] = []
     run_slices: List[Tuple[str, str, np.ndarray, int]] = []
     for study_name, run in train_keys:
@@ -379,13 +329,11 @@ def _fit_uc_from_cache(
     if not X_parts:
         raise SystemExit("No UC training sequences found in tetramer cache for train runs.")
     X_all = np.vstack(X_parts)
-    km, pca, labels = fit_uc_model(
+    km, labels = fit_uc_model(
         X_all,
         n_clusters=n_clusters,
         random_state=random_state,
         transform=transform,
-        pca_components=pca_components,
-        pca_variance=pca_variance,
         batch_size=batch_size,
         max_iter=max_iter,
     )
@@ -397,7 +345,7 @@ def _fit_uc_from_cache(
                 (study_name, run, int(seq_index[i]), int(labels[offset + i]))
             )
         offset += n
-    return km, pca, assignment_rows
+    return km, assignment_rows
 
 
 def run_pipeline_from_merged(
@@ -419,14 +367,8 @@ def run_pipeline_from_merged(
         n_cap = _parse_n_cap(merged["n_cap"])
         n_clusters = int(merged["n_clusters"])
         random_state = int(merged["random_state"])
-        pca_variance = _parse_pca_variance(merged.get("pca_variance"))
-        pca_components = merged.get("pca_components")
-        if pca_components is not None:
-            pca_components = int(pca_components)
         seq_normalize = bool(merged["seq_normalize"])
         seq_log1p = bool(merged["seq_log1p"])
-        cap_transform = str(merged["cap_transform"]).strip()
-        clr_pseudocount = float(merged["clr_pseudocount"])
         batch_size = int(merged["batch_size"])
         max_iter = int(merged["max_iter"])
         uc_root_key = "embedding_uc_cap_root" if use_embeddings else "tetramer_uc_cap_root"
@@ -434,17 +376,10 @@ def run_pipeline_from_merged(
     except (KeyError, TypeError, ValueError) as exc:
         raise SystemExit(f"Invalid merged run_uc_cap_pipeline config: {exc}") from exc
 
-    if cap_transform not in ("none", "clr"):
-        raise SystemExit(f"cap_transform must be 'none' or 'clr', got {cap_transform!r}")
-
     if n_uc <= 0:
         raise SystemExit("n_uc must be positive.")
     if n_clusters <= 1:
         raise SystemExit("n_clusters must be > 1.")
-    if pca_components is not None and pca_components <= 0:
-        raise SystemExit("pca_components must be positive when provided.")
-    if clr_pseudocount <= 0:
-        raise SystemExit("clr_pseudocount must be positive.")
     if batch_size <= 0 or max_iter <= 0:
         raise SystemExit("batch_size and max_iter must be positive.")
 
@@ -508,7 +443,6 @@ def run_pipeline_from_merged(
         with open(model_out, "rb") as f:
             model_payload = pickle.load(f)
         km = model_payload["kmeans"]
-        pca = model_payload["pca"]
         if int(km.n_clusters) != n_clusters:
             _uc_refit_error(
                 uc_dir,
@@ -549,15 +483,13 @@ def run_pipeline_from_merged(
             f"UC fit (train runs): {len(train_keys)} runs, up to {n_uc} sequences each",
             flush=True,
         )
-        km, pca, assignment_rows = _fit_uc_from_cache(
+        km, assignment_rows = _fit_uc_from_cache(
             cache=cache,
             train_keys=train_keys,
             n_uc=n_uc,
             n_clusters=n_clusters,
             random_state=random_state,
             transform=transform,
-            pca_components=pca_components,
-            pca_variance=pca_variance,
             batch_size=batch_size,
             max_iter=max_iter,
         )
@@ -567,7 +499,6 @@ def run_pipeline_from_merged(
             pickle.dump(
                 {
                     "kmeans": km,
-                    "pca": pca,
                     "transform": {
                         "normalize": transform.normalize,
                         "log1p": transform.log1p,
@@ -583,12 +514,6 @@ def run_pipeline_from_merged(
         pd.read_csv(uc_assign_out, usecols=["cluster_id"])["cluster_id"].nunique()
     )
     print(f"UC training sequences: {uc_n_seqs}", flush=True)
-    if pca is None:
-        print("PCA: disabled", flush=True)
-        pca_components_used = None
-    else:
-        print(f"PCA components retained: {pca.n_components_}", flush=True)
-        pca_components_used = int(pca.n_components_)
 
     print("Building CAP", flush=True)
     run_cluster_counts = build_cap_from_cache(
@@ -596,17 +521,11 @@ def run_pipeline_from_merged(
         run_keys=all_keys,
         n_cap=n_cap,
         transform=transform,
-        pca=pca,
         km=km,
         n_clusters=n_clusters,
     )
 
-    cap_df = make_cap_dataframe(
-        run_cluster_counts,
-        n_clusters=n_clusters,
-        cap_transform=cap_transform,
-        clr_pseudocount=clr_pseudocount,
-    )
+    cap_df = make_cap_dataframe(run_cluster_counts, n_clusters=n_clusters)
     cap_df = cap_df.merge(
         run_meta[["cancer_type", "study_name", "Run", "sample_label", "split"]]
         .drop_duplicates(subset=["study_name", "Run"]),
@@ -621,9 +540,7 @@ def run_pipeline_from_merged(
         run_cluster_counts
     )
 
-    cap_name = (
-        f"cap{n_cap}" if cap_transform == "none" else f"cap{n_cap}_{cap_transform}"
-    )
+    cap_name = f"cap{n_cap}"
     cap_out = uc_dir / f"{cap_name}.csv"
     config_out = uc_dir / f"{cap_name}.json"
 
@@ -643,13 +560,8 @@ def run_pipeline_from_merged(
                 "n_cap": n_cap,
                 "n_clusters": n_clusters,
                 "random_state": random_state,
-                "pca_components": pca_components,
-                "pca_variance": pca_variance,
-                "pca_components_used": pca_components_used,
                 "seq_normalize": transform.normalize,
                 "seq_log1p": transform.log1p,
-                "cap_transform": cap_transform,
-                "clr_pseudocount": clr_pseudocount,
                 "batch_size": batch_size,
                 "max_iter": max_iter,
                 "cap_output_csv": str(cap_out),

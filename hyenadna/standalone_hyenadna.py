@@ -4,8 +4,17 @@
 # Local modifications:
 #   - Create vocabulary dictionaries before super().__init__()
 #   - Add get_vocab() method - fixes NotImplementedError for inference_single()
-#   - Add head_pooling_mode parameter
-# Modified by: Jeffrey Dick
+#   - Add head_pooling_mode parameter to SequenceDecoder / HyenaDNAModel
+#   - Optional MLP classification head: head_hidden, head_dropout on SequenceDecoder
+#     (0 = linear head; positive int = Linear -> GELU -> Dropout -> Linear)
+#   - Split SequenceDecoder pooling from logits: pooled_representation() then output_transform
+#   - Fix pool mode: use sliding-window mean restrict only (old file assigned a wrong
+#     cumsum/arange lambda before the correct restrict, so pool mode was broken)
+#   - Multitask classification: multitask_class_counts builds a shared pooler plus
+#     per-task heads (_build_classification_output); forward returns a list of logits
+#   - HyenaDNAModel._pooled_representation() for shared pooling; single-task forward
+#     applies head.output_transform(pooled) after pooling
+# Modified by: Jeffrey Dick with AI assistance
 
 # -*- coding: utf-8 -*-
 """HyenaDNA training & inference example (Public)

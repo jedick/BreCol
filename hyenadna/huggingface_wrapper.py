@@ -3,8 +3,13 @@
 # Source Colab notebook: HyenaDNA training & inference example (Public)
 # Source URL: https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL
 # Local modifications:
-#   - Change imports
-#   - Use weights_only=False for torch.load()
+#   - Remove genomic-benchmarks import
+#   - Relative import of HyenaDNAModel (model code not inlined in this file)
+#   - Use weights_only=False for torch.load() (PyTorch >= 2.6)
+#   - from_pretrained: pass head_hidden, head_dropout, multitask_class_counts through to
+#     HyenaDNAModel (optional MLP head and multitask logits; see standalone_hyenadna.py)
+#   - download=False (default): use local weights when paths.checkpoint_dir/<model>/ exists;
+#     clone from Hugging Face if missing. download=True forces rm + re-clone when present.
 # Modified by: Jeffrey Dick
 
 #@title Huggingface Pretrained Wrapper
@@ -86,19 +91,26 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
         return self.model(input_ids, **kwargs)
 
     @classmethod
-    def from_pretrained(cls,
-                        path,
-                        model_name,
-                        download=False,
-                        config=None,
-                        device='cpu',
-                        use_head=False,
-                        n_classes=2,
-                        head_pooling_mode="pool",
-                        head_hidden=0,
-                        head_dropout=0.0,
-                        multitask_class_counts: Optional[Sequence[int]] = None,
-                      ):
+    def from_pretrained(
+        cls,
+        path,
+        model_name,
+        download=False,
+        config=None,
+        device='cpu',
+        use_head=False,
+        n_classes=2,
+        head_pooling_mode="pool",
+        head_hidden=0,
+        head_dropout=0.0,
+        multitask_class_counts: Optional[Sequence[int]] = None,
+    ):
+        """Load HyenaDNA weights from ``path`` / ``model_name``.
+
+        ``download=False`` (default): use the local directory when present; git-clone
+        from Hugging Face when missing. ``download=True``: remove an existing directory
+        and re-clone from Hugging Face.
+        """
         # first check if it is a local path
         pretrained_model_name_or_path = os.path.join(path, model_name)
         if os.path.isdir(pretrained_model_name_or_path) and download == False:

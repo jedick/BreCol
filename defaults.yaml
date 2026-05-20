@@ -7,25 +7,25 @@ paths:
   datasets_csv: datasets.csv
   data_dir: data
   fasta_dir: fasta
-  outputs_dir: outputs
-  results_dir: results
   # Ephemeral / local experiment outputs (gitignored); finalized copies go under results/
   results_scratch_dir: results/scratch
-  # Run-level tetramer frequency table (input for scripts/fit_classifier.py --tetramer).
+  # Run-level tetramer frequency table (input for scripts/fit_classifier.py --tetramer)
   tetramer_frequencies_csv: outputs/tetramer_frequencies.csv
-  # Hive-partitioned per-sequence tetramer cache (scripts/build_tetramer_cache.py).
+  # Hive-partitioned per-sequence tetramer cache (scripts/build_tetramer_cache.py)
   tetramer_cache_dir: outputs/tetramer_cache
-  # UC/CAP cluster outputs from tetramer counts (scripts/run_uc_cap_pipeline.py, EMB=0).
+  # UC/CAP cluster outputs from tetramer counts (scripts/run_uc_cap_pipeline.py, EMB=0)
   tetramer_uc_cap_root: outputs/tetramer_uc_cap
-  # Hive-partitioned per-sequence HyenaDNA embeddings (scripts/build_embedding_cache.py).
+  # Hive-partitioned per-sequence HyenaDNA embeddings (scripts/build_embedding_cache.py)
   embedding_cache_dir: outputs/embedding_cache
-  # UC/CAP cluster outputs from embeddings (scripts/run_uc_cap_pipeline.py, EMB=1).
+  # UC/CAP cluster outputs from embeddings (scripts/run_uc_cap_pipeline.py, EMB=1)
   embedding_uc_cap_root: outputs/embedding_uc_cap
-  # Feature-only per-run HyenaDNA tensors from scripts/build_run_tensors.py.
+  # Feature-only per-run HyenaDNA tensors from scripts/build_run_tensors.py
   run_tensors_dir: outputs/run_tensors
+  # HyenaDNA weights root (subdir per model; cloned from Hugging Face if missing on first load)
+  checkpoint_dir: checkpoints
 
 shared_splits:
-  ## Canonical Run -> train/val/test/holdout assignment.
+  ## Canonical Run -> train/val/test/holdout assignment
   random_state: 0
   train_fraction: 0.70
   val_fraction: 0.15
@@ -33,168 +33,139 @@ shared_splits:
 
 sequence_cache:
   ## Sequence selection (tetramer/embedding caches and run_tensors)
-  # Drop this many leading sequences per run before sampling; runs with fewer rows are skipped.
+  # Drop this many leading sequences per run before sampling; runs with fewer rows are skipped
   seq_offset: 1000
-  # Minimum sequences after seq_offset; runs with fewer sequences are skipped.
+  # Minimum sequences after seq_offset; runs with fewer sequences are skipped
   min_seqs: 1000
-  # Sequence selection after offset: head (first rows) or random (deterministic per Run).
+  # Sequence selection after offset: head (first rows) or random (deterministic per Run)
   sample_mode: random
-  # Base seed when sample_mode is random (combined with a per-Run hash).
+  # Base seed when sample_mode is random (combined with a per-Run hash)
   sampling_seed: 0
 
   ## Tetramer and embedding caches only (run_tensors uses separate config)
-  # Max sequences per run after seq_offset.
+  # Max sequences per run after seq_offset
   n_max_per_run: 5000
-  # Compression: zstd or snappy (faster, larger files than zstd).
+  # Compression: zstd or snappy (faster, larger files than zstd)
   parquet_compression: zstd
-  # tetramer_cache: parallel worker processes (one run per process).
-  # embedding_cache on CPU: parallel runs (one HyenaDNA model per process).
-  # embedding_cache on GPU: one GPU process; max_workers is ignored.
+  # tetramer_cache: parallel worker processes (one run per process)
+  # embedding_cache on CPU: parallel runs (one HyenaDNA model per process)
+  # embedding_cache on GPU: one GPU process; max_workers is ignored
   max_workers: 8
 
   ## HyenaDNA embedding cache (build_embedding_cache.py)
   model: hyenadna-small-32k-seqlen
-  # Sequences per GPU/CPU forward pass within a run (independent rows, left-padded).
+  # Sequences per GPU/CPU forward pass within a run (independent rows, left-padded)
   # Batch size 300 maxes out at about 14 GB GPU RAM (for study YTK+26)
   embedding_batch_size: 300
-  # Reduce backbone hidden states per sequence: masked_mean (default) or last (causal).
+  # Reduce backbone hidden states per sequence: masked_mean (default) or last (causal)
   sequence_reduce: masked_mean
-  # Optional overrides; null uses train_hyenadna.checkpoint_dir / download_pretrained.
-  checkpoint_dir: null
-  download_pretrained: null
-  # Device for embedding_cache: cuda, cpu, or null / auto.
+  # Device for embedding_cache: cuda, cpu, or null / auto
   device: null
 
-# Classifier training defaults (scripts/fit_classifier.py).
-# Optional --expt overlays fit_classifier.exeriments config (from experiments.yaml).
-# Optional --feat (UC/CAP only) selects run_uc_cap_pipeline rows merged over this baseline.
+# Classifier training defaults (scripts/fit_classifier.py)
+# Optional --expt overlays fit_classifier.experiments (from experiments.yaml)
+# Optional --feat (UC/CAP only) selects run_uc_cap_pipeline rows merged over this baseline
 fit_classifier:
-  # Classifier family: baseline, knn, random_forest, logistic_regression, svm.
+  # Classifier family: baseline, knn, random_forest, svm
   model: knn
-  # Binary task: cancer_diagnosis or cancer_type.
+  # Binary task: cancer_diagnosis or cancer_type
   task: cancer_diagnosis
-  # Random seed for PCA and model initialization.
+  # Random seed for PCA and model initialization
   random_state: 0
-  # Whether StandardScaler is applied before PCA.
-  use_scaler: true
-  # Whether CLR is applied before scaler/PCA.
+  # Whether CLR is applied before scaler/PCA
   use_clr: true
-  # Additive constant before log in CLR.
+  # Additive constant before log in CLR
   clr_pseudocount: 1.0e-6
-  # Minimum cumulative explained variance for PCA candidate grid.
-  pca_min_variance: 0.95
-  # Comma-separated KNN n_neighbors grid.
-  n_neighbors_grid: "5,15"
-  # Comma-separated KNN weights grid.
-  weights_grid: "uniform,distance"
-  # Comma-separated random forest n_estimators grid.
-  rf_n_estimators_grid: "200,500"
-  # Comma-separated random forest max_depth grid (use 'none' for unlimited).
-  rf_max_depth_grid: "none,10"
-  # Comma-separated random forest min_samples_leaf grid.
-  rf_min_samples_leaf_grid: "1,2"
-  # Comma-separated logistic regression C grid.
-  lr_c_grid: "0.1,1.0,10.0"
-  # Comma-separated logistic regression solver grid.
-  lr_solver_grid: "lbfgs,liblinear"
-  # Comma-separated logistic regression class_weight grid (use 'none' for default).
-  lr_class_weight_grid: "none,balanced"
-  # Comma-separated SVM RBF/linear/etc. C grid.
-  svm_c_grid: "1.0,10.0"
-  # Comma-separated SVM gamma grid (sklearn string tokens scale/auto or floats).
-  svm_gamma_grid: "scale"
-  # Comma-separated SVM kernel grid.
-  svm_kernel_grid: "rbf"
-  # Metric to maximize on the validation split during hyperparameter tuning
-  # (accuracy | f1 | auroc).
-  tuning_metric: f1
-  # Optional output path for metrics JSON; null disables JSON output (experiments may set via template).
+  # Whether StandardScaler is applied before PCA
+  use_scaler: true
+  # Metric to maximize on the validation split during hyperparameter tuning (auroc | f1).
+  tuning_metric: auroc
+  # Optional output path for metrics JSON; null disables JSON output
   results_json: null
+
+  # Hyperparameter grids: YAML lists (a scalar is OK for one value; not comma-separated strings).
+  # n_components_grid: KNN/SVM only (none = all components; float in (0, 1] = variance ratio).
+  n_components_grid: [none, 0.95]
+  # knn_*_grid: KNN only
+  knn_n_neighbors_grid: [5, 15]
+  knn_weights_grid: [uniform, distance]
+  # rf_*_grid: random forest only (none in rf_max_depth_grid = unlimited depth)
+  rf_n_estimators_grid: [200, 500]
+  rf_max_depth_grid: [none, 10]
+  rf_min_samples_leaf_grid: [1, 2]
+  # svm_*_grid: SVM only
+  svm_c_grid: [1.0, 10.0]
+  svm_gamma_grid: [scale]
+  svm_kernel_grid: [rbf]
 
 # Baseline UC/CAP pipeline parameters. The script takes only --feat; list entries here are
 # merged in order into one baseline dict, then experiments.yaml rows merge over that for --feat >= 1 (Makefile FEAT=...).
 run_uc_cap_pipeline:
-  # n_uc: Cached sequences per train run for UC (MiniBatchKMeans).
-  # n_clusters: K for k-means (number of cluster centroids / CAP feature dimension).
-  # n_cap: Sequences per run for CAP (must be <= sequence_cache.n_max_per_run).
+  # n_uc: Cached sequences per train run for UC (MiniBatchKMeans)
+  # n_clusters: K for k-means (number of cluster centroids / CAP feature dimension)
+  # n_cap: Sequences per run for CAP (must be <= sequence_cache.n_max_per_run)
   - { n_uc: 10, n_clusters: 20, n_cap: 50 }
-  # Remaining keys (second list fragment merges over the triple above).
-  - random_state: 0 # Random seed for PCA and MiniBatchKMeans.
-    # Tetramer UC/CAP only: normalize each sequence 4-mer vector to relative frequencies.
-    # Ignored for embedding UC/CAP (EMB=1).
+  # Remaining keys (second list fragment merges over the triple above)
+  - random_state: 0 # Random seed for MiniBatchKMeans
+    # Tetramer UC/CAP only: normalize each sequence 4-mer vector to relative frequencies
+    # Ignored for embedding UC/CAP (EMB=1)
     seq_normalize: true
-    # Tetramer UC/CAP only: log1p after optional per-sequence normalization. Ignored for EMB=1.
+    # Tetramer UC/CAP only: log1p after optional per-sequence normalization. Ignored for EMB=1
     seq_log1p: false
-    # Fixed PCA component count before k-means; non-null overrides pca_variance.
-    pca_components: null
-    # PCA explained-variance ratio (float in (0, 1); null or 1 disables PCA).
-    pca_variance: null
-    # MiniBatchKMeans batch size.
+    # MiniBatchKMeans batch size
     batch_size: 8192
-    # MiniBatchKMeans max iterations.
+    # MiniBatchKMeans max iterations
     max_iter: 200
-    # Post-aggregation transform on run-level CAP vectors: none or clr.
-    cap_transform: none
-    # Pseudocount added to proportions when cap_transform is clr.
-    clr_pseudocount: 1.0e-6
 
-# Feature-only run tensor cache (scripts/build_run_tensors.py).
-# One .pt file per run under paths.run_tensors_dir/.
+# Feature-only run tensor cache (scripts/build_run_tensors.py)
+# One .pt file per run under paths.run_tensors_dir/
 run_tensors:
-  # If set, cap the number of post-offset sequences considered per run before set packing.
-  # null uses all available post-offset sequences.
+  # If set, cap the number of post-offset sequences considered per run before set packing
+  # null uses all available post-offset sequences
   max_sequences_per_run: null
-  # If true, remove exact duplicate sequence strings per run before sampling/packing.
+  # If true, remove exact duplicate sequence strings per run before sampling/packing
   deduplicate_sequences: false
-  # Number of set rows in each cached tensor; non-overlapping sequence groups (see max_length).
+  # Number of set rows in each cached tensor; non-overlapping sequence groups (see max_length)
   num_sets: 5
-  # Per-set DNA character budget when packing FASTA records; train_hyenadna.max_length must not exceed this.
+  # Per-set DNA character budget when packing FASTA records; train_hyenadna.max_length must not exceed this
   max_length: 32768
-  # Parallel worker processes for FASTA -> .pt (1 runs jobs sequentially).
+  # Parallel worker processes for FASTA -> .pt (1 runs jobs sequentially)
   max_workers: 8
 
-# HyenaDNA fine-tuning (scripts/train_hyenadna.py).
-# Optional --expt overlays train_hyenadna.experiments in experiments.yaml (1-based index).
+# HyenaDNA fine-tuning (scripts/train_hyenadna.py)
+# Optional --expt overlays train_hyenadna.experiments in experiments.yaml (1-based index)
 train_hyenadna:
-  ## Model
-  # Pretrained checkpoint name under checkpoint_dir (see LongSafari/* on Hugging Face).
+  ## Model/device
+  # Pretrained checkpoint name under paths.checkpoint_dir
   model: hyenadna-small-32k-seqlen
-  # Directory with downloaded HyenaDNA weights (see HyenaDNAPreTrainedModel.from_pretrained).
-  checkpoint_dir: checkpoints
-  # If true, git clone weights from Hugging Face when missing locally.
-  download_pretrained: false
+  # Device: cuda, cpu, or null / auto for torch.cuda.is_available()
+  device: null
+  # Optional mixed precision on CUDA. When false, training runs in float32
+  amp: true
+  # Low-precision dtype for AMP autocast: float16 or bfloat16
+  amp_dtype: bfloat16
 
   ## Data
-  # Non-overlapping sequence sets per Run (each set packed to max_length tokens).
+  # Non-overlapping sequence sets per Run (each set packed to max_length tokens)
   num_sets: 5
-  # Max sequence length; null = use bundled default for model (e.g. 1024 / 32768).
+  # Max sequence length; null = use bundled default for model (e.g. 1024 / 32768)
   max_length: 2048
-  # Batch size accepts a positive integer, or exactly 0.5 to train one run at a time
-  # with two micro-passes over set slices [0:5] and [5:10] (requires num_sets: 10).
   batch_size: 80
 
   ## Task/tuning
-  # Task: cancer_diagnosis, cancer_type, or multitask (two heads, shared backbone).
+  # Task: cancer_diagnosis, cancer_type, or multitask (two heads, shared backbone)
   task: multitask
-  # Validation metric used to pick the best epoch: auroc | f1.
+  # Validation metric used to pick the best epoch: auroc | f1
   tuning_metric: auroc
-  # multitask: loss = loss_ratio * L_diagnosis + (1 - loss_ratio) * L_type (1 = diagnosis only).
+  # multitask: loss = loss_ratio * L_diagnosis + (1 - loss_ratio) * L_type (1 = diagnosis only)
   loss_ratio: 0.5
-  # multitask: validation checkpoint blends diagnosis vs type scores (1 = diagnosis only, 0 = type only, 0.5 = equal weight).
+  # multitask: validation checkpoint blends diagnosis vs type scores (1 = diagnosis only, 0 = type only, 0.5 = equal weight)
   tuning_ratio: 0.5
   
-  ## Device
-  # Device: cuda, cpu, or null / auto for torch.cuda.is_available().
-  device: null
-  # Optional mixed precision on CUDA. When false, training runs in float32.
-  amp: true
-  # Low-precision dtype for AMP autocast: float16 or bfloat16.
-  amp_dtype: bfloat16
-  
   ## Sampling/weighting
-  # train sampler: random | study_balanced (approximate uniform sampling over study_name).
+  # train sampler: random | study_balanced (approximate uniform sampling over study_name)
   train_sampler: study_balanced
-  # Class weights: none | balanced | balanced_sqrt (tempered inverse frequency).
+  # Class weights: none | balanced | balanced_sqrt (tempered inverse frequency)
   class_weight: none
 
   ## Optimization
@@ -203,21 +174,21 @@ train_hyenadna:
   num_workers: 0
   learning_rate: 2.0e-4
   weight_decay: 0.01
-  # Backbone freezing: 0 = train backbone from epoch 1; N > 0 freezes epochs 1..N then unfreezes.
-  # If N >= epochs, the entire run is head-only.
+  # Backbone freezing: 0 = train backbone from epoch 1; N > 0 freezes epochs 1..N then unfreezes
+  # If N >= epochs, the entire run is head-only
   freeze_backbone_epochs: 10
-  # lr_backbone = learning_rate * backbone_lr_mult; heads use learning_rate unchanged (1.0 = no scale).
+  # lr_backbone = learning_rate * backbone_lr_mult; heads use learning_rate unchanged (1.0 = no scale)
   backbone_lr_mult: 1.0
 
   ## Classification head / heads (for multitask)
-  # 0 = linear head; positive int = one MLP hidden layer width.
+  # 0 = linear head; positive int = one MLP hidden layer width
   head_hidden: 512
-  # Dropout after the MLP hidden GELU (ignored when head_hidden is 0).
+  # Dropout after the MLP hidden GELU (ignored when head_hidden is 0)
   head_dropout: 0.0
-  # SequenceDecoder head mode in hyenadna/standalone_hyenadna.py: last, first, pool, sum.
+  # SequenceDecoder head mode in hyenadna/standalone_hyenadna.py: last, first, pool, sum
   head_pooling_mode: pool
 
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
-  # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template.
+  # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template
   results_json: null
 
