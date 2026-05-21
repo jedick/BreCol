@@ -1,5 +1,5 @@
 ---
-title: "BreCol: Cancer classification benchmark using gut microbiome data"
+title: "BreCol: Cancer classification benchmark and reference-free baseline with gut microbiome data"
 author: "Jeffrey M. Dick"
 bibliography: references.bib
 csl: csl/nature.csl
@@ -14,14 +14,15 @@ We present BreCol, a temporally structured multi-study compilation of 2,040 16S 
 breast cancer, colorectal cancer, and healthy cohorts across 26 studies spanning more than a decade.
 By reserving the six most recent studies per cancer type as an external holdout,
 we ensure that holdout evaluation reflects deployment on data from new laboratories, clinical protocols, and geographic regions.
-We train four classifier pipelines: classical (tetramer counts aggregated to run-level frequencies or unsupervised-clustered for cluster abundance profiles (UC/CAP)),
+We train four classifier pipelines: classical (tetramer counts aggregated to run-level frequencies or
+unsupervised clustering with cluster abundance profiles (UC/CAP)),
 deep learning (HyenaDNA modeling with pooled representation over sequences in the context), and hybrid (sequence-level HyenaDNA embeddings with UC/CAP profiles).
-Against the BreCol benchmark, in-study test AUC for cancer type prediction falls by more than 0.4 points on holdout for the best classical classifier,
-confirming that conventional evaluation dramatically inflates apparent model skill.
-Among classical methods, UC/CAP achieves the strongest holdout performance (AUC 0.783 for cancer type with KNN, 0.664 for cancer diagnosis with SVM).
-Compared to run-level tetramer freuqencies, HyenaDNA sequence modeling shows greater performance for both diagnosis and type classification,
-but shows substantial seed-to-seed variance [TODO: explain this better].
-Finally, combining HyenaDNA's embeddings with cluster abundance profiles leverages complementary information in a hybrid architecture, [TODO: insert results].
+Among classical methods, UC/CAP achieves the strongest holdout performance (AUC 0.84 for cancer type with KNN, 0.61 for cancer diagnosis with SVM).
+The differential between test (in-study) and holdout AUC is at least 0.1 points for cancer diagnosis and 0.15 points for cancer type prediction
+for the best classical classifier, confirming that conventional evaluation inflates apparent model skill.
+A pure deep-learning pipeline with HyenaDNA performs relatively poorly, perhaps due to aggregated representation of sequences before the classification layer.
+Finally, a hybrid architecture combining HyenaDNA's embeddings with cluster abundance profilaes achieves comparable
+results to the parallel all-classical pipeline with tetramer features.
 Our benchmark and associated code are publicly available to support reproducible, credible evaluation of microbiome-based cancer classifiers.
 
 ## Introduction
@@ -44,8 +45,8 @@ A deeper problem, however, arises when test sets are constructed by random sampl
 This creates optimistically biased performance estimates that do not reflect real-world deployment.
 In microbiome studies the bias is especially severe because technical factors (e.g. primer choice and sequencing platform) and
 regional microbiome variation introduce large study-level signals that a model can exploit without learning any biology [@WSNP22].
-As a specific example, Sun et al. [@SHL+25] found lower AUC for leave-one-dataset-out (LODO) than for cross-validation
-in CRC prediction from 16S- and metagenome-based taxonomic profiles.
+As a specific example, Sun et al. [@SHL+25] found lower AUC for leave-one-dataset-out (LODO) than for cross-validation (CV)
+in CRC prediction from 16S-based taxonomic profiles (average AUC for CV: 0.82, LODO: 0.77).
 
 This problem is exacerbated for cancer type prediction (a different task from cancer vs healthy prediction).
 Breast and colorectal cancer samples almost always come from entirely separate studies,
@@ -68,11 +69,11 @@ then profiling the cluster affiliation of a large number of sequences from each 
 This method is analogous in purpose to operational taxonomic unit (OTU)-based approaches but is reference-free;
 that is, it operates entirely on sequence composition without taxonomic assignment.
 
-For deep learning we use HyenaDNA [@NPF+23], a long-range genomic sequence model pre-trained on the human reference genome.
+For deep learning we use HyenaDNA [@NPF+23], a long-range genomic sequence model pretrained on the human reference genome.
 We first train a multilayer perceptron (MLP) classification head.
 Becuase this head pools logits from all sequences in a run, it is unable capture with-run compositional structure
 (a similar problem to run-level aggregation of tetramer frequencies).
-Therefore, our final classification pipeline is a hybrid that uses fixed embeddings from the pre-trained HyenaDNA model.
+Therefore, our final classification pipeline is a hybrid that uses fixed embeddings from the pretrained HyenaDNA model.
 These embeddings are retrieved for each sequence then used as the feature store for UC/CAP processing and downstream classification.
 
 Our main contributions are (1) a rigorously curated, temporally structured multi-study benchmark for microbiome-based cancer classification
@@ -167,41 +168,37 @@ Table 2 lists the hyperparameter values used for grid search.
 
 | Model | Hyperparameters |
 |-|-|
-| KNN | PCA n_components (none, 0.95), n_neighbors (5, 15), weights (uniform, distance) |
+| KNN | PCA n_components (none, 0.95), n_neighbors (5, 15) |
 | SVM | PCA n_components (none, 0.95), C (1.0, 10.0) |
 | Random Forest | n_estimators (200, 500), max_depth (none, 10), min_samples_leaf (1, 2) |
 
 : Classifier models and hyperparameter grids used in run-level tetramer frequency classification and in UC/CAP classification for both tetramer counts and HyenaDNA embeddings.
 
-For KNN and SVM we applied a centered log-ratio transform (CLR), standardized the CLR coordinates, then applied PCA.
-We tuned the PCA components, number of neighbors, and distance weighting by grid search on the validation split only.
-
-For random forest, we used the same CLR and standardization but omitted PCA.
-We tuned the number of trees, maximum tree depth, and minimum samples per leaf on the validation split.
-
-For SVM, we applied the same CLR, standardization, and PCA construction as for KNN,
-then fit an RBF-kernel SVM, jointly tuning the PCA component count and penalty parameter *C* on the validation split.
+For both KNN and SVM we applied a centered log-ratio transform (CLR), standardized the CLR coordinates, then applied PCA.
+For KNN we used inverse distance weighting and tuned the PCA components and number of neighbors.
+For SVM, we used an RBF kernel and tuned the PCA components and penalty parameter *C*.
 The kernel width parameter *gamma* was left at scikit-learn's default ('scale').
 
-After selecting hyperparameters using area under the receiver operating characteristic (ROC) curve (AUC) on the validation split, we fit each final pipeline on the training split.
+For random forest, we used the same CLR and standardization but omitted PCA.
+We tuned the number of trees, maximum tree depth, and minimum samples per leaf.
+
+After selecting hyperparameters using area under the receiver operating characteristic (ROC) curve (AUC) by grid search on the validation split,
+we fit each final pipeline on the training split.
 
 ### HyenaDNA sequence modeling and classification
 
 We trained HyenaDNA on 16S RNA sequence data to test an end-to-end sequence model.
 For each run, we read the FASTA file and split its sequences into a fixed number of non-overlapping sets.
 Each set was packed to the model length limit and tokenized at the DNA character level.
-Datasets were saved to disk so that training runs could reuse cached tensors without rebuilding the dataset each time.
 
 We initialized HyenaDNA from pretrained weights, using a multitask configuration (two MLP classification heads attached the same backbone).
-In a single forward pass, the cross-entropy loss for each task was computed separately then they were combined with a loss ratio used as a tuning parameter.
-For example, 0.7 weights the cancer diagnosis task more heavily, while 0.5 weights both tasks evenly.
-
-TODO: explain head architecture, how loss is used in backpropagation, learning rate configuration, other tuning parameters
-
-Model size (e.g. 1k or 32k context), pooling mode, learning rate, batch size, number of epochs, and backbone freezing were configured through YAML files.
+In a single forward pass, the cross-entropy loss for each task was computed separately then they were combined to weight each task equally.
 Because each run can produce multiple sequence sets, training loss was computed across all valid sets for each run.
 At evaluation, we averaged set-level logits to obtain one prediction per run,
 then computed AUC on the same test and holdout splits used for the tetramer and UC/CAP analyses.
+
+Head pooling mode was set to mean pooling, the model was trained for 10 epochs, and batch size was adjusted to maximize GPU memory utilization.
+Other hyperparameters (maximum length of sequence sets, learning rate, MLP size and dropout, and backbone unfreezing) were used for ablations.
 
 ### Cluster abundance profiles for tetramer counts
 
@@ -222,7 +219,7 @@ These CAP vectors serve as the feature matrix for supervised classification on b
 
 ### Cluster abundance profiles for HyenaDNA embeddings
 
-Our fourth classification pipeline does not perform any training of HyenaDNA but uses the pre-trained 32k model to generate embeddings.
+Our fourth classification pipeline does not perform any training of HyenaDNA but uses the pretrained 32k model to generate embeddings.
 These 256-dimensional vectors were generated for sampled sequences in each run and used to produce UC/CAP profiles just like we did for tetramer counts.
 Since embeddings can have negative values, they were standardized (or the CLR step was skipped) [TODO: check this].
 
@@ -237,6 +234,13 @@ The differences is that tetramer count is an "engineered" feature, while embeddi
 Based on this picture, we propose carrying out performance comparisons at equal levels:
 - At the run level: tetramer frequencies vs HyenaDNA sequence modeling
 - At the sequence level: tetramer counts vs HyenaDNA pretrained embeddings (both fed into UC/CAP)
+
+### Implementation
+
+The benchmark dataset is composed of CSV files with instructions and scripts for downloading data from NCBI and preprocessing.
+The project code is written in Python with YAML configuration and a Makefile-driven analysis pipeline.
+The official HyenaDNA implementation was modified for this project and structured as pip-installable package for import by analysis scripts.
+After downloading, the entire pipeline runs in ca. 22 hours on an 8 CPU core machine with 40 GB of RAM and a 16 GB NVIDIA GPU.
 
 ## Results
 
@@ -259,10 +263,9 @@ and those differences are expected to transfer, at least partially, to new studi
 
 All models exceed the majority-class baseline on the test split, with particularly large margins for cancer type prediction (Table 3).
 The holdout picture is sharply different.
-For cancer diagnosis, SVM and KNN show modest gains above baseline (0.596 and 0.563, respectively),
-while random forest falls below all other classifiers (0.541).
-For cancer type, every model collapses toward or below baseline on holdout:
-SVM reaches only 0.484 and KNN only 0.407, confirming that tetramer classifiers overfit to study-level signals when trained on single-study cancer-type data.
+For cancer diagnosis, SVM achieves a modest AUC of 0.6 while random forest and KNN fall closer to baseline.
+For cancer type, SVM reaches an AUC of 0.67 while KNN collapses to baseline on holdout.
+The stark contrast with test performance (AUC >0.9) confirms that tetramer classifiers overfit to study-level signals when trained on single-study cancer-type data.
 
 [Table 3 data](table3_tetramer.html "Test and holdout AUC for run-level tetramer frequency classification with the majority-class baseline, KNN, SVM, and random forest. Bold marks the best value per column.").
 
@@ -327,81 +330,78 @@ with the models and hyperparameter grids described above (Table 2).
 KNN consistently outperforms SVM across all six feature sets in holdout AUC for cancer diagnosis, but the pattern is reversed for cancer type (Figure 3).
 For cancer type, both models show near-perfect in-study test performance across feature sets, but holdout values drop sharply.
 
-For cancer diagnosis, SVM achieves the best holdout performance, followed by random forest and KNN (Table 6).
+![Feature-set stability for UC/CAP with tetramer counts in SVM and KNN.](figure3_tetramer_uc_cap.svg)
+
+Table 6 shows the results for the best UC/CAP feature set as judged by *test* AUC in each task,
+so we can legitimately assess holdout performance on unseen studies.
+For cancer diagnosis, SVM achieves the best holdout performance, followed by random forest and KNN.
 For cancer type, KNN leads on holdout, followed by random forest and SVM.
+
+[Table 6 data](table6_tetramer_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts, with the best feature set selected per task by test AUC.").
 
 The gap between in-study test and holdout is again large for cancer type, but UC/CAP with KNN achieves substantially higher cancer type holdout AUC
 than any tetramer-based classifier, demonstrating that richer within-run compositional features partially attenuate the study-level shortcut problem.
 
-![Feature-set stability for UC/CAP with tetramer counts in SVM and KNN.](figure3_tetramer_uc_cap.svg)
-
-[Table 6 data](table6_tetramer_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts, with the best feature set selected per task by holdout AUC.").
-
 ### Classification with cluster abundance profiles for HyenaDNA embeddings
 
 We repeated the UC/CAP pipeline on sequence-level HyenaDNA embeddings (pretrained 32k model, no fine-tuning),
-using the same six feature sets as for tetramer counts (Table 3).
+creating six feature parallel to those for tetramer counts (Table 3).
 Figure 4 shows holdout and test AUC across feature sets for SVM and random forest.
 Holdout curves are comparatively flat: neither task shows the sharp swings seen with tetramer-based profiles in Figure 3,
 suggesting that embedding CAPs are less sensitive to *K* and *n*<sub>CAP</sub> over this grid.
 
-Peak holdout AUC is similar for cluster abundance profiles built from embeddings versus tetramers (Table 7).
-For cancer diagnosis, SVM is the best model in both tables (holdout 0.636 with embeddings versus 0.626 with tetramers).
-For cancer type, random forest leads with embeddings (0.832) while KNN leads with tetramers (0.855).
-The winning feature sets differ by task and representation: for embeddings, cancer diagnosis peaks at feature set 2
-(*K* = 1000, *n*<sub>CAP</sub> = 1000) whereas cancer type peaks at feature set 5 (*K* = 2000, *n*<sub>CAP</sub> = 5000).
-This profile is consistent with SVM benefiting from lower-dimensional,
-smoother inputs while random forest can exploit richer cluster structure when separating studies in embedding space.
+Using test AUC to select the best feature set for each task, we find similar holdout AUC for tetramer- and embedding-based CAPs (Tables 6 and 7).
+For cancer diagnosis, SVM is the best model in both tables (holdout 0.62 with embeddings versus 0.61 with tetramers).
+For cancer type, random forest leads with embeddings (0.79) while KNN leads with tetramers (0.84).
 
 ![Feature-set stability for UC/CAP with HyenaDNA embeddings in SVM and random forest.](figure4_embedding_uc_cap.svg)
 
-[Table 7 data](table7_embedding_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from HyenaDNA embeddings (pretrained 32k model, no fine-tuning), with the best feature set selected per task by holdout AUC.").
+[Table 7 data](table7_embedding_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from HyenaDNA embeddings (pretrained 32k model, no fine-tuning), with the best feature set selected per task by test AUC.").
 
 ## Discussion
 
+We list our per-study AUC for cancer diagnosis and comparisons with colorectal cancer where available (Table 8).
+On two of the three development studies with a published comparison ([@ZTV+14] and [@YDS+21]), our per-study test AUC is very high (0.97--0.98),
+but it drops to 0.67 on a third dataset where the literature value is 0.85 [@BRRS16].
+For holdout studies with published AUC values ([@BWY+23], [@CAB+24], [@GYX+25]), our AUC (0.66--0.74) is consistently lower than the literature (0.86--0.88).
+The literature numbers come from within-study cross-validation or test splits rather than independent cohorts
+and are therefore not directly comparable to true holdout performance.
+
+[Table 8 data](table8_auc_comparison.html "Per-study cancer diagnosis AUC from the best tetramer UC/CAP classifier selected in Table 6 (SVM, feature set 5). AUC is computed over each study's test-split runs (development) or all runs (holdout). Literature AUC values for colorectal cancer are shown where reported.")
+
+We did not find direct AUC comparisons in the literature for the breast cancer datasets we used.
+Here we compare with some different studies for breast cancer:
+
+- [@WYH+22] "The areas under the curve (AUCs) of random forest models were 74.27% and 68.08% for breast carcinoma tissues and stool samples, respectively.
+  The model was validated for effectiveness via cohort-to-cohort transfer (average AUC =0.65) and leave-one-cohort-out (average AUC = 0.66)."
+  [TODO: paraphrase this]
+
+- [@DO24] "The highest AUC achieved is 0.829 when using the CFS subset with BNB." [TODO: paraphrase this]
+
 Results are consistently lower on the holdout splits than on the in-study test splits,
 confirming that test performance computed within the same studies used for training gives overoptimistic estimates of real-world model skill.
-This pattern holds across every method we evaluate.
+This pattern holds across run-level tetramer frequencies and UC/CAP pipelines for tetramer and embeddings.
 
-The asymmetry between tasks is informative.
-
-- Cancer type classification achieves in-study test AUC above 0.95 for virtually every model,
-  because breast and colorectal samples come from completely separate studies.
-  The model can predict cancer type by identifying the study of origin, exploiting differences in sequencing protocol, primer region,
-  or regional microbiome composition rather than biology.
-  On holdout data, where these shortcuts no longer generalize, cancer type AUC collapses toward or below chance for most models.
-
-- In contrast, cancer diagnosis test AUC is more moderate (around 0.7 for the best classical models),
-  because models must distinguish cancer from healthy samples within studies that contain both—a genuinely harder discrimination.
-  The corresponding holdout AUC drops are smaller, suggesting that at least some of the learned signal reflects
-  biological differences between cancer and healthy microbiomes that transfer across cohorts.
-
-Comparing holdout performance across Tables 3 and 6, UC/CAP offers a consistent advantage over run-level tetramer features,
-most clearly for cancer type prediction with KNN.
-The SVM + UC/CAP combination (holdout AUC 0.783 for cancer type, 0.664 for cancer diagnosis) substantially outperforms SVM + tetramers on holdout,
-despite comparable or identical in-study test performance [TODO: discuss KNN for UC/CAP].
-Our finding suggest that the compositional diversity captured by cluster abundance profiles
+Comparing holdout performance across Tables 3 and 6, UC/CAP offers a consistent advantage over run-level tetramer features for cancer type classification.
+However, it barely improves holdout AUC for cancer diagnosis, despite a large increase on in-study test splits.
+Our finding suggests that the compositional diversity captured by cluster abundance profiles
 partially breaks the study-level shortcuts that hinder tetramer-based cancer type classifiers.
+At the same time, transferable information to discriminate cancer vs healthy may not reside in fine-scale compositional structure.
 
-[TODO]: Reiterate that we're using HyenaDNA in two modes: fitting a classification head on the backbone, and using embeddings for cluster profiling.
-In both cases we use the pretrained model and don't modify backbone weights (except for some ablations described above).
-Even at 16k tokens per set and 5 sets per run, HyenaDNA sees only around 400 sequences from each sample (assuming 200 nt 16S fragments),
+At 16k tokens per set and 5 sets per run, HyenaDNA sees only around 400 sequences from each sample (assuming 200 nt 16S fragments),
 a small fraction of what the tetramer and UC/CAP methods use.
-Also, using a classification head across sequences is tanamount to a run-level representation, losing compositional information.
-Passing HyenaDNA embeddings to the UC/CAP pipeline preserves more of the compositional information
-but in our study relies only on pretrained backbone without fine-tuning.
+The low number of sequences and their aggregated represenation before the classification layer may explan the low performance of our current pure deep-learning setup.
+In contrast, the hybrid setup combines HyenaDNA embeddings with UC/CAP with a better outcome.
 
 Several directions may improve performance beyond current baselines.
 On the feature side, UC/CAP parameters (*K*, *n*<sub>CAP</sub>) could be tuned jointly with the classifier rather than independently,
 and soft cluster assignments (Gaussian mixture or fuzzy *k*-means) might better represent the continuous composition of microbial communities.
-For HyenaDNA, additional pre-training on 16S rRNA sequences specifically (rather than the human genome)
+For HyenaDNA, additional pretraining on 16S rRNA sequences specifically (rather than the human genome)
 would better align the model's learned representations with the target domain.
-We could also consider using other embedding models, e.g. SetBERT which has specifically be trained on 16S rRNA sequences [@LGA+25]. 
+We could also consider using other embedding models, e.g. SetBERT which has been pretrained on microbial 16S rRNA sequences [@LGA+25]. 
 
 More broadly, our results underscore a general lesson for machine learning applied to genomic and microbiome data:
-evaluation quality matters as much as model sophistication.
-Metrics computed on within-study test splits can be misleading by a wide margin.
-In our benchmark, cancer type AUC falls by more than 0.4 points from test to holdout for the strongest classical classifiers.
+metrics computed on within-study test splits can be misleading by a wide margin.
 Robust evaluation against temporally and geographically diverse holdout cohorts should be a standard requirement in this field [@WSNP22].
 
 ## Acknowledgments
@@ -409,20 +409,15 @@ Robust evaluation against temporally and geographically diverse holdout cohorts 
 This study uses data made available by many previous studies.
 All contributors to those studies are acknowledged for making this study possible.
 
-## Appendix: Discussion with AI
+## Declaration of generative AI use
 
-*Compared to KNN and random forest, why should SVM perform better for cancer diagnosis but worse for cancer type?*
+Cursor was used for code generation and for writing sections of the manuscript.
+Claude Sonnet 4.7 was used for polishing the text; prompts are available in the repository.
+Post-AI cleanup was done by the author.
 
-Cancer diagnosis pools a single binary label across many studies with mixed design.
-The UC/CAP vector is a compressed compositional summary where a relatively low-dimensional signal (after CLR, scaling, and PCA)
-can separate cancer-like from non-cancer profiles without many interacting cluster dimensions.
-This is the regime an RBF SVM favors, with a smooth boundary when a few directions carry most of the margin.
-Conversely, cancer type in our benchmark is largely confounded with study bucket (breast-only versus colorectal-only studies).
-The shortcut is less one smooth direction than a high-dimensional fingerprint of protocol, depth, primer region, batch, and geography spread across cluster abundances.
-Random forest can stitch together many weak, axis-aligned rules and KNN can exploit similar structure locally in PCA space,
-whereas SVM still defines essentially a single boundary.
-When discrimination is combinatorial across clusters, that bias can fit the in-study test split with a hyperplane on a few principal components aligned with study,
-then fail on holdout studies where those directions do not transfer.
+## Code and data availability
+
+<https://github.com/jedick/BreCol>
 
 ## References
 

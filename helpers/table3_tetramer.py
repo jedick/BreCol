@@ -35,7 +35,7 @@ TASK_HEADER = {
     "cancer_type": "Cancer type",
 }
 
-DECIMALS = 3
+DECIMALS = 2
 OUTPUT_REL = Path("manuscript") / "table3_tetramer.html"
 
 
@@ -82,7 +82,11 @@ def _fmt_cell(value: Optional[float], *, decimals: int) -> str:
         return "nan"
     if isinstance(value, float) and not math.isfinite(value):
         return "nan"
-    return f"{value:.{decimals}f}"
+    """Format with `decimals`; bump to `decimals + 1` only when display would be 1.0... but value < 1.0."""
+    text = f"{value:.{decimals}f}"
+    if text == f"{1.0:.{decimals}f}" and value != 1.0:
+        return f"{value:.{decimals + 1}f}"
+    return text
 
 
 def _render_cell(value: Optional[float], *, decimals: int, bold: bool) -> str:

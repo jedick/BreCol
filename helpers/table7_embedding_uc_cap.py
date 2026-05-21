@@ -2,8 +2,8 @@
 """
 Build Table 7 (embedding UC/CAP classifiers) as HTML under manuscript/table7_embedding_uc_cap.html.
 
-For each task, scans the 3×6 model × feature-set holdout AUC grid, picks the feature set
-that contains the single best holdout value, then reports test and holdout AUC for every
+For each task, scans the 3×6 model × feature-set test AUC grid, picks the feature set
+that contains the single best test value, then reports test and holdout AUC for every
 model on that feature set only.
 
 Run from the repository root: ``python helpers/table7_embedding_uc_cap.py``

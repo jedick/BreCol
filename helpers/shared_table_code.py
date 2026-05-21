@@ -25,7 +25,7 @@ TASK_HEADER = {
     "cancer_type": "Cancer type",
 }
 
-DECIMALS = 3
+DECIMALS = 2
 
 
 @dataclass(frozen=True)
@@ -82,18 +82,18 @@ def load_split_metrics(path: Path, *, task: str, model: str) -> SplitMetrics:
 
 
 def select_best_feat_index(uc_cap_dir: Path, task: str, n_features: int) -> int:
-    """Pick the 1-based feature set with the highest holdout AUC in the model × feature grid."""
+    """Pick the 1-based feature set with the highest test AUC in the model × feature grid."""
     best_idx: Optional[int] = None
-    best_holdout = float("-inf")
+    best_test = float("-inf")
     for feat_idx in range(1, n_features + 1):
         feat_dir = uc_cap_dir / str(feat_idx)
         if not feat_dir.is_dir():
             raise SystemExit(f"Missing UC/CAP results directory: {feat_dir}")
         for model in MODELS:
             path = _metrics_json_path(feat_dir, task, model)
-            holdout = load_split_metrics(path, task=task, model=model).holdout_auc
-            if holdout > best_holdout:
-                best_holdout = holdout
+            test = load_split_metrics(path, task=task, model=model).test_auc
+            if test > best_test:
+                best_test = test
                 best_idx = feat_idx
     if best_idx is None:
         raise SystemExit(f"No feature sets found under {uc_cap_dir} for task {task!r}.")
@@ -101,7 +101,7 @@ def select_best_feat_index(uc_cap_dir: Path, task: str, n_features: int) -> int:
 
 
 def build_uc_cap_table_data(uc_cap_dir: Path, n_features: int) -> UcCapTableData:
-    """Select best feature set per task from the holdout grid, then load all models at that set."""
+    """Select best feature set per task from the test grid, then load all models at that set."""
     best_feat_index: Dict[str, int] = {}
     metrics: Dict[Tuple[str, str], SplitMetrics] = {}
     for task in TASKS:
@@ -114,14 +114,23 @@ def build_uc_cap_table_data(uc_cap_dir: Path, n_features: int) -> UcCapTableData
     return UcCapTableData(best_feat_index=best_feat_index, metrics=metrics)
 
 
-def _fmt_cell(value: float, *, decimals: int) -> str:
+def fmt_cell(value: float, *, decimals: int) -> str:
+    """Format an AUC-like value with `decimals` decimals.
+
+    Selective rounding: if the rounded display would be exactly "1.00" but the
+    underlying value is not exactly 1.0, render with one extra decimal (e.g.
+    "0.997" instead of "1.00").
+    """
     if not math.isfinite(value):
         return "nan"
-    return f"{value:.{decimals}f}"
+    text = f"{value:.{decimals}f}"
+    if text == f"{1.0:.{decimals}f}" and value != 1.0:
+        return f"{value:.{decimals + 1}f}"
+    return text
 
 
 def _render_cell(value: float, *, decimals: int, bold: bool) -> str:
-    text = html.escape(_fmt_cell(value, decimals=decimals))
+    text = html.escape(fmt_cell(value, decimals=decimals))
     return f"<strong>{text}</strong>" if bold else text
 
 

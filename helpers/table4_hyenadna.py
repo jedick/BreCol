@@ -67,7 +67,7 @@ METRIC_KEY_CD = "cancer_diagnosis"
 METRIC_KEY_CT = "cancer_type"
 MULTITASK_TASK = "multitask"
 
-DECIMALS = 3
+DECIMALS = 2
 OUTPUT_REL = Path("manuscript") / "table4_hyenadna.html"
 MSG_SEEDS_HEADER = "Warning: Missing results for some seeds in experiments.yaml:"
 MSG_ABLATIONS_HEADER = "Error: Missing results for ablations:"

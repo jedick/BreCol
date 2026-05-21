@@ -71,6 +71,8 @@ class TaskSplits:
     y_test: np.ndarray
     X_holdout: np.ndarray
     y_holdout: np.ndarray
+    study_test: np.ndarray
+    study_holdout: np.ndarray
 
     @property
     def y_development(self) -> np.ndarray:
@@ -99,6 +101,8 @@ class TuningResult:
 class EvaluationResult:
     test_auc: float
     holdout_auc: float
+    test_per_study: Dict[str, Dict[str, object]]
+    holdout_per_study: Dict[str, Dict[str, object]]
 
 
 # ----- UC/CAP path resolution (aligned with helpers/list_uc_cap_feature_outputs.py) -----
@@ -492,8 +496,8 @@ def _build_task_splits(
     task_df: pd.DataFrame,
     *,
     feature_cols: Sequence[str],
-) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
-    """Build split → (X, y) matrices from a table that already has task_label and split."""
+) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Build split → (X, y, study) arrays from a table with task_label, split, study_name."""
     frames = {
         TRAIN: task_df[task_df["split"] == TRAIN],
         VAL: task_df[task_df["split"] == VAL],
@@ -507,6 +511,7 @@ def _build_task_splits(
         split_name: (
             frame.loc[:, list(feature_cols)].to_numpy(dtype=np.float64, copy=False),
             frame["task_label"].to_numpy(dtype=object),
+            frame["study_name"].to_numpy(dtype=object),
         )
         for split_name, frame in frames.items()
     }
@@ -518,10 +523,10 @@ def _task_splits_from_table(
     feature_cols: Sequence[str],
 ) -> TaskSplits:
     split_xy = _build_task_splits(df, feature_cols=feature_cols)
-    X_train, y_train = split_xy[TRAIN]
-    X_val, y_val = split_xy[VAL]
-    X_test, y_test = split_xy[TEST]
-    X_holdout, y_holdout = split_xy[HOLDOUT]
+    X_train, y_train, _ = split_xy[TRAIN]
+    X_val, y_val, _ = split_xy[VAL]
+    X_test, y_test, study_test = split_xy[TEST]
+    X_holdout, y_holdout, study_holdout = split_xy[HOLDOUT]
     return TaskSplits(
         X_train=X_train,
         y_train=y_train,
@@ -531,6 +536,8 @@ def _task_splits_from_table(
         y_test=y_test,
         X_holdout=X_holdout,
         y_holdout=y_holdout,
+        study_test=study_test,
+        study_holdout=study_holdout,
     )
 
 
@@ -846,15 +853,82 @@ def _tune_model_on_validation(
 # ----- Evaluation and reporting -----
 
 
-def _evaluate_model(pipe: Pipeline, splits: TaskSplits) -> EvaluationResult:
+def _per_study_block(
+    *,
+    task: str,
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    y_pred: Optional[np.ndarray],
+    study: np.ndarray,
+) -> Dict[str, Dict[str, object]]:
+    """Per-study metrics keyed by study_name (first-occurrence order in `study`).
+
+    cancer_diagnosis → {'auc', 'n', 'class_counts'} per study (auc may be None
+    if a study has only one class in its evaluated runs).
+    cancer_type      → {'acc', 'n', 'class_counts'} per study.
+    """
+    if task not in ("cancer_diagnosis", "cancer_type"):
+        return {}
+    out: Dict[str, Dict[str, object]] = {}
+    if len(study) == 0:
+        return out
+    y_true_obj = np.asarray(y_true, dtype=object)
+    study_obj = np.asarray(study, dtype=object)
+    for s in pd.unique(study_obj):
+        mask = study_obj == s
+        y_t_sub = y_true_obj[mask]
+        n = int(mask.sum())
+        classes, counts = np.unique(y_t_sub, return_counts=True)
+        class_counts = {str(c): int(k) for c, k in zip(classes, counts)}
+        entry: Dict[str, object] = {"n": n, "class_counts": class_counts}
+        if task == "cancer_diagnosis":
+            auc = binary_auc_from_scores(y_t_sub, np.asarray(y_score)[mask])
+            entry["auc"] = _float_for_json(float(auc))
+        else:  # cancer_type
+            if y_pred is None:
+                raise SystemExit("cancer_type per-study accuracy requires y_pred.")
+            y_p_sub = np.asarray(y_pred, dtype=object)[mask]
+            correct = int(np.sum(y_p_sub == y_t_sub))
+            entry["acc"] = (correct / n) if n > 0 else None
+        out[str(s)] = entry
+    return out
+
+
+def _evaluate_model(
+    pipe: Pipeline, splits: TaskSplits, *, task: str
+) -> EvaluationResult:
     pipe.fit(splits.X_train, splits.y_train)
     test_scores = _evaluation_scores(pipe, splits.X_test)
+    test_pred = pipe.predict(splits.X_test) if task == "cancer_type" else None
     test_auc = binary_auc_from_scores(splits.y_test, test_scores)
+    test_per_study = _per_study_block(
+        task=task,
+        y_true=splits.y_test,
+        y_score=test_scores,
+        y_pred=test_pred,
+        study=splits.study_test,
+    )
     holdout_auc = float("nan")
+    holdout_per_study: Dict[str, Dict[str, object]] = {}
     if len(splits.y_holdout) > 0:
         hold_scores = _evaluation_scores(pipe, splits.X_holdout)
+        hold_pred = (
+            pipe.predict(splits.X_holdout) if task == "cancer_type" else None
+        )
         holdout_auc = binary_auc_from_scores(splits.y_holdout, hold_scores)
-    return EvaluationResult(test_auc=test_auc, holdout_auc=holdout_auc)
+        holdout_per_study = _per_study_block(
+            task=task,
+            y_true=splits.y_holdout,
+            y_score=hold_scores,
+            y_pred=hold_pred,
+            study=splits.study_holdout,
+        )
+    return EvaluationResult(
+        test_auc=test_auc,
+        holdout_auc=holdout_auc,
+        test_per_study=test_per_study,
+        holdout_per_study=holdout_per_study,
+    )
 
 
 def _label_counts(y: np.ndarray) -> Dict[str, int]:
@@ -1007,9 +1081,15 @@ def _write_results_json(
         "n_components_grid": _jsonify_for_results(list(n_components_grid)),
         "best_hyperparameters": _jsonify_for_results(dict(tuning.best_params)),
     }
+    test_block: Dict[str, object] = {"auc": _float_for_json(evaluation.test_auc)}
+    if evaluation.test_per_study:
+        test_block["per_study"] = _jsonify_for_results(evaluation.test_per_study)
+    holdout_block: Dict[str, object] = {"auc": _float_for_json(evaluation.holdout_auc)}
+    if evaluation.holdout_per_study:
+        holdout_block["per_study"] = _jsonify_for_results(evaluation.holdout_per_study)
     metrics_block: Dict[str, object] = {
-        "test": {"auc": _float_for_json(evaluation.test_auc)},
-        "holdout": {"auc": _float_for_json(evaluation.holdout_auc)},
+        "test": test_block,
+        "holdout": holdout_block,
     }
     payload = {
         "script": Path(__file__).name,
@@ -1106,7 +1186,7 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
         flush=True,
     )
 
-    evaluation = _evaluate_model(pipe, splits)
+    evaluation = _evaluate_model(pipe, splits, task=str(args.task))
     _print_evaluation(args.model, evaluation, prefix=prefix)
 
     if results_json_path is not None:

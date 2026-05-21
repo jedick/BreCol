@@ -72,6 +72,40 @@ local function apply_caption_to_tables(blocks, caption)
   return false
 end
 
+-- Convert literal "[@key]" text into pandoc Cite elements by re-parsing it as
+-- Markdown. Pandoc's HTML reader keeps citation syntax as plain text, so
+-- citations baked into the inlined HTML tables (e.g. helpers/table8_*.py)
+-- otherwise reach citeproc as Str elements and never get resolved.
+local function citation_inlines_from_text(text)
+  if not text:find('%[@') then return nil end
+  local ok, doc = pcall(pandoc.read, text, 'markdown')
+  if not ok or not doc or #doc.blocks == 0 then return nil end
+  local first = doc.blocks[1]
+  if first.t ~= 'Para' and first.t ~= 'Plain' then return nil end
+  for _, inline in ipairs(first.content) do
+    if inline.t == 'Cite' then
+      return first.content
+    end
+  end
+  return nil
+end
+
+local citation_walker = {
+  Str = function(elem)
+    local inlines = citation_inlines_from_text(elem.text)
+    if inlines then return inlines end
+    return nil
+  end,
+}
+
+local function convert_citations_in_blocks(blocks)
+  -- Pandoc filters returned from Para are not re-traversed by the outer pass,
+  -- so we walk the inlined-table blocks here before yielding them.
+  local container = pandoc.Div(blocks)
+  local walked = pandoc.walk_block(container, citation_walker)
+  return walked.content
+end
+
 function Para(elem)
   for _, inline in ipairs(elem.content) do
     if inline.t == 'Link' and is_local_html_link(inline.target) then
@@ -95,7 +129,7 @@ function Para(elem)
           apply_caption_to_tables(doc.blocks, caption)
         end
       end
-      return doc.blocks
+      return convert_citations_in_blocks(doc.blocks)
     end
   end
   return nil

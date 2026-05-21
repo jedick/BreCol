@@ -88,7 +88,7 @@ fit_classifier:
   n_components_grid: [none, 0.95]
   # knn_*_grid: KNN only
   knn_n_neighbors_grid: [5, 15]
-  knn_weights_grid: [uniform, distance]
+  knn_weights_grid: [distance]
   # rf_*_grid: random forest only (none in rf_max_depth_grid = unlimited depth)
   rf_n_estimators_grid: [200, 500]
   rf_max_depth_grid: [none, 10]
