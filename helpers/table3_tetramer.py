@@ -5,8 +5,8 @@ Build Table 3 (tetramer classifiers) as HTML under manuscript/table3_tetramer.ht
 Reads eight JSON files under results/tetramer/ named {task}_{model}.json
 (e.g. cancer_diagnosis_knn.json), as written by scripts/fit_classifier.py:
 tasks cancer_diagnosis and cancer_type; models baseline, knn, svm, and
-random_forest. Each file must have metrics.test.auroc and
-metrics.holdout.auroc.
+random_forest. Each file must have metrics.test.auc and
+metrics.holdout.auc.
 
 Run from the repository root: ``python helpers/table3_tetramer.py``
 """
@@ -42,7 +42,7 @@ OUTPUT_REL = Path("manuscript") / "table3_tetramer.html"
 def _load_metrics(
     tetramer_dir: Path,
 ) -> Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]]:
-    """Map (task, model) -> (test_auroc, holdout_auroc). None if JSON null."""
+    """Map (task, model) -> (test_auc, holdout_auc). None if JSON null."""
     out: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]] = {}
     for task in TASKS:
         for model in MODELS:
@@ -66,10 +66,10 @@ def _load_metrics(
                 if not isinstance(blob, dict):
                     raise SystemExit(
                         f"{path}: expected metrics['{split}'] to be an object with "
-                        f"'auroc' (scripts/fit_classifier.py output layout)."
+                        f"'auc' (scripts/fit_classifier.py output layout)."
                     )
-            test_v = metrics["test"].get("auroc")
-            hold_v = metrics["holdout"].get("auroc")
+            test_v = metrics["test"].get("auc")
+            hold_v = metrics["holdout"].get("auc")
             out[(task, model)] = (
                 float(test_v) if test_v is not None else None,
                 float(hold_v) if hold_v is not None else None,
@@ -90,13 +90,13 @@ def _render_cell(value: Optional[float], *, decimals: int, bold: bool) -> str:
     return f"<strong>{text}</strong>" if bold else text
 
 
-def _models_at_max_auroc(
+def _models_at_max_auc(
     metrics: Dict[Tuple[str, str], Tuple[Optional[float], Optional[float]]],
     task: str,
     *,
     split_index: int,
 ) -> Set[str]:
-    """Models tied for the highest AUROC in one (task, split) column."""
+    """Models tied for the highest AUC in one (task, split) column."""
     values: Dict[str, float] = {}
     for model in MODELS:
         v = metrics[(task, model)][split_index]
@@ -127,8 +127,8 @@ def format_table_html(
         "</tr>\n"
         "</thead>\n"
     )
-    bold_test = {task: _models_at_max_auroc(metrics, task, split_index=0) for task in TASKS}
-    bold_hold = {task: _models_at_max_auroc(metrics, task, split_index=1) for task in TASKS}
+    bold_test = {task: _models_at_max_auc(metrics, task, split_index=0) for task in TASKS}
+    bold_hold = {task: _models_at_max_auc(metrics, task, split_index=1) for task in TASKS}
 
     body_rows = []
     for model in MODELS:

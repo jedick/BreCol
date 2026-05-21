@@ -4,11 +4,11 @@ Fine-tune HyenaDNA with the classification head (hyenadna/standalone_hyenadna.py
 
 Uses a pre-built feature-only per-run tensor cache under paths.run_tensors_dir/ from
 scripts/build_run_tensors.py, joins labels/splits from shared metadata at runtime, and reports
-run-level AUROC on the test and holdout splits (one score per Run).
+run-level AUC on the test and holdout splits (one score per Run).
 
-Training logs (`*_training.json`) record per-epoch loss, binary F1, and AUROC metrics
+Training logs (`*_training.json`) record per-epoch loss, binary F1, and AUC metrics
 aligned with console output (task-suffixed keys in multitask mode). Checkpoints are
-selected by ``train_hyenadna.tuning_metric`` (default ``auroc``); for ``task: multitask``,
+selected by ``train_hyenadna.tuning_metric`` (default ``auc``); for ``task: multitask``,
 ``tuning_ratio`` (with ``tuning_metric``) sets the blend of diagnosis vs type validation scores for checkpointing.
 
 Multitask mode trains two binary heads on a shared pooled backbone; loss is
@@ -647,12 +647,12 @@ def _write_results_json(
     if metrics is None:
         metrics = {
             "test": {
-                "auroc": float(test_primary_curve)
+                "auc": float(test_primary_curve)
                 if test_primary_curve == test_primary_curve
                 else None
             },
             "holdout": {
-                "auroc": float(holdout_primary_curve)
+                "auc": float(holdout_primary_curve)
                 if holdout_primary_curve == holdout_primary_curve
                 else None
             },
@@ -716,12 +716,12 @@ def _write_training_log(
                     "test_f1_ct": _float_or_none(float(row["test_f1_ct"])),
                     "holdout_f1_cd": _float_or_none(float(row["holdout_f1_cd"])),
                     "holdout_f1_ct": _float_or_none(float(row["holdout_f1_ct"])),
-                    "val_auroc_cd": _float_or_none(float(row["val_auroc_cd"])),
-                    "val_auroc_ct": _float_or_none(float(row["val_auroc_ct"])),
-                    "test_auroc_cd": _float_or_none(float(row["test_auroc_cd"])),
-                    "test_auroc_ct": _float_or_none(float(row["test_auroc_ct"])),
-                    "holdout_auroc_cd": _float_or_none(float(row["holdout_auroc_cd"])),
-                    "holdout_auroc_ct": _float_or_none(float(row["holdout_auroc_ct"])),
+                    "val_auc_cd": _float_or_none(float(row["val_auc_cd"])),
+                    "val_auc_ct": _float_or_none(float(row["val_auc_ct"])),
+                    "test_auc_cd": _float_or_none(float(row["test_auc_cd"])),
+                    "test_auc_ct": _float_or_none(float(row["test_auc_ct"])),
+                    "holdout_auc_cd": _float_or_none(float(row["holdout_auc_cd"])),
+                    "holdout_auc_ct": _float_or_none(float(row["holdout_auc_ct"])),
                 }
             )
         else:
@@ -730,9 +730,9 @@ def _write_training_log(
                     "val_f1": _float_or_none(float(row["val_f1"])),
                     "test_f1": _float_or_none(float(row["test_f1"])),
                     "holdout_f1": _float_or_none(float(row["holdout_f1"])),
-                    "val_auroc": _float_or_none(float(row["val_auroc"])),
-                    "test_auroc": _float_or_none(float(row["test_auroc"])),
-                    "holdout_auroc": _float_or_none(float(row["holdout_auroc"])),
+                    "val_auc": _float_or_none(float(row["val_auc"])),
+                    "test_auc": _float_or_none(float(row["test_auc"])),
+                    "holdout_auc": _float_or_none(float(row["holdout_auc"])),
                 }
             )
         payload.append(entry)
@@ -1017,7 +1017,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     raw_blm = merged.get("backbone_lr_mult")
     backbone_lr_mult = 1.0 if raw_blm is None else float(raw_blm)
     train_sampler = str(merged.get("train_sampler") or "random").strip().lower()
-    tuning_metric = str(merged.get("tuning_metric") or "auroc").strip()
+    tuning_metric = str(merged.get("tuning_metric") or "auc").strip()
     class_weight_mode = str(merged.get("class_weight") or "none")
     ce_weight = _compute_ce_weight_tensor(
         train_entries,
@@ -1200,9 +1200,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_dtype=amp_dtype,
         )
         primary_val = split_eval.val[task_cfg.primary_head]
-        val_primary_curve = primary_val.auroc
-        test_primary_curve = split_eval.test[task_cfg.primary_head].auroc
-        hold_primary_curve = split_eval.holdout[task_cfg.primary_head].auroc
+        val_primary_curve = primary_val.auc
+        test_primary_curve = split_eval.test[task_cfg.primary_head].auc
+        hold_primary_curve = split_eval.holdout[task_cfg.primary_head].auc
 
         lr_log = float(opt.param_groups[0]["lr"])
         if multitask:
@@ -1222,12 +1222,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "test_f1_ct": float(split_eval.test[HEAD_CT].f1),
                 "holdout_f1_cd": float(split_eval.holdout[HEAD_CD].f1),
                 "holdout_f1_ct": float(split_eval.holdout[HEAD_CT].f1),
-                "val_auroc_cd": float(split_eval.val[HEAD_CD].auroc),
-                "val_auroc_ct": float(split_eval.val[HEAD_CT].auroc),
-                "test_auroc_cd": float(split_eval.test[HEAD_CD].auroc),
-                "test_auroc_ct": float(split_eval.test[HEAD_CT].auroc),
-                "holdout_auroc_cd": float(split_eval.holdout[HEAD_CD].auroc),
-                "holdout_auroc_ct": float(split_eval.holdout[HEAD_CT].auroc),
+                "val_auc_cd": float(split_eval.val[HEAD_CD].auc),
+                "val_auc_ct": float(split_eval.val[HEAD_CT].auc),
+                "test_auc_cd": float(split_eval.test[HEAD_CD].auc),
+                "test_auc_ct": float(split_eval.test[HEAD_CT].auc),
+                "holdout_auc_cd": float(split_eval.holdout[HEAD_CD].auc),
+                "holdout_auc_ct": float(split_eval.holdout[HEAD_CT].auc),
             }
         else:
             ts = tuning_score_single(primary_val.f1, val_primary_curve, tuning_metric)
@@ -1239,9 +1239,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "val_f1": float(split_eval.val["task"].f1),
                 "test_f1": float(split_eval.test["task"].f1),
                 "holdout_f1": float(split_eval.holdout["task"].f1),
-                "val_auroc": float(val_primary_curve),
-                "test_auroc": float(test_primary_curve),
-                "holdout_auroc": float(hold_primary_curve),
+                "val_auc": float(val_primary_curve),
+                "test_auc": float(test_primary_curve),
+                "holdout_auc": float(hold_primary_curve),
             }
         epoch_log.append(epoch_row)
         if training_log_path is not None:

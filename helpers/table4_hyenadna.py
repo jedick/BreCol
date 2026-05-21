@@ -3,8 +3,8 @@
 Build Table 4 (HyenaDNA ablations) as HTML under manuscript/table4_hyenadna.html.
 
 Reads ``experiments.yaml`` ``train_hyenadna.experiments`` (row order preserved)
-and aggregates tuning epoch plus ``metrics.test.auroc`` /
-``metrics.holdout.auroc`` from per-seed JSON under ``results/hyenadna/``.
+and aggregates tuning epoch plus ``metrics.test.auc`` /
+``metrics.holdout.auc`` from per-seed JSON under ``results/hyenadna/``.
 
 Single-task runs use ``cd_*`` / ``ct_*`` filename prefixes with flat
 ``metrics`` objects. Multitask runs use the ``mt_*`` prefix; each file nests
@@ -332,7 +332,7 @@ TaskMetricsCols = Dict[str, Dict[str, List[float]]]
 
 
 def _read_flat_metrics(path: Path) -> Tuple[int, float, float]:
-    """Return (best_epoch, test_auroc, holdout_auroc) from one single-task JSON file."""
+    """Return (best_epoch, test_auc, holdout_auc) from one single-task JSON file."""
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit(f"{path}: expected a JSON object.")
@@ -347,16 +347,16 @@ def _read_flat_metrics(path: Path) -> Tuple[int, float, float]:
         blob = metrics.get(split)
         if not isinstance(blob, dict):
             raise SystemExit(
-                f"{path}: expected metrics['{split}'] to be an object with 'auroc'."
+                f"{path}: expected metrics['{split}'] to be an object with 'auc'."
             )
-    test_v = metrics["test"].get("auroc")
-    hold_v = metrics["holdout"].get("auroc")
+    test_v = metrics["test"].get("auc")
+    hold_v = metrics["holdout"].get("auc")
     if test_v is None or hold_v is None:
-        raise SystemExit(f"{path}: missing test or holdout auroc.")
+        raise SystemExit(f"{path}: missing test or holdout auc.")
     t = float(test_v)
     h = float(hold_v)
     if not math.isfinite(t) or not math.isfinite(h):
-        raise SystemExit(f"{path}: non-finite test/holdout auroc ({t}, {h}).")
+        raise SystemExit(f"{path}: non-finite test/holdout auc ({t}, {h}).")
     return int(best_epoch), t, h
 
 
@@ -381,13 +381,13 @@ def _read_multitask_metrics(path: Path) -> Tuple[int, Tuple[float, float], Tuple
         for split in ("test", "holdout"):
             if not isinstance(blob.get(split), dict):
                 raise SystemExit(f"{path}: metrics[{task_key!r}][{split!r}] not an object.")
-        test_v = blob["test"].get("auroc")
-        hold_v = blob["holdout"].get("auroc")
+        test_v = blob["test"].get("auc")
+        hold_v = blob["holdout"].get("auc")
         if test_v is None or hold_v is None:
-            raise SystemExit(f"{path}: missing auroc for {task_key}.")
+            raise SystemExit(f"{path}: missing auc for {task_key}.")
         t, h = float(test_v), float(hold_v)
         if not math.isfinite(t) or not math.isfinite(h):
-            raise SystemExit(f"{path}: non-finite AUROC under {task_key}.")
+            raise SystemExit(f"{path}: non-finite AUC under {task_key}.")
         return t, h
 
     cd_pair = _pair(METRIC_KEY_CD)

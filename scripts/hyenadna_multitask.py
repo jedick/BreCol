@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
 
-from shared_utilities import binary_auroc_from_scores, build_multitask_run_table
+from shared_utilities import binary_auc_from_scores, build_multitask_run_table
 
 MULTITASK_TASK = "multitask"
 MT_LABEL_IGNORE = -100
@@ -78,7 +78,7 @@ class HeadScores:
     entries: Tuple[RunRecord, ...]
     y_true: np.ndarray
     y_score: np.ndarray
-    auroc: float
+    auc: float
     f1: float
     all_entries: Tuple[RunRecord, ...] = ()
     all_scores: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.float64))
@@ -315,7 +315,7 @@ def _head_metrics(
         y_true = np.array([getattr(e, head.label_attr) for e in sub_entries_t], dtype=object)
         y_score = np.asarray(sub_scores, dtype=np.float64)
 
-    auroc = binary_auroc_from_scores(y_true, y_score, positive_label=head.pos_label)
+    auc = binary_auc_from_scores(y_true, y_score, positive_label=head.pos_label)
     f1 = _binary_f1(y_true, y_score, head)
     all_entries = tuple(entries)
     all_scores = np.asarray(scores, dtype=np.float64)
@@ -323,7 +323,7 @@ def _head_metrics(
         sub_entries_t,
         y_true,
         y_score,
-        float(auroc),
+        float(auc),
         f1,
         all_entries=all_entries,
         all_scores=all_scores,
@@ -512,13 +512,13 @@ def multitask_training_loss_sum_and_count(
 
 def tuning_score_single(f1: float, primary_curve: float, metric: str) -> float:
     m = str(metric).strip()
-    if m == "auroc":
+    if m == "auc":
         v = float(primary_curve)
     elif m == "f1":
         v = float(f1)
     else:
         raise SystemExit(
-            f"Unknown tuning_metric {metric!r} (use auroc or f1)."
+            f"Unknown tuning_metric {metric!r} (use auc or f1)."
         )
     return v if v == v else float("-inf")
 
@@ -537,11 +537,11 @@ def tuning_score_from_heads(
     if not 0.0 <= tr <= 1.0:
         raise SystemExit("train_hyenadna.tuning_ratio must be between 0 and 1.")
     if tr == 1.0:
-        return tuning_score_single(cd.f1, cd.auroc, tuning_metric)
+        return tuning_score_single(cd.f1, cd.auc, tuning_metric)
     if tr == 0.0:
-        return tuning_score_single(ct.f1, ct.auroc, tuning_metric)
-    s_cd = tuning_score_single(cd.f1, cd.auroc, tuning_metric)
-    s_ct = tuning_score_single(ct.f1, ct.auroc, tuning_metric)
+        return tuning_score_single(ct.f1, ct.auc, tuning_metric)
+    s_cd = tuning_score_single(cd.f1, cd.auc, tuning_metric)
+    s_ct = tuning_score_single(ct.f1, ct.auc, tuning_metric)
     w_cd = tr
     w_ct = 1.0 - tr
     num = 0.0
@@ -797,8 +797,8 @@ def build_metrics_payload(
         ts = test_scores[h.name]
         hs = holdout_scores[h.name]
         payload[key] = {
-            "test": {"auroc": _float_or_none(ts.auroc)},
-            "holdout": {"auroc": _float_or_none(hs.auroc)},
+            "test": {"auc": _float_or_none(ts.auc)},
+            "holdout": {"auc": _float_or_none(hs.auc)},
         }
     return payload
 
@@ -811,8 +811,8 @@ def build_flat_metrics_payload(
     ts = test_scores[head_name]
     hs = holdout_scores[head_name]
     return {
-        "test": {"auroc": _float_or_none(ts.auroc)},
-        "holdout": {"auroc": _float_or_none(hs.auroc)},
+        "test": {"auc": _float_or_none(ts.auc)},
+        "holdout": {"auc": _float_or_none(hs.auc)},
     }
 
 
@@ -840,10 +840,10 @@ def write_run_artifacts(
         ct = best_val_scores[HEAD_CT]
         tuning_extra = {
             "cancer_diagnosis_score": _float_or_none(
-                tuning_score_single(cd.f1, cd.auroc, tuning_metric)
+                tuning_score_single(cd.f1, cd.auc, tuning_metric)
             ),
             "cancer_type_score": _float_or_none(
-                tuning_score_single(ct.f1, ct.auroc, tuning_metric)
+                tuning_score_single(ct.f1, ct.auc, tuning_metric)
             ),
             "combined_score": _float_or_none(float(best_tuning_score)),
         }
@@ -853,17 +853,17 @@ def write_run_artifacts(
         pred_rows_hold = _prediction_rows_multitask(
             holdout_entries, holdout_scores, task_cfg.heads[0], task_cfg.heads[1]
         )
-        final_test_cd_curve = test_scores[HEAD_CD].auroc
-        final_holdout_cd_curve = holdout_scores[HEAD_CD].auroc
-        final_test_ct_curve = test_scores[HEAD_CT].auroc
-        final_holdout_ct_curve = holdout_scores[HEAD_CT].auroc
+        final_test_cd_curve = test_scores[HEAD_CD].auc
+        final_holdout_cd_curve = holdout_scores[HEAD_CD].auc
+        final_test_ct_curve = test_scores[HEAD_CT].auc
+        final_holdout_ct_curve = holdout_scores[HEAD_CT].auc
     else:
         head = task_cfg.heads[0]
         metrics_payload = build_flat_metrics_payload(test_scores, holdout_scores, head.name)
         hv = best_val_scores[head.name]
         task_key = str(merged.get("task") or "").strip()
         head_score = _float_or_none(
-            tuning_score_single(hv.f1, hv.auroc, tuning_metric)
+            tuning_score_single(hv.f1, hv.auc, tuning_metric)
         )
         if task_key == "cancer_type":
             tuning_extra = {
@@ -880,8 +880,8 @@ def write_run_artifacts(
         pred_rows_test = _prediction_rows_single(test_entries, test_scores, head)
         hold_entries = tuple(holdout_entries)[: len(holdout_scores[head.name].y_score)]
         pred_rows_hold = _prediction_rows_single(hold_entries, holdout_scores, head)
-        final_test_cd_curve = test_scores[head.name].auroc
-        final_holdout_cd_curve = holdout_scores[head.name].auroc
+        final_test_cd_curve = test_scores[head.name].auc
+        final_holdout_cd_curve = holdout_scores[head.name].auc
         final_test_ct_curve = float("nan")
         final_holdout_ct_curve = float("nan")
 
@@ -908,17 +908,17 @@ def write_run_artifacts(
             f"Final eval (best epoch by tuning_ratio={task_cfg.tuning_ratio:.3f} "
             f"with {tuning_metric}): "
             f"best_epoch={best_epoch} "
-            f"test_auroc_cd={final_test_cd_curve:.4f} "
-            f"test_auroc_ct={final_test_ct_curve:.4f} "
-            f"holdout_auroc_cd={final_holdout_cd_curve:.4f} "
-            f"holdout_auroc_ct={final_holdout_ct_curve:.4f}\n",
+            f"test_auc_cd={final_test_cd_curve:.4f} "
+            f"test_auc_ct={final_test_ct_curve:.4f} "
+            f"holdout_auc_cd={final_holdout_cd_curve:.4f} "
+            f"holdout_auc_ct={final_holdout_ct_curve:.4f}\n",
             flush=True,
         )
     else:
         print(
             f"Final eval (best epoch by {tuning_metric}): best_epoch={best_epoch} "
-            f"test_auroc={final_test_cd_curve:.4f} "
-            f"holdout_auroc={final_holdout_cd_curve:.4f}\n",
+            f"test_auc={final_test_cd_curve:.4f} "
+            f"holdout_auc={final_holdout_cd_curve:.4f}\n",
             flush=True,
         )
 
@@ -941,12 +941,12 @@ def epoch_progress_fields(
         hct = split_eval.holdout[HEAD_CT]
         fields.extend(
             [
-                f"val_auroc_cd={vcd.auroc:.4f}",
-                f"val_auroc_ct={vct.auroc:.4f}",
-                f"test_auroc_cd={tcd.auroc:.4f}",
-                f"test_auroc_ct={tct.auroc:.4f}",
-                f"holdout_auroc_cd={hcd.auroc:.4f}",
-                f"holdout_auroc_ct={hct.auroc:.4f}",
+                f"val_auc_cd={vcd.auc:.4f}",
+                f"val_auc_ct={vct.auc:.4f}",
+                f"test_auc_cd={tcd.auc:.4f}",
+                f"test_auc_ct={tct.auc:.4f}",
+                f"holdout_auc_cd={hcd.auc:.4f}",
+                f"holdout_auc_ct={hct.auc:.4f}",
             ]
         )
     else:
@@ -955,9 +955,9 @@ def epoch_progress_fields(
         h = split_eval.holdout["task"]
         fields.extend(
             [
-                f"val_auroc={v.auroc:.4f}",
-                f"test_auroc={t.auroc:.4f}",
-                f"holdout_auroc={h.auroc:.4f}",
+                f"val_auc={v.auc:.4f}",
+                f"test_auc={t.auc:.4f}",
+                f"holdout_auc={h.auc:.4f}",
             ]
         )
     fields.append(f"best_epoch={int(best_epoch)}")

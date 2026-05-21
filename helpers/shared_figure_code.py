@@ -42,11 +42,11 @@ def _load_metrics(json_path: Path) -> Tuple[float, float]:
     metrics = data.get("metrics") or {}
     test = metrics.get("test") or {}
     holdout = metrics.get("holdout") or {}
-    if "auroc" not in test or "auroc" not in holdout:
+    if "auc" not in test or "auc" not in holdout:
         raise SystemExit(
-            f"{json_path}: expected metrics.test.auroc and metrics.holdout.auroc."
+            f"{json_path}: expected metrics.test.auc and metrics.holdout.auc."
         )
-    return float(test["auroc"]), float(holdout["auroc"])
+    return float(test["auc"]), float(holdout["auc"])
 
 
 def collect_series(
@@ -106,7 +106,7 @@ def build_plot(
             if row == 0:
                 ax.set_title(model_label)
             if col == 0:
-                ax.set_ylabel(f"{task_label}\nAUROC")
+                ax.set_ylabel(f"{task_label}\nAUC")
 
             ax.set_xticks(x)
             ax.set_ylim(0.5, 1.02)

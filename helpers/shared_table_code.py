@@ -30,8 +30,8 @@ DECIMALS = 3
 
 @dataclass(frozen=True)
 class SplitMetrics:
-    test_auroc: float
-    holdout_auroc: float
+    test_auc: float
+    holdout_auc: float
 
 
 @dataclass(frozen=True)
@@ -72,17 +72,17 @@ def load_split_metrics(path: Path, *, task: str, model: str) -> SplitMetrics:
         if not isinstance(blob, dict):
             raise SystemExit(
                 f"{path}: expected metrics['{split}'] to be an object with "
-                f"'auroc' (scripts/fit_classifier.py output layout)."
+                f"'auc' (scripts/fit_classifier.py output layout)."
             )
-    test_v = metrics["test"].get("auroc")
-    hold_v = metrics["holdout"].get("auroc")
+    test_v = metrics["test"].get("auc")
+    hold_v = metrics["holdout"].get("auc")
     if test_v is None or hold_v is None:
-        raise SystemExit(f"{path}: missing metrics.test.auroc or metrics.holdout.auroc.")
-    return SplitMetrics(test_auroc=float(test_v), holdout_auroc=float(hold_v))
+        raise SystemExit(f"{path}: missing metrics.test.auc or metrics.holdout.auc.")
+    return SplitMetrics(test_auc=float(test_v), holdout_auc=float(hold_v))
 
 
 def select_best_feat_index(uc_cap_dir: Path, task: str, n_features: int) -> int:
-    """Pick the 1-based feature set with the highest holdout AUROC in the model × feature grid."""
+    """Pick the 1-based feature set with the highest holdout AUC in the model × feature grid."""
     best_idx: Optional[int] = None
     best_holdout = float("-inf")
     for feat_idx in range(1, n_features + 1):
@@ -91,7 +91,7 @@ def select_best_feat_index(uc_cap_dir: Path, task: str, n_features: int) -> int:
             raise SystemExit(f"Missing UC/CAP results directory: {feat_dir}")
         for model in MODELS:
             path = _metrics_json_path(feat_dir, task, model)
-            holdout = load_split_metrics(path, task=task, model=model).holdout_auroc
+            holdout = load_split_metrics(path, task=task, model=model).holdout_auc
             if holdout > best_holdout:
                 best_holdout = holdout
                 best_idx = feat_idx
@@ -125,11 +125,11 @@ def _render_cell(value: float, *, decimals: int, bold: bool) -> str:
     return f"<strong>{text}</strong>" if bold else text
 
 
-def _models_at_max_auroc(
+def _models_at_max_auc(
     data: UcCapTableData, task: str, *, split: str
 ) -> Set[str]:
-    """Models tied for the highest test or holdout AUROC in one task column pair."""
-    attr = "test_auroc" if split == "test" else "holdout_auroc"
+    """Models tied for the highest test or holdout AUC in one task column pair."""
+    attr = "test_auc" if split == "test" else "holdout_auc"
     values = {m: getattr(data.metrics[(task, m)], attr) for m in MODELS}
     best = max(values.values())
     return {m for m, v in values.items() if math.isclose(v, best, rel_tol=0.0, abs_tol=1e-12)}
@@ -162,9 +162,9 @@ def format_table_html(data: UcCapTableData, *, decimals: int) -> str:
         + "\n</tr>"
     )
 
-    bold_test = {task: _models_at_max_auroc(data, task, split="test") for task in TASKS}
+    bold_test = {task: _models_at_max_auc(data, task, split="test") for task in TASKS}
     bold_hold = {
-        task: _models_at_max_auroc(data, task, split="holdout") for task in TASKS
+        task: _models_at_max_auc(data, task, split="holdout") for task in TASKS
     }
 
     for model in MODELS:
@@ -174,14 +174,14 @@ def format_table_html(data: UcCapTableData, *, decimals: int) -> str:
             m = data.metrics[(task, model)]
             cells.append(
                 _render_cell(
-                    m.test_auroc,
+                    m.test_auc,
                     decimals=decimals,
                     bold=model in bold_test[task],
                 )
             )
             cells.append(
                 _render_cell(
-                    m.holdout_auroc,
+                    m.holdout_auc,
                     decimals=decimals,
                     bold=model in bold_hold[task],
                 )
@@ -200,7 +200,7 @@ def write_uc_cap_table(
     output_rel: Path,
     decimals: int = DECIMALS,
 ) -> Path:
-    """Write HTML table with per-task best feature set and per-model test/holdout AUROC."""
+    """Write HTML table with per-task best feature set and per-model test/holdout AUC."""
     uc_cap_dir = repo_root / "results" / results_subdir
     if not uc_cap_dir.is_dir():
         raise SystemExit(f"Not a directory: {uc_cap_dir}")

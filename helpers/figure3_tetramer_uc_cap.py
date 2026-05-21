@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Figure 3: UC/CAP feature-set stability across test vs holdout AUROC (tetramer).
+Build Figure 3: UC/CAP feature-set stability across test vs holdout AUC (tetramer).
 
 Writes ``manuscript/figure3_tetramer_uc_cap.png`` and ``manuscript/figure3_tetramer_uc_cap.svg`` from
 JSON metrics under ``results/tetramer_uc_cap/<feat_index>/``.

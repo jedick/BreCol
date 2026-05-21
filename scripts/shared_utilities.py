@@ -7,7 +7,7 @@ build_run_table()             Run + sample_label + study_name + cancer_type + sp
 build_run_task_table(task)    extends the above with a task_label column
 build_multitask_run_table()   full run table with cd_task_label and ct_task_label columns
 require_binary_classes()      validates a label array has exactly two classes
-binary_auroc_from_scores()  AUROC from positive-class probability scores
+binary_auc_from_scores()  AUC from positive-class probability scores
 
 Constants: RUN_PATTERN, TETRAMERS, CANCER_LABELS, SPLITS, TRAIN, VAL, TEST, HOLDOUT
 
@@ -333,13 +333,13 @@ def require_binary_classes(y: np.ndarray, *, split_name: str, task: str) -> None
         )
 
 
-def binary_auroc_from_scores(
+def binary_auc_from_scores(
     y_true_obj: np.ndarray,
     y_score: np.ndarray,
     *,
     positive_label: Optional[str] = None,
 ) -> float:
-    """Compute binary AUROC from scores for ``positive_label``.
+    """Compute binary AUC from scores for ``positive_label``.
 
     ``y_score`` must be the predicted probability (or score) for ``positive_label``.
     When ``positive_label`` is omitted, the lexicographically second class among

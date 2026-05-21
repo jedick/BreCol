@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Figure 4: UC/CAP feature-set stability across test vs holdout AUROC (HyenaDNA embeddings).
+Build Figure 4: UC/CAP feature-set stability across test vs holdout AUC (HyenaDNA embeddings).
 
 Writes ``manuscript/figure4_embedding_uc_cap.png`` and ``manuscript/figure4_embedding_uc_cap.svg`` from
 JSON metrics under ``results/embedding_uc_cap/<feat_index>/``.

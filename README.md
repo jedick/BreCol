@@ -6,9 +6,9 @@
 
 ## Study design
 
-**Stage 1** uses 16S rRNA sequences from eight studies (four breast cancer, four colorectal cancer). All eight studies contribute to model fitting and testing via in-study train/test splits. In-study test sets will yield optimistic AUROC estimates, as the model has seen sequences from the same study during training.
+**Stage 1** uses 16S rRNA sequences from eight studies (four breast cancer, four colorectal cancer). All eight studies contribute to model fitting and testing via in-study train/test splits. In-study test sets will yield optimistic AUC estimates, as the model has seen sequences from the same study during training.
 
-**Stage 2** addresses this by validating on four holdout studies (two breast, two colorectal) not seen during training. AUROC values are expected to drop substantially for all models. *The central research question is whether the language model generalizes better across studies than classical approaches.*
+**Stage 2** addresses this by validating on four holdout studies (two breast, two colorectal) not seen during training. AUC values are expected to drop substantially for all models. *The central research question is whether the language model generalizes better across studies than classical approaches.*
 
 ## Methods
 
@@ -95,7 +95,7 @@ Split proportions are configured in `defaults.yaml (currently 0.70/0.15/0.15 for
 `make fit_tetramer` fits models on `outputs/tetramer_frequencies.csv`, with CLR, scaling, and PCA.
 Default task/model and other settings are resolved from `fit_classifier` in `defaults.yaml` with results written to `results/scratch/`.
 Add `EXPT=N` to get experiment name and model configuration from `experiments.yaml` and write results to `results/tetramer/{name}.json`.
-Hyperparameters are chosen on validation (`fit_classifier.tuning_metric` in `defaults.yaml`), then AUROC is reported for test and holdout (`metrics.test.auroc` / `metrics.holdout.auroc` in each results JSON).
+Hyperparameters are chosen on validation (`fit_classifier.tuning_metric` in `defaults.yaml`), then AUC is reported for test and holdout (`metrics.test.auc` / `metrics.holdout.auc` in each results JSON).
 Supported models are `baseline`, `knn`, `random_forest`, and `svm`.
 
 Output files:
@@ -143,4 +143,4 @@ Inputs/outputs:
       - Default `make train_hyenadna` writes `results/scratch/train_hyenadna_<task>_<timestamp>.json`.
       - Experiment runs (`make train_hyenadna EXPT=N`) write under the `train_hyenadna.results_json_template` path in `experiments.yaml` (for example `results/hyenadna/{name}_{max_length/1024}k_s{seed}.json`).
       - Existing JSON outputs are skipped per `(experiment, seed, max_length)` combination.
-      - Checkpoints are selected by `train_hyenadna.tuning_metric` (default `auroc`); each results JSON reports `metrics.test.auroc` and `metrics.holdout.auroc`.
+      - Checkpoints are selected by `train_hyenadna.tuning_metric` (default `auc`); each results JSON reports `metrics.test.auc` and `metrics.holdout.auc`.

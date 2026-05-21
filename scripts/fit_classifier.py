@@ -9,7 +9,7 @@ Modes (mutually exclusive):
 
 Both modes use scripts/shared_utilities.py for train/val/test/holdout, support the same
 model families (baseline, knn, random_forest, svm), hyperparameter grids from
-defaults.yaml fit_classifier (YAML lists; validation tuning_metric, default auroc),
+defaults.yaml fit_classifier (YAML lists; validation tuning_metric, default auc),
 and optional experiment overlays from experiments.yaml (fit_classifier.experiments).
 
 UC/CAP mode:
@@ -40,7 +40,7 @@ from shared_utilities import (
     TEST,
     TRAIN,
     VAL,
-    binary_auroc_from_scores,
+    binary_auc_from_scores,
     build_run_task_table,
     require_binary_classes,
     TETRAMERS,
@@ -58,7 +58,7 @@ from sklearn.svm import SVC
 
 # ----- Constants -----
 MODEL_CHOICES = ("baseline", "knn", "random_forest", "svm")
-TUNING_METRIC_CHOICES = ("auroc", "f1")
+TUNING_METRIC_CHOICES = ("auc", "f1")
 
 
 @dataclass(frozen=True)
@@ -97,8 +97,8 @@ class TuningResult:
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    test_auroc: float
-    holdout_auroc: float
+    test_auc: float
+    holdout_auc: float
 
 
 # ----- UC/CAP path resolution (aligned with helpers/list_uc_cap_feature_outputs.py) -----
@@ -634,10 +634,10 @@ def _score_val(y_true: np.ndarray, y_pred: np.ndarray, tuning_metric: str) -> fl
 
 
 def _validation_score(pipe: Pipeline, splits: TaskSplits, tuning_metric: str) -> float:
-    if tuning_metric == "auroc":
+    if tuning_metric == "auc":
         y_score = _evaluation_scores(pipe, splits.X_val)
-        auroc = binary_auroc_from_scores(splits.y_val, y_score)
-        return float(auroc) if np.isfinite(auroc) else float("-inf")
+        auc = binary_auc_from_scores(splits.y_val, y_score)
+        return float(auc) if np.isfinite(auc) else float("-inf")
     return _score_val(splits.y_val, pipe.predict(splits.X_val), tuning_metric)
 
 
@@ -849,12 +849,12 @@ def _tune_model_on_validation(
 def _evaluate_model(pipe: Pipeline, splits: TaskSplits) -> EvaluationResult:
     pipe.fit(splits.X_train, splits.y_train)
     test_scores = _evaluation_scores(pipe, splits.X_test)
-    test_auroc = binary_auroc_from_scores(splits.y_test, test_scores)
-    holdout_auroc = float("nan")
+    test_auc = binary_auc_from_scores(splits.y_test, test_scores)
+    holdout_auc = float("nan")
     if len(splits.y_holdout) > 0:
         hold_scores = _evaluation_scores(pipe, splits.X_holdout)
-        holdout_auroc = binary_auroc_from_scores(splits.y_holdout, hold_scores)
-    return EvaluationResult(test_auroc=test_auroc, holdout_auroc=holdout_auroc)
+        holdout_auc = binary_auc_from_scores(splits.y_holdout, hold_scores)
+    return EvaluationResult(test_auc=test_auc, holdout_auc=holdout_auc)
 
 
 def _label_counts(y: np.ndarray) -> Dict[str, int]:
@@ -897,9 +897,9 @@ def _print_dataset_summary(splits: TaskSplits, *, prefix: str = "") -> None:
 
 def _print_evaluation(model: str, result: EvaluationResult, *, prefix: str = "") -> None:
     del model
-    test_value = f"{result.test_auroc:.6f}" if np.isfinite(result.test_auroc) else "nan"
-    holdout_value = f"{result.holdout_auroc:.6f}" if np.isfinite(result.holdout_auroc) else "nan"
-    print(_prefixed(prefix, "Evaluation (binary AUROC):"), flush=True)
+    test_value = f"{result.test_auc:.6f}" if np.isfinite(result.test_auc) else "nan"
+    holdout_value = f"{result.holdout_auc:.6f}" if np.isfinite(result.holdout_auc) else "nan"
+    print(_prefixed(prefix, "Evaluation (binary AUC):"), flush=True)
     print(_prefixed(prefix, f"  test: {test_value}"), flush=True)
     print(_prefixed(prefix, f"  holdout: {holdout_value}"), flush=True)
 
@@ -1008,8 +1008,8 @@ def _write_results_json(
         "best_hyperparameters": _jsonify_for_results(dict(tuning.best_params)),
     }
     metrics_block: Dict[str, object] = {
-        "test": {"auroc": _float_for_json(evaluation.test_auroc)},
-        "holdout": {"auroc": _float_for_json(evaluation.holdout_auroc)},
+        "test": {"auc": _float_for_json(evaluation.test_auc)},
+        "holdout": {"auc": _float_for_json(evaluation.holdout_auc)},
     }
     payload = {
         "script": Path(__file__).name,

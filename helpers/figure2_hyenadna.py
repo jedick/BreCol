@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Build Figure 2: HyenaDNA AUROC vs sequence length per set (test vs holdout).
+Build Figure 2: HyenaDNA AUC vs sequence length per set (test vs holdout).
 
 Layout:
 - 1 row, 2 columns (cancer diagnosis, cancer type)
 - x-axis = length per set (1k, 2k, 4k, 8k, 16k) from max_length train_hyenadna runs
-- y-axis = AUROC from ``results/hyenadna/mt_max_length_<bp>_<token>_s*.json``
+- y-axis = AUC from ``results/hyenadna/mt_max_length_<bp>_<token>_s*.json``
   (mean and sample stdev across seeds)
 
 Each subplot draws:
@@ -58,7 +58,7 @@ def _len_token(bp: int) -> str:
     return f"{bp // 1024}k"
 
 
-def _read_task_aurocs(path: Path, task_key: str) -> Tuple[float, float]:
+def _read_task_aucs(path: Path, task_key: str) -> Tuple[float, float]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit(f"{path}: expected a JSON object.")
@@ -70,13 +70,13 @@ def _read_task_aurocs(path: Path, task_key: str) -> Tuple[float, float]:
         part = blob.get(split)
         if not isinstance(part, dict):
             raise SystemExit(f"{path}: metrics[{task_key!r}][{split!r}] must be an object.")
-    test_v = blob["test"].get("auroc")
-    hold_v = blob["holdout"].get("auroc")
+    test_v = blob["test"].get("auc")
+    hold_v = blob["holdout"].get("auc")
     if test_v is None or hold_v is None:
-        raise SystemExit(f"{path}: missing test or holdout auroc for {task_key}.")
+        raise SystemExit(f"{path}: missing test or holdout auc for {task_key}.")
     t, h = float(test_v), float(hold_v)
     if not math.isfinite(t) or not math.isfinite(h):
-        raise SystemExit(f"{path}: non-finite AUROC for {task_key} ({t}, {h}).")
+        raise SystemExit(f"{path}: non-finite AUC for {task_key} ({t}, {h}).")
     return t, h
 
 
@@ -117,7 +117,7 @@ def collect_series(hyenadna_dir: Path) -> Dict[str, List[LengthPoint]]:
             test_seed: List[float] = []
             hold_seed: List[float] = []
             for path in paths:
-                t, h = _read_task_aurocs(path, task_key)
+                t, h = _read_task_aucs(path, task_key)
                 test_seed.append(t)
                 hold_seed.append(h)
             test_mean, test_std = _aggregate_seed_values(test_seed)
@@ -191,7 +191,7 @@ def build_plot(series: Dict[str, List[LengthPoint]], output_path: Path) -> None:
         ax.set_ylim(0.5, 1.02)
         ax.grid(alpha=0.25, linewidth=0.7)
 
-    axes[0].set_ylabel("AUROC")
+    axes[0].set_ylabel("AUC")
     for ax in axes:
         ax.set_xlabel("Length per set")
 
