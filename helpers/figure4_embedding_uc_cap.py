@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Build Figure 3: UC/CAP feature-set stability across test vs holdout AUROC (HyenaDNA embeddings).
+Build Figure 4: UC/CAP feature-set stability across test vs holdout AUROC (HyenaDNA embeddings).
 
-Writes ``manuscript/figure3_embedding_uc_cap.png`` and ``manuscript/figure3_embedding_uc_cap.svg`` from
+Writes ``manuscript/figure4_embedding_uc_cap.png`` and ``manuscript/figure4_embedding_uc_cap.svg`` from
 JSON metrics under ``results/embedding_uc_cap/<feat_index>/``.
 
-Run from the repository root: ``python helpers/figure3_embedding_uc_cap.py``
+Run from the repository root: ``python helpers/figure4_embedding_uc_cap.py``
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from pathlib import Path
 
 from shared_figure_code import MODELS_SVM_RF, write_uc_cap_stability_figure
 
-OUTPUT_PNG = Path("manuscript") / "figure3_embedding_uc_cap.png"
-OUTPUT_SVG = Path("manuscript") / "figure3_embedding_uc_cap.svg"
+OUTPUT_PNG = Path("manuscript") / "figure4_embedding_uc_cap.png"
+OUTPUT_SVG = Path("manuscript") / "figure4_embedding_uc_cap.svg"
 RESULTS_SUBDIR = "embedding_uc_cap"
 
 

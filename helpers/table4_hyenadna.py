@@ -45,12 +45,12 @@ import yaml
 # Row order follows ``experiments.yaml``. Descriptions may contain HTML (e.g.
 # <sup>) and are intentionally not escaped when rendered into the <td>.
 ABLATION_DESCRIPTIONS: Dict[str, str] = {
-    "best_recipe": "Best recipe (baseline)",
-    "high_lr": "High learning rate (5e-4 instead of 2e-4)",
-    "dropout_0.2": "Add dropout to MLP classification head (0.2)",
-    "hidden_256": "MLP hidden layer width 256 (instead of 512)",
-    "unfrozen_backbone": "Unfrozen backbone (lr 2e-4)",
-    "unfrozen_backbone_low_lr": "Unfrozen backbone (lr 1e-5)",
+    "best_recipe": "1",
+    "high_lr": "2",
+    "dropout_0.2": "3",
+    "hidden_256": "4",
+    "unfrozen_backbone": "5",
+    "unfrozen_backbone_low_lr": "6",
     #"no_dropout": "No dropout in classification heads",
     #"hidden_64": "MLP with 64-width hidden layer",
     #"low_lr": "Low learning rate (1e-5 instead of 2e-4)",

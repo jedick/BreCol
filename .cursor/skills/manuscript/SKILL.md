@@ -3,7 +3,7 @@ name: manuscript
 description: >-
   Runs manuscript helper Python scripts from the repo root. User says /manuscript
   plus table N (filename number), figure N, optional multi-number batches, or
-  all tables / all figures — numbers match table3_, table4_, figure1_, etc.
+  all tables / all figures — numbers match table3_, table4_, figure2_, etc.
 ---
 
 # Manuscript (helper script runner)
@@ -19,7 +19,7 @@ This skill only **executes** matching `helpers/table*.py` and `helpers/figure*.p
 Numbers refer to the **digit immediately after `table` or `figure` in the basename**, before the next `_`.
 
 - **Tables:** resolve *n* with glob `helpers/table{n}_*.py` (one underscore after the digits, then any suffix). Examples: `table3_tetramer.py` → *n* = 3; `table6_tetramer_uc_cap.py` → *n* = 6; `table7_embedding_uc_cap.py` → *n* = 7.
-- **Figures:** resolve *n* with glob `helpers/figure{n}_*.py`. Examples: `figure1_tetramer_uc_cap.py` → *n* = 1; `figure3_embedding_uc_cap.py` → *n* = 3.
+- **Figures:** resolve *n* with glob `helpers/figure{n}_*.py`. Examples: `figure3_tetramer_uc_cap.py` → *n* = 1; `figure4_embedding_uc_cap.py` → *n* = 3.
 
 **Do not** use 1-based index into a sorted list of all `table*.py` files. Only the **filename number** *n* matters.
 

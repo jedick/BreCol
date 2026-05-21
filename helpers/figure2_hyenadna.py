@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Figure 1: HyenaDNA AUROC vs sequence length per set (test vs holdout).
+Build Figure 2: HyenaDNA AUROC vs sequence length per set (test vs holdout).
 
 Layout:
 - 1 row, 2 columns (cancer diagnosis, cancer type)
@@ -14,9 +14,9 @@ Each subplot draws:
 
 Missing ``max_length_*`` result groups are skipped (partial result trees are OK).
 
-Writes ``manuscript/figure1_hyenadna.png`` and ``manuscript/figure1_hyenadna.svg``.
+Writes ``manuscript/figure2_hyenadna.png`` and ``manuscript/figure2_hyenadna.svg``.
 
-Run from the repository root: ``python helpers/figure1_hyenadna.py``
+Run from the repository root: ``python helpers/figure2_hyenadna.py``
 """
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ LENGTHS_BP: Tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768)
 RESULTS_GLOB = "mt_max_length_*_*_s*.json"
 _RESULT_RE = re.compile(r"mt_max_length_(\d+)_(\d+k)_s\d+\.json$")
 
-OUTPUT_PNG = Path("manuscript") / "figure1_hyenadna.png"
-OUTPUT_SVG = Path("manuscript") / "figure1_hyenadna.svg"
+OUTPUT_PNG = Path("manuscript") / "figure2_hyenadna.png"
+OUTPUT_SVG = Path("manuscript") / "figure2_hyenadna.svg"
 
 
 @dataclass(frozen=True)

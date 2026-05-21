@@ -1,0 +1,42 @@
+% manuscript/latex/figure_placement.tex
+%
+% Pandoc LaTeX preamble loaded via --include-in-header in the Makefile's
+% manuscript_pdf target. Its job is to keep figures from being shuffled onto
+% dedicated "float pages" (the cause of large empty space around tall figures
+% such as figure3_tetramer_uc_cap).
+%
+% Pandoc emits each Markdown image with a caption as
+%   \begin{figure} \centering \includegraphics{...} \caption{...} \end{figure}
+% without a placement specifier, which LaTeX defaults to [tbp] (top, bottom,
+% or float page). Once a figure exceeds \floatpagefraction (default 0.5) of a
+% page, LaTeX prefers a float page even if the figure could squeeze into the
+% current page, producing the gap problem.
+%
+% Strategy (current default): use the float package's [H] placement so every
+% figure becomes non-floating and lands exactly where it appears in the
+% Markdown source. Combined with the spacing tweaks below this gives steady
+% in-line figure flow without float-page exile.
+%
+% Tables here are emitted as longtable (non-floating, page-breakable), so
+% these settings only affect figures. If you ever switch to non-longtable
+% tables (e.g. --variable=tables-need-no-longtable or a filter rewrite), add
+% \floatplacement{table}{H} alongside the figure rule below.
+
+%\usepackage{float}
+%\floatplacement{figure}{H}
+
+% Tighten vertical space inserted around (now non-floating) figures so they
+% sit closer to surrounding paragraphs. Defaults are ~12-20pt; these are
+% deliberately modest reductions, not aggressive crushing.
+%\setlength{\intextsep}{10pt plus 2pt minus 2pt}
+%\setlength{\textfloatsep}{10pt plus 2pt minus 4pt}
+
+% Alternative recipe (commented out): keep figures as floats but loosen the
+% placement parameters so larger figures are allowed to share a page with
+% text rather than spilling onto a float page. Uncomment this block AND
+% remove the two \floatplacement / \usepackage{float} lines above to switch.
+%
+\renewcommand{\topfraction}{0.85}
+\renewcommand{\bottomfraction}{0.7}
+\renewcommand{\textfraction}{0.1}
+\renewcommand{\floatpagefraction}{0.85}

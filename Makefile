@@ -304,23 +304,30 @@ MANUSCRIPT_HTML := $(MANUSCRIPT_BUILD_DIR)/manuscript.html
 MANUSCRIPT_PDF := $(MANUSCRIPT_BUILD_DIR)/manuscript.pdf
 MANUSCRIPT_JEKYLL := $(MANUSCRIPT_BUILD_DIR)/manuscript.jekyll.md
 
-MANUSCRIPT_DEPS := $(MANUSCRIPT_SRC) $(MANUSCRIPT_BIB) $(MANUSCRIPT_CSL)
+MANUSCRIPT_FILTER_INLINE := $(ROOT)/manuscript/filters/inline_html_tables.lua
+MANUSCRIPT_LATEX_HEADER := $(ROOT)/manuscript/latex/figure_placement.tex
+MANUSCRIPT_DEPS := $(MANUSCRIPT_SRC) $(MANUSCRIPT_BIB) $(MANUSCRIPT_CSL) $(MANUSCRIPT_FILTER_INLINE)
+MANUSCRIPT_TABLE_HTML := $(wildcard $(ROOT)/manuscript/table*.html)
 
 $(MANUSCRIPT_BUILD_DIR):
 	@mkdir -p "$(MANUSCRIPT_BUILD_DIR)"
 
-$(MANUSCRIPT_HTML): $(MANUSCRIPT_DEPS) | $(MANUSCRIPT_BUILD_DIR)
+$(MANUSCRIPT_HTML): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
 		--citeproc --standalone --mathjax \
 		-o "$(MANUSCRIPT_HTML)"
 
-$(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) | $(MANUSCRIPT_BUILD_DIR)
+$(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) $(MANUSCRIPT_LATEX_HEADER) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
+		--include-in-header="$(MANUSCRIPT_LATEX_HEADER)" \
 		--citeproc --pdf-engine=$(PDF_ENGINE) \
 		-o "$(MANUSCRIPT_PDF)"
 
-$(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) | $(MANUSCRIPT_BUILD_DIR)
+$(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
 		--citeproc --to=gfm --wrap=preserve \
 		-o "$(MANUSCRIPT_JEKYLL)"
 
