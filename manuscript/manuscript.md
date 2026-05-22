@@ -8,17 +8,17 @@ link-citations: true
 
 ## Abstract
 
-Microbiome-based cancer prediction benchmarks routinely overestimate real-world performance because test samples are drawn from the same studies used for training,
+Microbiome-based cancer prediction benchmarks sometimes overestimate real-world performance because test samples are drawn from the same studies used for training,
 allowing models to exploit study-specific technical artifacts rather than biological signal.
 We present BreCol, a temporally structured multi-study compilation of 2,040 16S rRNA sequencing runs covering
 breast cancer, colorectal cancer, and healthy cohorts across 26 studies spanning more than a decade.
 By reserving the six most recent studies per cancer type as an external holdout,
 we ensure that holdout evaluation reflects deployment on data from new laboratories, clinical protocols, and geographic regions.
 We train four classifier pipelines: classical (tetramer counts aggregated to run-level frequencies or
-unsupervised clustering with cluster abundance profiles (UC/CAP)),
-deep learning (HyenaDNA sequence modeling with mean-pooled token representations of packed contexts), and hybrid (sequence-level HyenaDNA embeddings with UC/CAP profiles).
+unsupervised clustering with cluster abundance profiles (UC/CAP)), deep learning (HyenaDNA sequence modeling with mean-pooled
+token representations of packed contexts), and hybrid (sequence-level HyenaDNA embeddings with UC/CAP profiles).
 Among classical methods, UC/CAP achieves the strongest holdout performance (AUC 0.84 for cancer type with KNN, 0.61 for cancer diagnosis with SVM).
-The differential between test (in-study) and holdout AUC is at least 0.15 points for both cancer diagnosis and cancer type prediction
+The differential between test (in-study) and holdout AUC is 0.15 points for both cancer diagnosis and cancer type prediction
 for the best classical classifier, confirming that conventional evaluation inflates apparent model skill.
 A pure deep-learning pipeline with HyenaDNA achieves relatively poor results, perhaps because the mean-pooled token representation
 before the classification layer discards within-run compositional structure.
@@ -32,7 +32,7 @@ The community of microorganisms inhabiting the human digestive tract, known as t
 Large-scale epidemiological and mechanistic studies have associated compositional shifts in gut bacteria with colorectal cancer (CRC),
 and growing evidence implicates gut dysbiosis in breast cancer as well.
 Machine learning models trained on microbiome profiles have shown promise for distinguishing cancer patients from healthy controls within individual cohorts,
-raising the prospect of non-invasive, microbiome-based cancer screening [@WPK+19; @GJH+15; @SHL+25].
+raising the prospect of non-invasive, microbiome-based cancer screening [@WPK+19; @SHL+25].
 
 The dominant workflow for characterizing the gut microbiome is 16S rRNA amplicon sequencing.
 A short, phylogenetically informative region of the bacterial ribosomal gene is amplified and sequenced,
@@ -97,10 +97,9 @@ Arranged chronologically by publication year, the first seven studies per cancer
 Development and holdout sets are separated not only by study boundaries but also by time: all holdout studies are from 2023 onward.
 This design makes the benchmark a realistic challenge: predictions must transfer to future datasets available only after the model was trained.
 
-Some studies have substantially larger sample counts than others.
-To improve study balance, we applied random sampling within several studies (stratified by cancer-versus-healthy label).
-The sample sizes in Table 1 reflect counts after sampling at the indicated rate; these samples are flagged as `sample_used=TRUE` in the data CSV files.
-Additionally, for two studies (BVW+21 and CAB+24) we excluded Runs with <2000 spots.
+: Breast and colorectal cancer studies included in the BreCol compilation, arranged chronologically by publication year and partitioned into development
+(first seven studies per cancer type) and holdout (remaining six per cancer type) sets.
+Sample counts reflect counts after stratified subsampling at the indicated rate.
 
 |Ref|Year|Type|Cancer|Healthy|Rate|BioProject|Partition|
 |---|---|---|---|---|---|---|---|
@@ -132,9 +131,10 @@ Additionally, for two studies (BVW+21 and CAB+24) we excluded Runs with <2000 sp
 |[@GYX+25]|2025|colorectal|67|64|0.6|PRJNA1092526|holdout|
 |||||||PRJNA1092376||
 
-: Breast and colorectal cancer studies included in the BreCol compilation, arranged chronologically by publication year and partitioned into development
-(first seven studies per cancer type) and holdout (remaining six per cancer type) sets.
-Sample counts reflect counts after stratified subsampling at the indicated rate.
+Some studies have substantially larger sample counts than others.
+To improve study balance, we applied random sampling within several studies (stratified by cancer-versus-healthy label).
+The sample sizes in Table 1 reflect counts after sampling at the indicated rate; these samples are flagged as `sample_used=TRUE` in the data CSV files.
+Additionally, for two studies ([@BVW+21] and [@CAB+24]) we excluded runs with <2000 spots.
 
 ### Preprocessing, splits, and sampling
 
@@ -169,14 +169,14 @@ For the majority-class baseline, we predict the most frequent class in the train
 
 Table 2 lists the hyperparameter values used for grid search.
 
+: Classifier models and hyperparameter grids used in run-level tetramer frequency classification
+and in UC/CAP classification for both tetramer counts and HyenaDNA embeddings.
+
 | Model | Hyperparameters |
 |-|-|
 | KNN | PCA n_components (none, 0.95), n_neighbors (5, 15) |
 | SVM | PCA n_components (none, 0.95), C (1.0, 10.0) |
 | Random Forest | n_estimators (200, 500), max_depth (none, 10), min_samples_leaf (1, 2) |
-
-: Classifier models and hyperparameter grids used in run-level tetramer frequency classification
-and in UC/CAP classification for both tetramer counts and HyenaDNA embeddings.
 
 For both KNN and SVM we applied a centered log-ratio transform (CLR), standardized the CLR coordinates, then applied PCA.
 For KNN we used inverse distance weighting and tuned the PCA components and number of neighbors.
@@ -233,7 +233,7 @@ This aggregation step makes it similar to using run-level tetramer frequencies f
 In contrast, tetramer counts and HyenaDNA embeddings are raw sequence-level features that can both be used to build UC/CAP profiles that preserve compositional trends.
 The difference is that tetramer counts are an "engineered" feature, while embeddings are learned by the pretrained model (in the case of HyenaDNA, on the human genome).
 
-![Classification pipelines.](figure1_pipelines.pdf)
+![Classification pipelines.](figure1_pipelines.svg)
 
 Based on this picture, we propose carrying out performance comparisons at equal levels:
 - At the run level: tetramer frequencies vs HyenaDNA sequence modeling
@@ -244,7 +244,7 @@ Based on this picture, we propose carrying out performance comparisons at equal 
 The benchmark dataset is composed of CSV files with instructions and scripts for downloading data from NCBI and preprocessing.
 The project code is written in Python with YAML configuration and a Makefile-driven analysis pipeline.
 The official HyenaDNA implementation was modified for this project and structured as a pip-installable package for import by analysis scripts.
-After downloading, the entire pipeline runs in ca. 22 hours on an 8 CPU core machine with 40 GB of RAM and a 16 GB NVIDIA GPU.
+After downloading, the entire pipeline runs in ca. 22 hours on a machine with 8 CPU cores, 40 GB of RAM, and a 16 GB NVIDIA GPU.
 
 ## Results
 
@@ -293,12 +293,9 @@ We trained HyenaDNA with the ablations listed below; results are summarized in T
 [Table 4 data](table4_hyenadna.html "HyenaDNA fine-tuning results on the multitask 32k model for the best recipe and targeted ablations,
 reported as mean ± standard deviation across five random seeds. Epoch is the mean epoch number with the best mean validation AUC across both tasks.").
 
-Several trends are apparent in these ablations:
-
-- Increasing learning rate, adding dropout, or decreasing the MLP hidden layer width have no discernible effect on test or baseline performance within error.
-- Unfreezing the HyenaDNA backbone leads to higher performance on test split (most notably for cancer type classification) but lower gains on the holdout split.
-- The improvements on holdout associated with unfrozen backbone are tempered by higher variability (larger standard deviation),
-  likely a result of disturbing pretrained weights. Lowering the learning rate in our experiments didn't stabilize the predictions with full model fine-tuning.
+Several trends are apparent in these ablations.
+Increasing learning rate, adding dropout, or decreasing the MLP hidden layer width have no discernible effect on test or baseline performance within error.
+The improvements on holdout associated with unfrozen backbone (most notably for cancer type) are tempered by higher variability. Lowering the learning rate in our experiments did not stabilize the predictions with full model fine-tuning.
 
 We also verified that using float16 AMP, gradient clipping (norm 1.0), or tuning by validation F1 instead of AUC did not move holdout AUC beyond error.
 
@@ -318,18 +315,15 @@ Increasing the number of bases modeled per set does not reliably improve general
 
 ### Classification with cluster abundance profiles for tetramer counts
 
-We explored six combinations of the three UC/CAP hyperparameters (Table 5).
+We explored six combinations of the three UC/CAP hyperparameters defined by *n*<sub>UC</sub> (sequences per run used for unsupervised clustering), *K* (number of clusters), and *n*<sub>CAP</sub> (sequences per run assigned to centroids and used to build cluster abundance profiles) (Table 5).
 
-| Feature set | *n*UC | *K* | *n*CAP |
-|-|-|-|-|
-| 1 |  500 | 1000 |   500 |
-| 2 | 1000 | 1000 |  1000 |
-| 3 | 1000 | 2000 |  1000 |
-| 4 | 1000 | 1000 |  5000 |
-| 5 | 1000 | 2000 |  5000 |
-| 6 | 1000 | 3000 |  5000 |
+: UC/CAP feature sets.
 
-: UC/CAP feature sets defined by *n*<sub>UC</sub> (sequences per run used for unsupervised clustering), *K* (number of clusters), and *n*<sub>CAP</sub> (sequences per run assigned to centroids and used to build cluster abundance profiles).
+| Feature set | *n*UC | *K* | *n*CAP | Feature set | *n*UC | *K* | *n*CAP |
+|-|-|-|-|-|-|-|-|
+| 1 |  500 | 1000 |   500 | 4 | 1000 | 1000 |  5000 |
+| 2 | 1000 | 1000 |  1000 | 5 | 1000 | 2000 |  5000 |
+| 3 | 1000 | 2000 |  1000 | 6 | 1000 | 3000 |  5000 |
 
 These UC/CAP parameters produced six different cluster abundance profiles (or feature sets) used for standard supervised classification
 with the models and hyperparameter grids described above (Table 2). 
@@ -343,16 +337,16 @@ so we can legitimately assess holdout performance on unseen studies.
 For cancer diagnosis, SVM achieves the best holdout performance, followed by random forest and KNN.
 For cancer type, KNN leads on holdout, followed by random forest and SVM.
 
-[Table 6 data](table6_tetramer_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts,
-with the best feature set selected per task by test AUC.").
-
 The gap between in-study test and holdout is again large for cancer type, but UC/CAP with KNN achieves substantially higher cancer type holdout AUC
 than any tetramer-based classifier, demonstrating that richer within-run compositional features partially attenuate the study-level shortcut problem.
+
+[Table 6 data](table6_tetramer_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts,
+with the best feature set selected per task by test AUC.").
 
 ### Classification with cluster abundance profiles for HyenaDNA embeddings
 
 We repeated the UC/CAP pipeline on sequence-level HyenaDNA embeddings (pretrained 32k model, no fine-tuning),
-creating six feature sets parallel to those for tetramer counts (Table 5).
+creating six feature sets parallel to those for tetramer counts.
 Figure 4 shows holdout and test AUC across feature sets for SVM and random forest.
 Holdout curves are comparatively flat: neither task shows the sharp swings seen with tetramer-based profiles in Figure 3,
 suggesting that embedding CAPs are less sensitive to *K* and *n*<sub>CAP</sub> over this grid.
@@ -376,7 +370,7 @@ The literature numbers come from within-study cross-validation or test splits ra
 and are therefore not directly comparable to true holdout performance.
 
 [Table 8 data](table8_auc_comparison.html "Per-study cancer diagnosis AUC from the best tetramer UC/CAP classifier selected in Table 6 (SVM, feature set 5).
-AUC is computed over each study's test-split runs (development) or all runs (holdout). Literature AUC values for colorectal cancer are shown where reported.")
+AUC is computed over each study's test-split runs (development) or all runs (holdout); the *n* column reports the total number of samples (cancer + healthy) contributing to each per-study AUC. Literature AUC values for colorectal cancer are shown where reported.")
 
 We did not find direct AUC comparisons in the literature for the breast cancer datasets we used.
 Here we compare with some different studies for breast cancer:
@@ -426,7 +420,7 @@ All contributors to those studies are acknowledged for making this study possibl
 
 Cursor was used for code generation and for writing sections of the manuscript.
 Claude Sonnet 4.6 was used for polishing the text; prompts are available in the repository.
-Post-AI cleanup was done by the author.
+Post-AI review and cleanup was done by the author.
 
 ## Code and data availability
 

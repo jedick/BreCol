@@ -56,7 +56,7 @@ DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 
 .PHONY: help download_data tetramer_frequencies tetramer_cache embedding_cache fit_tetramer \
 	fit_uc_cap run_uc_cap train_hyenadna audit_run_tensors explain explain-% \
-	manuscript_html manuscript_pdf manuscript_jekyll publish_blog
+	manuscript_pdf manuscript_jekyll publish_blog
 
 help:
 	@echo "BreCol Makefile (script defaults from defaults.yaml)"
@@ -108,13 +108,15 @@ help:
 	@echo "      Examples: make explain TARGET=tetramer_cache"
 	@echo "                make explain-tetramer_cache"
 	@echo ""
-	@echo "  make manuscript_html | manuscript_pdf | manuscript_jekyll"
+	@echo "  make manuscript_pdf | manuscript_jekyll"
 	@echo "      Render manuscript/manuscript.md via Pandoc + BibTeX (references.bib, csl/nature.csl)."
-	@echo "      Outputs under manuscript/build/: manuscript.html, manuscript.pdf, manuscript.jekyll.md."
+	@echo "      Outputs under manuscript/build/: manuscript.pdf, manuscript.jekyll.md."
 	@echo ""
-	@echo "  make publish_blog BLOG_REPO=<path> [DATE=YYYY-MM-DD] [PUSH=1]"
+	@echo "  make publish_blog BLOG_REPO=<path> [PUSH=1]"
 	@echo "      Render manuscript.jekyll.md and copy it (with figures and table HTML) into"
-	@echo "      <BLOG_REPO>/_posts/YYYY-MM-DD-brecol.md; add PUSH=1 to commit and push."
+	@echo "      <BLOG_REPO>/_posts/<POST_DATE>-<POST_SLUG>.md (date and slug fixed in"
+	@echo "      helpers/publish_blog.py; last_modified_at is stamped with today's date);"
+	@echo "      add PUSH=1 to commit and push."
 	@echo ""
 
 $(TETRA_CSV): $(TETRAMER_CACHE) $(DATA_CSVS) $(ROOT)/scripts/calculate_tetramer_frequencies.py \
@@ -300,23 +302,19 @@ MANUSCRIPT_SRC := $(ROOT)/manuscript/manuscript.md
 MANUSCRIPT_BIB := $(ROOT)/manuscript/references.bib
 MANUSCRIPT_CSL := $(ROOT)/manuscript/csl/nature.csl
 MANUSCRIPT_BUILD_DIR := $(ROOT)/manuscript/build
-MANUSCRIPT_HTML := $(MANUSCRIPT_BUILD_DIR)/manuscript.html
 MANUSCRIPT_PDF := $(MANUSCRIPT_BUILD_DIR)/manuscript.pdf
 MANUSCRIPT_JEKYLL := $(MANUSCRIPT_BUILD_DIR)/manuscript.jekyll.md
 
 MANUSCRIPT_FILTER_INLINE := $(ROOT)/manuscript/filters/inline_html_tables.lua
+MANUSCRIPT_FILTER_NUMFIG := $(ROOT)/manuscript/filters/number_figures.lua
+MANUSCRIPT_FILTER_NUMTAB := $(ROOT)/manuscript/filters/number_tables.lua
+MANUSCRIPT_FILTER_TABCAP := $(ROOT)/manuscript/filters/gfm_table_captions.lua
 MANUSCRIPT_LATEX_HEADER := $(ROOT)/manuscript/latex/figure_placement.tex
 MANUSCRIPT_DEPS := $(MANUSCRIPT_SRC) $(MANUSCRIPT_BIB) $(MANUSCRIPT_CSL) $(MANUSCRIPT_FILTER_INLINE)
 MANUSCRIPT_TABLE_HTML := $(wildcard $(ROOT)/manuscript/table*.html)
 
 $(MANUSCRIPT_BUILD_DIR):
 	@mkdir -p "$(MANUSCRIPT_BUILD_DIR)"
-
-$(MANUSCRIPT_HTML): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) | $(MANUSCRIPT_BUILD_DIR)
-	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
-		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
-		--citeproc --standalone --mathjax \
-		-o "$(MANUSCRIPT_HTML)"
 
 $(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) $(MANUSCRIPT_LATEX_HEADER) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
@@ -325,14 +323,15 @@ $(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) $(MANUSCRIPT_LATE
 		--citeproc --pdf-engine=$(PDF_ENGINE) \
 		-o "$(MANUSCRIPT_PDF)"
 
-$(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) | $(MANUSCRIPT_BUILD_DIR)
+$(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_FILTER_NUMFIG) $(MANUSCRIPT_FILTER_NUMTAB) $(MANUSCRIPT_FILTER_TABCAP) $(MANUSCRIPT_TABLE_HTML) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
 		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
-		--citeproc --to=gfm --wrap=preserve \
+		--lua-filter "$(MANUSCRIPT_FILTER_NUMTAB)" \
+		--citeproc \
+		--lua-filter "$(MANUSCRIPT_FILTER_TABCAP)" \
+		--lua-filter "$(MANUSCRIPT_FILTER_NUMFIG)" \
+		--to=gfm --wrap=preserve \
 		-o "$(MANUSCRIPT_JEKYLL)"
-
-manuscript_html: $(MANUSCRIPT_HTML)
-	@echo "Up to date: $(MANUSCRIPT_HTML)"
 
 manuscript_pdf: $(MANUSCRIPT_PDF)
 	@echo "Up to date: $(MANUSCRIPT_PDF)"
@@ -340,17 +339,16 @@ manuscript_pdf: $(MANUSCRIPT_PDF)
 manuscript_jekyll: $(MANUSCRIPT_JEKYLL)
 	@echo "Up to date: $(MANUSCRIPT_JEKYLL)"
 
-# Publish to a Minimal Mistakes blog repository.
+# Publish to a Minimal Mistakes blog repository. The post date and slug are
+# fixed in helpers/publish_blog.py; each run stamps last_modified_at with
+# today's date.
 #   make publish_blog BLOG_REPO=~/github/your-blog            # write only
 #   make publish_blog BLOG_REPO=~/github/your-blog PUSH=1     # write + commit + push
-#   make publish_blog BLOG_REPO=... DATE=2026-05-20           # override post date
 BLOG_REPO ?=
-DATE ?=
 PUSH ?=
 BLOG_REPO_ARG := $(if $(strip $(BLOG_REPO)),--blog-repo $(BLOG_REPO),)
-DATE_ARG := $(if $(strip $(DATE)),--date $(DATE),)
 PUSH_ARG := $(if $(filter 1,$(strip $(PUSH))),--push,)
 
 publish_blog: $(MANUSCRIPT_JEKYLL) $(ROOT)/helpers/publish_blog.py
 	cd "$(ROOT)" && $(PYTHON) helpers/publish_blog.py \
-		$(BLOG_REPO_ARG) $(DATE_ARG) $(PUSH_ARG)
+		$(BLOG_REPO_ARG) $(PUSH_ARG)

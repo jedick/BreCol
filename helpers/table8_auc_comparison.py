@@ -94,10 +94,27 @@ def _per_study_auc(per_study: Mapping[str, dict], study_name: str) -> Optional[f
     return f if math.isfinite(f) else None
 
 
+def _per_study_n(per_study: Mapping[str, dict], study_name: str) -> Optional[int]:
+    entry = per_study.get(study_name)
+    if not isinstance(entry, dict):
+        return None
+    v = entry.get("n")
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _fmt_auc(value: Optional[float]) -> str:
     if value is None:
         return EM_DASH
     return fmt_cell(value, decimals=DECIMALS)
+
+
+def _fmt_n(value: Optional[int]) -> str:
+    return EM_DASH if value is None else str(value)
 
 
 def _fmt_lit_auc(value: object) -> str:
@@ -144,12 +161,12 @@ def _build_table_html(
         "<thead>\n"
         "<tr>\n"
         '<th rowspan="2">Partition</th>\n'
-        f'<th colspan="2">{html.escape(CANCER_HEADER["breast"])}</th>\n'
-        f'<th colspan="3">{html.escape(CANCER_HEADER["colorectal"])}</th>\n'
+        f'<th colspan="3">{html.escape(CANCER_HEADER["breast"])}</th>\n'
+        f'<th colspan="4">{html.escape(CANCER_HEADER["colorectal"])}</th>\n'
         "</tr>\n"
         "<tr>\n"
-        "<th>Dataset</th><th>AUC</th>"
-        "<th>Dataset</th><th>AUC</th><th>AUC (literature)</th>\n"
+        "<th>Dataset</th><th><em>n</em></th><th>AUC</th>"
+        "<th>Dataset</th><th><em>n</em></th><th>AUC</th><th>AUC (literature)</th>\n"
         "</tr>\n"
         "</thead>\n"
     )
@@ -168,12 +185,16 @@ def _build_table_html(
 
         crc_auc = _per_study_auc(per_study, crc_study)
         bc_auc = _per_study_auc(per_study, bc_study)
+        crc_n = _per_study_n(per_study, crc_study)
+        bc_n = _per_study_n(per_study, bc_study)
 
         cells = [
             f"<td>{html.escape(partition_label)}</td>",
             f"<td>{_fmt_ref(bc_study)}</td>",
+            f"<td>{html.escape(_fmt_n(bc_n))}</td>",
             f"<td>{html.escape(_fmt_auc(bc_auc))}</td>",
             f"<td>{_fmt_ref(crc_study)}</td>",
+            f"<td>{html.escape(_fmt_n(crc_n))}</td>",
             f"<td>{html.escape(_fmt_auc(crc_auc))}</td>",
             f"<td>{html.escape(_fmt_lit_auc(crc.get('auc')))}</td>",
         ]
