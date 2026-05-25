@@ -4,6 +4,7 @@ checkpoints
 results
 manuscript/*.png
 manuscript/build
+__pycache__/
 
 # Packaging artifacts (editable installs, builds)
 *.egg-info/

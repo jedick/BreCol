@@ -21,4 +21,4 @@ PyYAML>=6.0
 # HyenaDNA
 # Install the local hyenadna package from this repo (pyproject.toml).
 # This will also pull its runtime dependencies (torch/torchvision/transformers/einops/numpy).
--e .
+-e hyenadna

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fine-tune HyenaDNA with the classification head (hyenadna/standalone_hyenadna.py).
+Fine-tune HyenaDNA with the classification head.
 
 Uses a pre-built feature-only per-run tensor cache under paths.run_tensors_dir/ from
 scripts/build_run_tensors.py, joins labels/splits from shared metadata at runtime, and reports

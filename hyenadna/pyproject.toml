@@ -21,11 +21,3 @@ dependencies = [
   # HyenaDNA pre-trained checkpoints contain pickled objects referencing omegaconf types
   "omegaconf>=2.0.0",
 ]
-
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["hyenadna"]
-

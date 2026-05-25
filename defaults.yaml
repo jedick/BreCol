@@ -185,7 +185,7 @@ train_hyenadna:
   head_hidden: 512
   # Dropout after the MLP hidden GELU (ignored when head_hidden is 0)
   head_dropout: 0.0
-  # SequenceDecoder head mode in hyenadna/standalone_hyenadna.py: last, first, pool, sum
+  # SequenceDecoder head mode in standalone_hyenadna.py: last, first, pool, sum
   head_pooling_mode: pool
 
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
