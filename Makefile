@@ -16,6 +16,7 @@ TETRAMER_CACHE_DIR := $(call yaml_section_value,paths,tetramer_cache_dir)
 EMBEDDING_CACHE_DIR := $(call yaml_section_value,paths,embedding_cache_dir)
 RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,run_tensors_dir)
 SETBERT_EMBEDDINGS_CSV := $(call yaml_section_value,paths,setbert_embeddings_csv)
+SETBERT_RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,setbert_run_tensors_dir)
 SEQUENCE_CACHE_N_MAX := $(call yaml_section_value,sequence_cache,n_max_per_run)
 EMB ?= 0
 EMB_ARG := $(if $(filter 1,$(strip $(EMB))),--emb,)
@@ -62,7 +63,7 @@ DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 
 .PHONY: help download_data tetramer_frequencies tetramer_cache embedding_cache fit_tetramer \
 	fit_uc_cap run_uc_cap train_hyenadna audit_run_tensors explain explain-% \
-	setbert_embeddings fit_setbert \
+	setbert_embeddings setbert_run_tensors train_setbert fit_setbert \
 	manuscript_pdf manuscript_jekyll publish_blog
 
 help:
@@ -115,6 +116,14 @@ help:
 	@echo "      Set setbert.store_sequence_embeddings=true in defaults.yaml to also"
 	@echo "      persist per-sequence contextualized embeddings under outputs/setbert_embedding_cache/."
 	@echo ""
+	@echo "  make setbert_run_tensors"
+	@echo "      FASTA -> per-Run SetBERT token tensor cache at $(SETBERT_RUN_TENSORS_DIR) via"
+	@echo "      build_setbert_run_tensors.py. Resumable; skips runs whose .pt is newer than the FASTA."
+	@echo ""
+	@echo "  make train_setbert"
+	@echo "      Fine-tune SetBERT via scripts/train_setbert.py against the run tensor cache."
+	@echo "      Optional: EXPT=<n> runs one train_setbert experiment from experiments.yaml."
+	@echo ""
 	@echo "  make fit_setbert"
 	@echo "      Run scripts/fit_classifier.py --setbert with defaults.yaml; default run passes"
 	@echo "      --results-json (metrics under results/scratch/). Optional: EXPT=<n> or EXPT=0."
@@ -162,13 +171,30 @@ embedding_cache: $(EMBEDDING_CACHE)
 
 $(SETBERT_CSV): $(DATA_CSVS) $(ROOT)/scripts/build_setbert_embeddings.py \
 		$(ROOT)/scripts/cache_operations.py \
-		$(ROOT)/scripts/hyenadna_fasta_data.py \
+		$(ROOT)/scripts/setbert_data.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/build_setbert_embeddings.py
 
 setbert_embeddings: $(SETBERT_CSV)
 	@echo "Up to date: $(SETBERT_CSV)"
+
+$(SETBERT_RUN_TENSORS_DIR): $(DATA_CSVS) $(DATASETS_CSV) \
+		$(ROOT)/scripts/build_setbert_run_tensors.py \
+		$(ROOT)/scripts/cache_operations.py \
+		$(ROOT)/scripts/setbert_data.py \
+		$(ROOT)/scripts/shared_utilities.py \
+		$(ROOT)/defaults.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/build_setbert_run_tensors.py
+
+setbert_run_tensors: $(SETBERT_RUN_TENSORS_DIR)
+	@echo "Up to date: $(SETBERT_RUN_TENSORS_DIR)"
+
+train_setbert: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/train_setbert.py \
+		$(ROOT)/scripts/setbert_data.py \
+		$(ROOT)/scripts/shared_utilities.py \
+		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
+	cd "$(ROOT)" && $(PYTHON) scripts/train_setbert.py --results-json $(EXPT_ARG)
 
 $(UC_CAP_BASELINE_CAP_CSV): $(UC_CAP_CACHE) \
 		$(ROOT)/scripts/run_uc_cap_pipeline.py \

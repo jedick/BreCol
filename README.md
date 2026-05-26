@@ -56,7 +56,7 @@ See the list for a quick overview of the steps and read below for details.
 9. Embedding+UC/CAP classifier: `make run_uc_cap EMB=1` / `make fit_uc_cap EMB=1` drive the embedding UC/CAP path.
 10. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
 11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
-12. SetBERT embeddings: `make setbert_embeddings` writes one row of run-level [CLS] embeddings per run to `outputs/setbert_embeddings.csv`.
+12. SetBERT embeddings: `make setbert_embeddings` writes one row of run-level [CLS] embeddings per run to `outputs/setbert_embeddings.csv` (about 2 hr).
 13. SetBERT classifier: `make -j4 fit_setbert EXPT=0` generates results files in `results/setbert/` (analogous to `fit_tetramer`).
 14. Run `helpers/table*.py` and `helpers/figure*.py` to generate tables and figures in `manuscript/`.
 

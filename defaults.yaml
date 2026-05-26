@@ -28,6 +28,8 @@ paths:
   # Hive-partitioned per-sequence SetBERT contextualized embeddings (written when
   # setbert.store_sequence_embeddings is true; partitioned under n<set_size>/study_name=/Run=/)
   setbert_embedding_cache_dir: outputs/setbert_embedding_cache
+  # Feature-only per-run SetBERT token tensors from scripts/build_setbert_run_tensors.py
+  setbert_run_tensors_dir: outputs/setbert_run_tensors
 
 shared_splits:
   ## Canonical Run -> train/val/test/holdout assignment
@@ -250,4 +252,64 @@ setbert:
   store_sequence_embeddings: false
   # Compression for the sequence-embedding Parquet cache (zstd / snappy / gzip / brotli / lz4 / none)
   parquet_compression: zstd
+
+# SetBERT fine-tuning (scripts/train_setbert.py)
+# Reads the feature-only per-run token tensor cache at paths.setbert_run_tensors_dir/
+# (one <Run>.pt per run from scripts/build_setbert_run_tensors.py).
+# Sequence-selection / trim-window / pretrained checkpoint come from the shared `setbert:`
+# block above; train_setbert below adds training-only knobs.
+# Optional --expt overlays train_setbert.experiments in experiments.yaml (1-based index).
+train_setbert:
+  ## Device / precision
+  device: null
+  amp: true
+  amp_dtype: bfloat16
+
+  ## Task / tuning (single-task only; no multitask in this implementation)
+  # cancer_diagnosis or cancer_type
+  task: cancer_diagnosis
+  # Validation metric used to pick the best epoch: auc | f1
+  tuning_metric: auc
+
+  ## Set construction (override of setbert.set_size for training only)
+  # Must be <= the set_size baked into the run tensor cache.
+  set_size: 1000
+  # DNABERT activation-checkpoint chunk size during fine-tuning. Smaller than inference
+  # default (1000) because activations are stored for backward through the SAB stack.
+  sequence_encoder_chunk_size: 256
+
+  ## Optimization
+  batch_size: 4
+  epochs: 20
+  random_seed: 0
+  num_workers: 4
+  # Paper default for SetBERT fine-tuning (Adam, constant LR). AdamW is used here.
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  # lr_backbone = learning_rate * backbone_lr_mult (applies to both DNABERT and SAB);
+  # head uses learning_rate unchanged (1.0 = no scale)
+  backbone_lr_mult: 1.0
+
+  ## Two-knob backbone freezing
+  # DNABERT sequence encoder: 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
+  freeze_sequence_encoder_epochs: 0
+  # SAB transformer (incl. class_token): 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
+  freeze_sab_epochs: 0
+
+  ## Sampling / class imbalance
+  # train sampler: random | study_balanced (approximate uniform over study_name)
+  train_sampler: study_balanced
+  # BCE pos_weight = none | balanced (n_neg / n_pos) | balanced_sqrt (sqrt of balanced)
+  class_weight: none
+
+  ## Head
+  # Dropout applied to the transformed [CLS] vector before the linear classifier
+  head_dropout: 0.0
+
+  ## Output
+  # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
+  # results/scratch/train_setbert_<task>_<utc>.json. Experiments may set via template.
+  results_json: null
+  # Extra retries per child after SIGSEGV (signal 11) when running an experiment grid
+  sigsegv_retries: 2
 

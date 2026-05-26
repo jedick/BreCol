@@ -121,3 +121,12 @@ train_hyenadna:
         random_seed: [0,1,2,3]
         max_length: 32768
         batch_size: 5
+
+train_setbert:
+  results_json_template: results/setbert/{task_abbrv}_{name}_s{seed}.json
+  # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
+  sigsegv_retries: 2
+  experiments:
+    - name: best_recipe  # EXPT=1
+      overrides:
+        random_seed: [0,1,2]
