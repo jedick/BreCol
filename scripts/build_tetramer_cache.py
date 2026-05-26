@@ -79,8 +79,7 @@ from cache_operations import (  # noqa: E402
     tetramer_cache_dataset_root,
     write_tetramer_run_partition,
 )
-from hyenadna_fasta_data import fasta_path_for_run, resolve_repo_path
-from shared_utilities import RUN_PATTERN
+from shared_utilities import RUN_PATTERN, fasta_path_for_run, resolve_repo_path
 
 _BASE_BITS = {"A": 0, "C": 1, "G": 2, "T": 3}
 

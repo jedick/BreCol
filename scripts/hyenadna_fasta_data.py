@@ -25,11 +25,6 @@ SEP_TOKEN_ID = 1
 PAD_TOKEN_ID = 4
 
 
-def resolve_repo_path(repo_root: Path, raw: object) -> Path:
-    p = Path(str(raw).strip())
-    return p if p.is_absolute() else repo_root / p
-
-
 def load_train_hyenadna_section(defaults_path: Path) -> Dict[str, object]:
     cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
     sec = cfg.get("train_hyenadna")
@@ -128,11 +123,6 @@ def iter_fasta_sequences(gzip_path: Path) -> Iterable[str]:
             chunks.append(line)
         if chunks:
             yield "".join(chunks)
-
-
-def fasta_path_for_run(repo_root: Path, fasta_dir_key: str, study_name: str, run: str) -> Path:
-    base = resolve_repo_path(repo_root, fasta_dir_key)
-    return base / study_name / f"{run}.fasta.gz"
 
 
 def split_sequences_into_sets(

@@ -234,6 +234,16 @@ def _apply_task_labels(df: pd.DataFrame, task: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
+def resolve_repo_path(repo_root: Path, raw: object) -> Path:
+    p = Path(str(raw).strip())
+    return p if p.is_absolute() else repo_root / p
+
+
+def fasta_path_for_run(repo_root: Path, fasta_dir_key: str, study_name: str, run: str) -> Path:
+    base = resolve_repo_path(repo_root, fasta_dir_key)
+    return base / study_name / f"{run}.fasta.gz"
+
+
 def build_run_table(*, config_path: Optional[Path] = None) -> pd.DataFrame:
     """Return run metadata with canonical split assignments.
 

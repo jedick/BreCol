@@ -52,8 +52,8 @@ from tqdm import tqdm
 from hyenadna_fasta_data import (
     merge_train_hyenadna_config,
     model_max_length,
-    resolve_repo_path,
 )
+from shared_utilities import resolve_repo_path
 from cache_operations import load_sequence_row_selection
 from hyenadna_multitask import (
     HEAD_CD,

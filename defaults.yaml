@@ -23,6 +23,11 @@ paths:
   run_tensors_dir: outputs/run_tensors
   # HyenaDNA weights root (subdir per model; cloned from Hugging Face if missing on first load)
   checkpoint_dir: checkpoints
+  # Run-level SetBERT [CLS] embeddings (input for scripts/fit_classifier.py --setbert)
+  setbert_embeddings_csv: outputs/setbert_embeddings.csv
+  # Hive-partitioned per-sequence SetBERT contextualized embeddings (written when
+  # setbert.store_sequence_embeddings is true; partitioned under n<set_size>/study_name=/Run=/)
+  setbert_embedding_cache_dir: outputs/setbert_embedding_cache
 
 shared_splits:
   ## Canonical Run -> train/val/test/holdout assignment
@@ -72,7 +77,9 @@ fit_classifier:
   task: cancer_diagnosis
   # Random seed for PCA and model initialization
   random_state: 0
-  # Whether CLR is applied before scaler/PCA
+  # Whether CLR is applied before scaler/PCA.
+  # Note: forced to False internally when running --setbert (SetBERT embeddings are signed
+  # activations and CLR's nonnegativity check would otherwise fail).
   use_clr: true
   # Additive constant before log in CLR
   clr_pseudocount: 1.0e-6
@@ -191,4 +198,56 @@ train_hyenadna:
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
   # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template
   results_json: null
+
+# SetBERT inference (scripts/build_setbert_embeddings.py)
+# Reuses sequence_cache.{seq_offset, min_seqs, sample_mode, sampling_seed} for run-row selection.
+# Numeric defaults below match the released qiita-16s checkpoint; YAML comments note where the
+# SetBERT paper (Suppl. §3.1-3.2) describes different values.
+setbert:
+  ## Pre-trained checkpoint (loaded from Hugging Face Hub; cached under $HF_HOME)
+  # Paper: SetBERT pre-trained on ~280k Qiita 16S amplicon samples.
+  pretrained_repo: sirdavidludwig/setbert
+  pretrained_revision: qiita-16s
+  # Note on dimensions: the released `qiita-16s` checkpoint is the "large" variant
+  # (embed_dim=768, 6 SAB layers, 12 heads, DNABERT base "768d-silva16s-250bp", kmer=3).
+  # The SetBERT paper describes a 64-dim model (8 SAB layers, 8 heads, DNABERT base
+  # "64d-silva16s-250bp") which is not available on HF. The output CSV dimensionality
+  # is determined by the loaded checkpoint (currently 768 for qiita-16s).
+
+  ## Sample (run) construction
+  # Sequences sampled per Run (the SetBERT set size / n_sample of the SAB stack)
+  # Paper: n_sample = 1,000 sequences per subsample.
+  set_size: 1000
+  # Per-sequence trim window in bp; each selected sequence is randomly truncated to a length
+  # sampled uniformly in [min, max]. Set min == max for a fixed length.
+  # Paper: each sequence trimmed to exactly 150 bp by randomly cutting either end.
+  # Released DNABERT base accepts up to 250 bp; its pretraining datamodule samples in [65, 250].
+  min_sequence_length: 150
+  max_sequence_length: 150
+  # Seed for the random trim-window offset and selection (combined with a per-Run hash)
+  truncation_seed: 0
+  # Note: this script samples sequences from a run *without replacement* (consistent with
+  # tetramer/embedding caches via cache_operations.select_row_indices_0based). The SetBERT
+  # paper samples uniformly *with replacement*; switching would require a small tweak.
+  # Note: ambiguous bases (non-ACGT IUPAC codes) are tokenized to [UNK] by DnaTokenizer.
+  # The SetBERT paper randomly resolves them to concrete bases at training time; for inference
+  # on 16S amplicon data (rare ambiguous bases) we keep the simpler tokenizer behavior.
+
+  ## Forward pass / batching
+  # DNABERT activation-checkpoint chunk size (sequences embedded per checkpoint chunk within
+  # a single forward pass). Released checkpoint default is 256; lower this on small GPUs.
+  sequence_encoder_chunk_size: 1000
+  # Run-level mini-batch (Runs processed in parallel per forward pass). 1 = one Run at a time.
+  # Increase for throughput if multiple sets fit in GPU memory.
+  run_batch_size: 4
+  # Device: cuda, cpu, or null / auto for torch.cuda.is_available()
+  device: null
+
+  ## Sidecar outputs
+  # When true, also persist contextualized per-sequence embeddings under
+  # paths.setbert_embedding_cache_dir as hive-partitioned Parquet (study_name=/Run=),
+  # so run_uc_cap_pipeline.py could later consume them.
+  store_sequence_embeddings: false
+  # Compression for the sequence-embedding Parquet cache (zstd / snappy / gzip / brotli / lz4 / none)
+  parquet_compression: zstd
 

@@ -23,14 +23,12 @@ import yaml
 from tqdm import tqdm
 
 from hyenadna_fasta_data import (  # noqa: E402
-    fasta_path_for_run,
     iter_fasta_sequences,
     make_character_tokenizer,
-    resolve_repo_path,
     run_to_tensors,
 )
 from cache_operations import load_sequence_row_selection
-from shared_utilities import build_run_table
+from shared_utilities import build_run_table, fasta_path_for_run, resolve_repo_path
 
 
 def _format_run_tensor_summary(
