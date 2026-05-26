@@ -121,10 +121,10 @@ This stage takes the per-run tetramer count files and generates feature sets (cl
 
 HyenaDNA code is located under `hyenadna/`.
 Install it as a local package from the repository root (this is included in `requirements.txt`):
-`pip install -e .`
+`pip install -e hyenadna`
 
 Source files:
-- `standalone_hyenadna.py` was downloaded from [HazyResearch/hyena-dna](https://github.com/HazyResearch/hyena-dna)
+- `standalone_hyenadna.py` was downloaded from [HazyResearch/hyena-dna](https://github.com/HazyResearch/hyena-dna/tree/d553021b483b82980aa4b868b37ec2d4332e198a)
 - `huggingface_wrapper.py` and `inference_example.py` were extracted from the [HyenaDNA Colab Notebook](https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL)
 - Local modifications are summarized in the comments in each file.
 - To run the inference example: `cd hyenadna; python -c 'import inference_example as ex; ex.inference_single()'`
@@ -144,3 +144,10 @@ Inputs/outputs:
       - Experiment runs (`make train_hyenadna EXPT=N`) write under the `train_hyenadna.results_json_template` path in `experiments.yaml` (for example `results/hyenadna/{name}_{max_length/1024}k_s{seed}.json`).
       - Existing JSON outputs are skipped per `(experiment, seed, max_length)` combination.
       - Checkpoints are selected by `train_hyenadna.tuning_metric` (default `auc`); each results JSON reports `metrics.test.auc` and `metrics.holdout.auc`.
+
+### SetBERT
+
+Upstream sources:
+- [deepbio-toolkit](https://github.com/DLii-Research/deepbio-toolkit/tree/f46d4c10d77d090d4ccf74b4eee8872de5f7cfeb) v0.4.5
+- [dbtk-dnabert](https://github.com/DLii-Research/dbtk-dnabert/tree/a4e50615d7c782cbed673115f0b89fd91754cac5) v1.2.3
+- [dbtk-setbert](https://github.com/DLii-Research/setbert/tree/ecb5dc7181e0221e029fdeff694dc92c73cdac9d) v1.0.3
