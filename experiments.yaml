@@ -127,31 +127,29 @@ train_setbert:
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
   sigsegv_retries: 2
   experiments:
-    # NOTE: results/setbert/cd_best_recipe_s*.json were produced before the
-    # dbtk-setbert use_reentrant=True bug was fixed (DNABERT silently received
-    # no gradients), so they represent SAB + head fine-tuning on frozen
-    # pretrained DNABERT embeddings, not end-to-end SetBERT fine-tuning.
-    - name: best_recipe  # EXPT=1
+    # Timing for n=200, 6 epochs:
+    #   About 13 min for cancer_diagnosis
+    #   About 7 min for cancer_type
+    # Timing for n=500, 4 epochs:
+    #   About 11.5 min for cancer_type
+    - name: best_recipe_fp16
       overrides:
-        random_seed: [0,1]
-    # Post-fix recipes. Per-epoch wall time roughly triples when DNABERT is
-    # actually trainable, so epoch budgets are smaller than best_recipe.
-    - name: staged_6ep  # EXPT=2
-      # Phase 1 (epoch 1):    head only;            DNABERT + SAB frozen
-      # Phase 2 (epochs 2-3): head + SAB;           DNABERT frozen
-      # Phase 3 (epochs 4-6): head + SAB + DNABERT (all unfrozen, low backbone LR)
+        task: cancer_type
+        amp_dtype: float16
+    - name: best_recipe_bf16
       overrides:
-        random_seed: [0,1]
-        epochs: 6
-        freeze_sequence_encoder_epochs: 3
+        task: cancer_type
+        amp_dtype: bfloat16
+    - name: best_recipe_bf16_sab1
+      overrides:
+        task: cancer_type
+        amp_dtype: bfloat16
         freeze_sab_epochs: 1
+    - name: high_dropout_frz5
+      overrides:
+        task: cancer_type
+        epochs: 10
+        freeze_sab_epochs: 5
+        set_size: 250
+        head_dropout: 0.2
         backbone_lr_mult: 0.1
-    - name: head_sab_only_4ep  # EXPT=3
-      # Control: DNABERT frozen the whole run; only head + SAB are updated.
-      # Isolates whether DNABERT fine-tuning in EXPT=2 actually helps.
-      overrides:
-        random_seed: [0,1]
-        epochs: 4
-        freeze_sequence_encoder_epochs: 4
-        freeze_sab_epochs: 1
-        backbone_lr_mult: 1.0

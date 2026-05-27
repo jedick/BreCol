@@ -21,6 +21,14 @@ checkpointed encoder path inside ``SetBert.embed_sequences`` (which expects floa
 once and feeding the result to SAB via the ``sequence_embeddings=`` keyword. That also
 saves the wasted forward recomputation that would otherwise occur in the backward pass.
 
+While the encoder is frozen, per-Run DNABERT outputs for the val/test/holdout splits do
+not change between epochs, so we encode each scoring-split Run once at the start of the
+frozen phase, keep the result as ``[set_size, embed_dim]`` on CPU (~1.5 MB at bf16 for
+set_size=1000), and feed those cached embeddings into SAB via ``sequence_embeddings=``
+on every subsequent scoring pass. The cache is dropped as soon as the encoder unfreezes
+and is never used for the train split. Scoring loops also show per-batch ``tqdm``
+progress bars (Val / Test / Holdout) alongside the existing Train bar.
+
 Config: defaults.yaml (train_setbert + setbert + paths) with optional experiments.yaml
 ``train_setbert.experiments`` overrides selected by ``--expt N`` (1-based). When the
 selected experiment row sets ``random_seed`` to a YAML list, the parent process forks
@@ -571,6 +579,53 @@ def _train_one_epoch(
 
 
 @torch.no_grad()
+def _populate_encoder_cache(
+    model: SetBertBinaryClassifier,
+    loader: Optional[DataLoader],
+    device: torch.device,
+    *,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+    desc: str,
+) -> Dict[str, torch.Tensor]:
+    """One-time DNABERT pass; return ``{Run -> [set_size, embed_dim] CPU tensor}``.
+
+    The cache is only valid while the sequence encoder is frozen; the caller is
+    responsible for discarding it the moment the encoder is unfrozen. Stored in
+    the encoder's output dtype (bf16 under AMP, fp32 otherwise), on CPU to keep
+    GPU memory free for SAB activations.
+    """
+    if loader is None:
+        return {}
+    model.eval()
+    cache: Dict[str, torch.Tensor] = {}
+    for batch in tqdm(loader, desc=desc, leave=False):
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        runs = list(batch["run"])
+        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+            embeddings, _ = model._embed_under_no_grad(input_ids)
+        for i, run in enumerate(runs):
+            cache[str(run)] = embeddings[i].detach().to("cpu").clone()
+    return cache
+
+
+def _forward_from_cache(
+    model: SetBertBinaryClassifier,
+    runs: Sequence[str],
+    cache: Dict[str, torch.Tensor],
+    device: torch.device,
+) -> torch.Tensor:
+    """Stack cached encoder embeddings and run SAB + linear head only."""
+    stack = torch.stack([cache[str(r)] for r in runs], dim=0).to(
+        device, non_blocking=True
+    )
+    pad_mask = torch.zeros(stack.shape[:2], dtype=torch.bool, device=device)
+    out = model.base_model(sequence_embeddings=stack, padding_mask=pad_mask)
+    cls = out["class"]
+    return model.classifier(model.dropout(cls)).squeeze(-1)
+
+
+@torch.no_grad()
 def _score_loader(
     model: SetBertBinaryClassifier,
     loader: Optional[DataLoader],
@@ -578,20 +633,29 @@ def _score_loader(
     *,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
+    desc: str = "Score",
+    encoder_cache: Optional[Dict[str, torch.Tensor]] = None,
 ) -> np.ndarray:
     """Forward-only scoring pass over a pre-built loader (shuffle=False).
 
     Returns positive-class probabilities in loader iteration order. The caller is
     responsible for keeping the entries list in the same order as the loader.
+    When ``encoder_cache`` is provided, the DNABERT pass is skipped and the
+    cached per-Run embeddings are fed straight into SAB.
     """
     if loader is None:
         return np.empty(0, dtype=np.float64)
     model.eval()
     scores: List[float] = []
-    for batch in loader:
-        input_ids = batch["input_ids"].to(device, non_blocking=True)
+    for batch in tqdm(loader, desc=desc, leave=False):
         with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
-            logits = model(input_ids)
+            if encoder_cache is not None:
+                logits = _forward_from_cache(
+                    model, list(batch["run"]), encoder_cache, device
+                )
+            else:
+                input_ids = batch["input_ids"].to(device, non_blocking=True)
+                logits = model(input_ids)
         probs = torch.sigmoid(logits.float()).cpu().numpy()
         scores.extend(float(p) for p in probs.tolist())
     return np.asarray(scores, dtype=np.float64)
@@ -628,22 +692,31 @@ def _eval_val_full(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     pos_weight: Optional[torch.Tensor],
+    desc: str = "Val",
+    encoder_cache: Optional[Dict[str, torch.Tensor]] = None,
 ) -> Tuple[float, np.ndarray]:
     """Fused val pass: returns (val_loss, val_scores) from a single forward pass.
 
     Previously the script did two complete passes over the val set per epoch (one
     for the loss and one for the scores). The forward pass dominates inference
     cost, so collapsing them halves the val-side work per epoch.
+    When ``encoder_cache`` is provided, the DNABERT pass is skipped and the
+    cached per-Run embeddings are fed straight into SAB.
     """
     model.eval()
     total = 0.0
     n_batches = 0
     scores: List[float] = []
-    for batch in loader:
-        input_ids = batch["input_ids"].to(device, non_blocking=True)
+    for batch in tqdm(loader, desc=desc, leave=False):
         labels = batch["label"].to(device, non_blocking=True)
         with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
-            logits = model(input_ids)
+            if encoder_cache is not None:
+                logits = _forward_from_cache(
+                    model, list(batch["run"]), encoder_cache, device
+                )
+            else:
+                input_ids = batch["input_ids"].to(device, non_blocking=True)
+                logits = model(input_ids)
             loss = F.binary_cross_entropy_with_logits(
                 logits, labels, pos_weight=pos_weight
             )
@@ -1236,6 +1309,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         training_log_path = _training_log_path_from_results(results_path)
 
     opt: Optional[torch.optim.Optimizer] = None
+    # Per-Run DNABERT outputs for val/test/holdout while the sequence encoder is
+    # frozen; cleared the moment the encoder transitions to trainable so we
+    # never feed stale embeddings into SAB.
+    val_encoder_cache: Optional[Dict[str, torch.Tensor]] = None
+    test_encoder_cache: Optional[Dict[str, torch.Tensor]] = None
+    holdout_encoder_cache: Optional[Dict[str, torch.Tensor]] = None
     for ep in range(1, epochs + 1):
         train_encoder = ep > freeze_enc_n if freeze_enc_n > 0 else True
         train_sab = ep > freeze_sab_n if freeze_sab_n > 0 else True
@@ -1253,6 +1332,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"(train_encoder={train_encoder}, train_sab={train_sab}) ---",
             flush=True,
         )
+
+        if train_encoder:
+            val_encoder_cache = None
+            test_encoder_cache = None
+            holdout_encoder_cache = None
+        else:
+            if val_encoder_cache is None:
+                val_encoder_cache = _populate_encoder_cache(
+                    model, val_loader, device,
+                    amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+                    desc="Cache(val)",
+                )
+            if test_encoder_cache is None:
+                test_encoder_cache = _populate_encoder_cache(
+                    model, test_loader, device,
+                    amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+                    desc="Cache(test)",
+                )
+            if holdout_loader is not None and holdout_encoder_cache is None:
+                holdout_encoder_cache = _populate_encoder_cache(
+                    model, holdout_loader, device,
+                    amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+                    desc="Cache(holdout)",
+                )
+            if ep == 1 or ep in transition_epochs:
+                n_holdout = (
+                    len(holdout_encoder_cache)
+                    if holdout_encoder_cache is not None
+                    else 0
+                )
+                print(
+                    f"  cached encoder embeddings: "
+                    f"val={len(val_encoder_cache)} "
+                    f"test={len(test_encoder_cache)} "
+                    f"holdout={n_holdout} Runs",
+                    flush=True,
+                )
+
         train_loss = _train_one_epoch(
             model,
             train_loader,
@@ -1270,16 +1387,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             pos_weight=pos_weight,
+            desc="Val",
+            encoder_cache=val_encoder_cache,
         )
         test_scores = _score_loader(
             model, test_loader, device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
+            desc="Test",
+            encoder_cache=test_encoder_cache,
         )
         holdout_scores = _score_loader(
             model, holdout_loader, device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
+            desc="Holdout",
+            encoder_cache=holdout_encoder_cache,
         )
         val_auc, val_f1 = _binary_metrics(
             val_entries, val_scores, pos_label=pos_label, neg_label=neg_label
@@ -1336,12 +1459,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if results_path is not None:
         # Reuse the test/holdout scores captured at the best epoch instead of
-        # running two more full inference passes after restoring weights.
+        # running two more full inference passes after restoring weights. The
+        # cache reuse below only kicks in for the (rare) edge case where the
+        # tuning score never improved AND the encoder was frozen for the whole
+        # run (so the cache was never invalidated and still matches the
+        # restored encoder weights).
         if best_test_scores is None:
             final_test_scores = _score_loader(
                 model, test_loader, device,
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
+                desc="Test (final)",
+                encoder_cache=test_encoder_cache,
             )
         else:
             final_test_scores = best_test_scores
@@ -1350,6 +1479,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 model, holdout_loader, device,
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
+                desc="Holdout (final)",
+                encoder_cache=holdout_encoder_cache,
             )
         else:
             final_holdout_scores = best_holdout_scores

@@ -273,30 +273,30 @@ train_setbert:
 
   ## Set construction (override of setbert.set_size for training only)
   # Must be <= the set_size baked into the run tensor cache.
-  set_size: 1000
+  set_size: 500
   # DNABERT activation-checkpoint chunk size during fine-tuning. Smaller than inference
   # default (1000) because activations are stored for backward through the SAB stack.
-  sequence_encoder_chunk_size: 256
+  sequence_encoder_chunk_size: 500
 
   ## Optimization
-  batch_size: 4
+  batch_size: 8
   # Forward-only batch size for val/test/holdout scoring; no activations are
   # stored for backward so this can usually be larger than batch_size.
   # null / unset -> use batch_size.
   inference_batch_size: 20
-  epochs: 20
+  epochs: 4
   random_seed: 0
   num_workers: 4
   # Paper default for SetBERT fine-tuning (Adam, constant LR). AdamW is used here.
   learning_rate: 1.0e-4
-  weight_decay: 0.01
+  weight_decay: 0.1
   # lr_backbone = learning_rate * backbone_lr_mult (applies to both DNABERT and SAB);
   # head uses learning_rate unchanged (1.0 = no scale)
   backbone_lr_mult: 1.0
 
   ## Two-knob backbone freezing
   # DNABERT sequence encoder: 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
-  freeze_sequence_encoder_epochs: 0
+  freeze_sequence_encoder_epochs: 100
   # SAB transformer (incl. class_token): 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
   freeze_sab_epochs: 0
 
@@ -308,7 +308,7 @@ train_setbert:
 
   ## Head
   # Dropout applied to the transformed [CLS] vector before the linear classifier
-  head_dropout: 0.0
+  head_dropout: 0.1
 
   ## Output
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
