@@ -280,6 +280,10 @@ train_setbert:
 
   ## Optimization
   batch_size: 4
+  # Forward-only batch size for val/test/holdout scoring; no activations are
+  # stored for backward so this can usually be larger than batch_size.
+  # null / unset -> use batch_size.
+  inference_batch_size: 20
   epochs: 20
   random_seed: 0
   num_workers: 4

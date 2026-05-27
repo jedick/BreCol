@@ -6,9 +6,19 @@ Used by:
 - scripts/train_setbert.py (model construction + batch token padding)
 
 The DNABERT backbone inside SetBERT wraps its sequence-encoder calls in
-``torch.utils.checkpoint``. When inference happens on integer token inputs (no grad),
-PyTorch warns "None of the inputs have requires_grad=True; gradients will be None".
-Callers that import this module silence that benign warning at import time.
+``torch.utils.checkpoint`` (see SetBert.embed_sequences). Because the inputs are
+int64 DNABERT token IDs, none of the checkpoint inputs require grad, so PyTorch
+emits the warning::
+
+    "None of the inputs have requires_grad=True. Gradients will be None"
+
+This warning is genuinely correct under ``use_reentrant=True`` (where the encoder
+parameters silently fail to receive gradients) but is *misleading* under
+``use_reentrant=False``, which is what dbtk-setbert now uses: parameter gradients
+do flow correctly via saved_tensors_hooks during the backward recompute.
+
+Callers that import this module silence the (now-misleading) warning at import
+time so it does not spam the log on every training/inference call.
 """
 
 from __future__ import annotations
@@ -110,7 +120,13 @@ def load_setbert_model(
     device: torch.device,
     eval_mode: bool = True,
 ) -> Tuple[torch.nn.Module, Any, int, int, int]:
-    """Load SetBERT from HF Hub. Return (model, tokenizer, embed_dim, pad_token_id, kmer)."""
+    """Load SetBERT from HF Hub. Return (model, tokenizer, embed_dim, pad_token_id, kmer).
+
+    ``sequence_encoder_chunk_size`` controls how many sequences are pushed through
+    the DNABERT encoder per forward chunk inside ``SetBert.embed_sequences`` (also
+    the activation-checkpoint granularity during training). The same value is used
+    by inference and fine-tuning callers.
+    """
     from setbert import SetBert
 
     model = SetBert.from_pretrained(pretrained_repo, revision=pretrained_revision)

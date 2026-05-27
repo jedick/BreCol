@@ -239,6 +239,32 @@ Based on this picture, we propose carrying out performance comparisons at equal 
 - At the run level: tetramer frequencies vs HyenaDNA sequence modeling
 - At the sequence level: tetramer counts vs HyenaDNA pretrained embeddings (both fed into UC/CAP)
 
+### Fine-tuning the SetBERT model
+
+SetBERT is a transformer architecture for high-throughput sequencing data that contextualizes individual reads within their parent sample [@LGA+25].
+In the released qiita-16s checkpoint, a 12-layer DNABERT base first embeds each amplicon read independently into a 768-dimensional vector;
+a 6-layer transformer of Set Attention Blocks (SABs) with 12 heads then operates on the set of read embeddings for one run,
+producing contextualized read vectors plus a learned class-token summary.
+The checkpoint was pretrained on roughly 280,000 Qiita 16S amplicon samples with a relative-abundance prediction objective over a fixed taxonomic vocabulary [@LGA+25].
+For our two binary classification tasks we attached a single linear classification head to the transformed class token and trained with binary cross-entropy.
+Following the SetBERT paper we used 1,000 reads per run as the set size, trimmed each selected read to 150 base pairs,
+and tokenized into overlapping 3-mers using the DNABERT tokenizer bundled with the checkpoint.
+
+During development we discovered that the SetBERT model code wraps the per-read DNABERT forward pass in PyTorch's activation-checkpointing utility with use_reentrant=True.
+Because the wrapped call only receives integer token IDs (which cannot carry gradients),
+the reentrant checkpoint silently drops the backward path through the encoder, so DNABERT parameters never receive gradients even when they are nominally trainable.
+We patched the upstream model to use use_reentrant=False, which uses saved-tensor rematerialization to propagate gradients to the encoder parameters correctly,
+and confirmed the fix by verifying that all encoder parameters have nonzero gradients after one backward step.
+
+Because both DNABERT and the SAB stack are pretrained while the linear classifier is randomly initialized,
+we trained in three phases to limit catastrophic forgetting of the pretrained representations.
+In Phase 1, both the encoder and the SAB were frozen and only the classification head was updated,
+allowing the head to fit to the frozen class-token output before any pretrained weights received gradients.
+In Phase 2, we unfroze the SAB so the set-level aggregation could adapt to the task while the larger DNABERT encoder remained frozen.
+In Phase 3, we unfroze the encoder as well and continued fine-tuning all pretrained weights,
+scaling the backbone learning rate to one tenth of the head learning rate to limit destabilization.
+Final settings (per-phase epoch budget and seed grid) are reported with the SetBERT results.
+
 ### Implementation
 
 The benchmark dataset is composed of CSV files with instructions and scripts for downloading data from NCBI and preprocessing.

@@ -281,6 +281,23 @@ class MultiHeadAttention(L.LightningModule):
         average_attention_weights: bool = True,
         return_attention_weights: bool = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        # NOTE: this forward dispatches to torch.nn.functional.scaled_dot_product_attention
+        # (SDPA) in the common case. SDPA fuses the QK^T -> softmax -> @V chain into a
+        # single tiled kernel (FlashAttention or mem-efficient attention on Ampere+),
+        # avoiding the [..., h, n_q, n_k] attention matrix materialisation that the
+        # original compute_attention_weights() path did in HBM. The original path is
+        # preserved as _forward_classic and is still used when the caller asks for the
+        # attention weights themselves (SDPA does not expose them).
+        if return_attention_weights:
+            return self._forward_classic(
+                query, key, value,
+                attention_mask=attention_mask,
+                key_padding_mask=key_padding_mask,
+                attention_head_mask=attention_head_mask,
+                average_attention_weights=average_attention_weights,
+                return_attention_weights=return_attention_weights,
+            )
+
         *extra_dims_q, n_q, _ = query.size()
         *extra_dims_k, n_k, _ = key.size()
         *extra_dims_v, _, _ = value.size()
@@ -290,7 +307,72 @@ class MultiHeadAttention(L.LightningModule):
         k = self.w_key(key).view((*extra_dims_k, n_k, self.num_heads, self.head_embed_dim)).transpose(-2, -3) # [..., h, n_k, d_k]
         v = self.w_value(value).view((*extra_dims_v, n_k, self.num_heads, self.head_embed_dim)).transpose(-2, -3) # [..., h, n_k, d_k]
 
-        # Compute attention weights
+        # Build SDPA attn_mask. SDPA computes softmax(Q K^T / sqrt(d) + attn_mask) V,
+        # so any subclass-supplied additive bias (e.g. relative-position) must already
+        # be divided by sqrt(d_k) -- see _additive_bias docstring.
+        mask = self.merge_mask(attention_mask, key_padding_mask)  # True = mask out
+        bias = self._additive_bias(q, k)  # [..., h, n_q, n_k] or None
+        if bias is not None:
+            attn_mask = bias
+            if mask is not None:
+                attn_mask = attn_mask.masked_fill(mask.unsqueeze(-3), float("-inf"))
+        elif mask is not None:
+            # Float -inf bias, broadcast over heads. Avoids allocating a [..., h, n_q, n_k]
+            # tensor when only padding masking is needed.
+            pad_bias = torch.zeros(mask.shape, dtype=q.dtype, device=q.device)
+            pad_bias = pad_bias.masked_fill(mask, float("-inf"))
+            attn_mask = pad_bias.unsqueeze(-3)
+        else:
+            attn_mask = None
+
+        dropout_p = float(self.dropout.p) if self.training else 0.0
+        attention = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False,
+        )  # [..., h, n_q, d_k]
+
+        # head_mask is applied to softmax(...) in _forward_classic; matmul is linear so
+        # multiplying the attention output by the per-head scalar gives the same result.
+        if attention_head_mask is not None:
+            attention = attention * attention_head_mask.view(-1, 1, 1)
+
+        attention = attention.transpose(-2, -3).reshape((*extra_dims_v, n_q, self.num_heads*self.head_embed_dim))
+        return self.w_output(attention)
+
+    def _additive_bias(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        """Subclass hook: return additive attention bias [..., h, n_q, n_k] or None.
+
+        The bias is added to QK^T / sqrt(d_k) before softmax (SDPA's attn_mask
+        convention). Subclasses adding relative-position or other learned biases
+        must therefore return the bias already divided by sqrt(d_k).
+        """
+        return None
+
+    def _forward_classic(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
+        attention_head_mask: Optional[torch.Tensor] = None,
+        average_attention_weights: bool = True,
+        return_attention_weights: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        # Original forward: materialises the attention matrix via compute_attention_weights.
+        # Kept for callers that need the attention weights returned, or subclasses that
+        # only override compute_attention_weights (and not _additive_bias).
+        *extra_dims_q, n_q, _ = query.size()
+        *extra_dims_k, n_k, _ = key.size()
+        *extra_dims_v, _, _ = value.size()
+
+        q = self.w_query(query).view((*extra_dims_q, n_q, self.num_heads, self.head_embed_dim)).transpose(-2, -3) # [..., h, n_q, d_k]
+        k = self.w_key(key).view((*extra_dims_k, n_k, self.num_heads, self.head_embed_dim)).transpose(-2, -3) # [..., h, n_k, d_k]
+        v = self.w_value(value).view((*extra_dims_v, n_k, self.num_heads, self.head_embed_dim)).transpose(-2, -3) # [..., h, n_k, d_k]
+
         attention_weights = self.compute_attention_weights(
             q,
             k,
@@ -367,6 +449,19 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         rel = skewed.narrow(-1, n - 1, n)
         return rel
 
+    def _additive_bias(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        """Return the relative-position bias pre-scaled by 1/sqrt(d_k) so it can
+        be passed directly as SDPA's attn_mask (which is added AFTER scaling).
+        """
+        n = key.shape[-2]
+        pos_embeddings = F.pad(self.pos_embeddings, (n - self.max_length, n - self.max_length), mode="replicate")
+        att_qrel = self._skew(torch.matmul(query, pos_embeddings))
+        return att_qrel / np.sqrt(self.head_embed_dim)
+
     def compute_attention_weights(
         self,
         query: torch.Tensor,
@@ -374,7 +469,8 @@ class RelativeMultiHeadAttention(MultiHeadAttention):
         attention_mask: Optional[torch.Tensor],
         attention_head_mask: Optional[torch.Tensor]
     ):
-        # Get required position embeddings
+        # Kept for the _forward_classic path (return_attention_weights=True). The fast
+        # SDPA path uses _additive_bias above and never calls this method.
         n = key.shape[-2]
         pos_embeddings = F.pad(self.pos_embeddings, (n - self.max_length, n - self.max_length), mode="replicate")
         att_qk = torch.matmul(query, key.transpose(-2, -1))

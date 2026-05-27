@@ -154,6 +154,13 @@ Upstream sources:
 - [dbtk-dnabert](https://github.com/DLii-Research/dbtk-dnabert/tree/a4e50615d7c782cbed673115f0b89fd91754cac5) v1.2.3
 - [dbtk-setbert](https://github.com/DLii-Research/setbert/tree/ecb5dc7181e0221e029fdeff694dc92c73cdac9d) v1.0.3
 
+Local changes:
+- `deepbio-toolkit/src/dbtk/nn/layers.py`:
+  - Use SDPA (scaled dot-product attention) for faster multi-head attention, including the relative position bias in `RelativeMultiHeadAttention`.
+- `dbtk-setbert/src/setbert/models.py`:
+  - Set `use_reentrant=False` on the activation-checkpoint call so gradients reach the DNABERT encoder.
+  - Match the destination embedding dtype to the encoder output to avoid bf16/fp32 conversions under AMP.
+
 Project execution:
 - `make setbert_embeddings` loads the pre-trained SetBERT checkpoint (`setbert.pretrained_repo` @ `setbert.pretrained_revision` in `defaults.yaml`, cached under `$HF_HOME`), samples `setbert.set_size` sequences per run from `fasta/<study>/<Run>.fasta.gz` (same `sequence_cache` row-selection rules as the tetramer/embedding caches), randomly trims each sequence to `setbert.min_sequence_length`..`setbert.max_sequence_length` bp, and forwards through SetBERT to produce one run-level [CLS] embedding. Output rows are appended to `outputs/setbert_embeddings.csv` as `Run, dim_0, ..., dim_{D-1}` where `D = model.config.embed_dim` (768 for `qiita-16s`).
 - Set `setbert.store_sequence_embeddings: true` in `defaults.yaml` to also persist per-sequence contextualized embeddings as hive-partitioned Parquet under `outputs/setbert_embedding_cache/n<set_size>/study_name=/Run=/`.

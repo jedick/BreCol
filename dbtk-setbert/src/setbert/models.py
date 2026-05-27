@@ -160,21 +160,41 @@ class SetBert(DbtkModel):
         if chunk_size is None or chunk_size == 0:
             chunk_size = to_encode.shape[0]
 
-        # Initialize output
-        embeddings = torch.zeros(
-            (*sequence_tokens.shape[:-1], self.config.embed_dim),
-            device=sequence_tokens.device
-        )
-
-        # Encode sequences with activation checkpointing
-        embeddings[non_padding_mask] = torch.cat([
+        # Encode the non-pad sequences through DNABERT in fixed-size chunks,
+        # wrapping each chunk in torch.utils.checkpoint to bound activation
+        # memory during training. use_reentrant must be False: because the
+        # wrapped call only receives integer token IDs (which cannot carry
+        # gradients), the reentrant checkpoint silently drops the backward
+        # path through the encoder, so DNABERT parameters never receive
+        # gradients even when they are nominally trainable.
+        pieces = [
             torch.utils.checkpoint.checkpoint(
                 self.sequence_encoder,
-                to_encode[i:i+chunk_size],
-                use_reentrant=True
+                to_encode[i:i + chunk_size],
+                use_reentrant=False,
             )
             for i in range(0, len(to_encode), chunk_size)
-        ])
+        ]
+
+        # Scatter the encoded chunks back into a dense [batch, set_size, embed_dim]
+        # tensor, leaving padded positions as zero. We allocate that destination in
+        # the encoder's output dtype so under AMP the assignment is a same-dtype
+        # copy; with the default float32 the bf16 encoder output would be up-cast
+        # on assignment and then immediately down-cast again by the next autocast
+        # region in the SAB stack.
+        if pieces:
+            encoded = pieces[0] if len(pieces) == 1 else torch.cat(pieces)
+            out_dtype = encoded.dtype
+        else:
+            encoded = None
+            out_dtype = torch.float32
+        embeddings = torch.zeros(
+            (*sequence_tokens.shape[:-1], self.config.embed_dim),
+            device=sequence_tokens.device,
+            dtype=out_dtype,
+        )
+        if encoded is not None:
+            embeddings[non_padding_mask] = encoded
 
         return embeddings
 

@@ -13,6 +13,8 @@ Use this rule when editing `README.md`. Keep sections short, practical, and easy
 - Follow existing section patterns such as **Downloading data** and **Tetramer frequencies**: 2-4 plain sentences, no long digressions.
 - Prioritize the main workflow: what the script does and how it was used to produce key outputs.
 - Prefer one concise sentence about usage over exhaustive option-by-option documentation.
+- Lead with the **active verb and user-facing effect**, not the implementation path. "Use X for faster Y" reads better than "Dispatch `Method.forward` through `Library.function` for a speedup over Z".
+- Expand jargon acronyms **inline on first mention** for searchability, e.g. "SDPA (scaled dot-product attention)". Do not spend a separate sentence introducing the acronym.
 
 ## What to include
 
@@ -33,6 +35,8 @@ Use this rule when editing `README.md`. Keep sections short, practical, and easy
 - Mechanical setup details that do not help comprehension (for example “run from repository root”).
 - Directory or filename convention detail that does not clarify **how outputs are used** or **what to pass to the next step**; prefer pipeline or repo rules for layout-for-layout’s sake.
 - Long bullet lists or code blocks when one short sentence communicates the same information.
+- **Fully qualified API symbols** (`Module.Class.method`, `package.module.function`) when a shorter name identifies the change well enough. Name a class or method only when it pinpoints *where* the change lives, not as documentation of the API itself.
+- **Fallback / unchanged paths** that the change preserves. The reader cares about what changed and the effect; "the original code is retained as a fallback when X" belongs in a code comment, not the README.
 
 ## Preferred phrasing pattern
 
@@ -40,3 +44,22 @@ Use this structure for classifier sections:
 1) what the script fits and on which input table,
 2) the main **task or output-defining** switch in plain words,
 3) one short line describing how the output metrics files were generated (for example finalized JSON under `results/tetramer/` or `results/tetramer_uc_cap/` from `experiments.yaml` `results_json_template` (`results/{features}/{name}.json`) and `make fit_tetramer` / `fit_classifier.py`).
+
+### Bullets documenting local modifications
+
+For per-file change bullets (e.g. "Local changes" lists in vendored-source sections), one sentence per bullet, shaped as:
+
+> **\<active verb\> \<concept\> \<user-facing effect\>**, optionally + brief locator clause.
+
+Combine related bullets that share a concept; use a subordinate clause for the variant rather than a second bullet.
+
+**Before** (verbose, jargon-heavy, two bullets for one concept):
+
+> - dispatch `MultiHeadAttention.forward` through `F.scaled_dot_product_attention` for a speedup over the materialized-softmax path (the original code is retained as a fallback when callers request attention weights).
+> - feed the `RelativeMultiHeadAttention` position bias into SDPA via an `_additive_bias` hook so the relative-position term is preserved on the fast path.
+
+**After** (one bullet, plain English, just enough technical precision):
+
+> - Use SDPA (scaled dot-product attention) for faster multi-head attention, including the relative position bias in `RelativeMultiHeadAttention`.
+
+What changed: active verb first ("Use ..."), acronym expanded inline, dropped API symbols (`F.scaled_dot_product_attention`, `MultiHeadAttention.forward`, `_additive_bias` hook) and the unchanged fallback path, merged two bullets via a subordinate clause ("including the relative position bias in ..."), and kept exactly one class name because it locates *where* the related change lives.

@@ -550,8 +550,8 @@ def _train_one_epoch(
     total = 0.0
     n_batches = 0
     for batch in tqdm(loader, desc="Train", leave=False):
-        input_ids = batch["input_ids"].to(device)
-        labels = batch["label"].to(device)
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        labels = batch["label"].to(device, non_blocking=True)
         with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
             logits = model(input_ids)
             loss = F.binary_cross_entropy_with_logits(
@@ -571,31 +571,25 @@ def _train_one_epoch(
 
 
 @torch.no_grad()
-def _score_entries(
+def _score_loader(
     model: SetBertBinaryClassifier,
-    entries: Sequence[RunRecord],
+    loader: Optional[DataLoader],
     device: torch.device,
     *,
-    requested_set_size: int,
-    pad_token_id: int,
-    batch_size: int,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
 ) -> np.ndarray:
-    if not entries:
+    """Forward-only scoring pass over a pre-built loader (shuffle=False).
+
+    Returns positive-class probabilities in loader iteration order. The caller is
+    responsible for keeping the entries list in the same order as the loader.
+    """
+    if loader is None:
         return np.empty(0, dtype=np.float64)
     model.eval()
-    ds = SetBertRunDataset(entries, requested_set_size=requested_set_size)
-    loader = DataLoader(
-        ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        collate_fn=_make_collate(pad_token_id),
-    )
     scores: List[float] = []
     for batch in loader:
-        input_ids = batch["input_ids"].to(device)
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
         with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
             logits = model(input_ids)
         probs = torch.sigmoid(logits.float()).cpu().numpy()
@@ -625,7 +619,8 @@ def _binary_metrics(
     return float(auc), float(f1)
 
 
-def _eval_val_loss(
+@torch.no_grad()
+def _eval_val_full(
     model: SetBertBinaryClassifier,
     loader: DataLoader,
     device: torch.device,
@@ -633,22 +628,30 @@ def _eval_val_loss(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     pos_weight: Optional[torch.Tensor],
-) -> float:
+) -> Tuple[float, np.ndarray]:
+    """Fused val pass: returns (val_loss, val_scores) from a single forward pass.
+
+    Previously the script did two complete passes over the val set per epoch (one
+    for the loss and one for the scores). The forward pass dominates inference
+    cost, so collapsing them halves the val-side work per epoch.
+    """
     model.eval()
     total = 0.0
     n_batches = 0
-    with torch.no_grad():
-        for batch in loader:
-            input_ids = batch["input_ids"].to(device)
-            labels = batch["label"].to(device)
-            with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
-                logits = model(input_ids)
-                loss = F.binary_cross_entropy_with_logits(
-                    logits, labels, pos_weight=pos_weight
-                )
-            total += float(loss.item())
-            n_batches += 1
-    return total / max(n_batches, 1)
+    scores: List[float] = []
+    for batch in loader:
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        labels = batch["label"].to(device, non_blocking=True)
+        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+            logits = model(input_ids)
+            loss = F.binary_cross_entropy_with_logits(
+                logits, labels, pos_weight=pos_weight
+            )
+        total += float(loss.item())
+        n_batches += 1
+        probs = torch.sigmoid(logits.float()).cpu().numpy()
+        scores.extend(float(p) for p in probs.tolist())
+    return total / max(n_batches, 1), np.asarray(scores, dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -1054,6 +1057,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         device = torch.device(device_s)
 
+    # Free speedup on Ampere+ for any fp32 matmuls outside the bf16 autocast
+    # region (does not affect bf16 numerics).
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+
     amp_enabled, amp_dtype, amp_dtype_name, amp_use_scaler = _resolve_amp_config(
         merged, device
     )
@@ -1114,10 +1122,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     loader_batch_size = int(merged["batch_size"])
     if loader_batch_size < 1:
         raise SystemExit("train_setbert.batch_size must be >= 1.")
+    raw_inf_bs = merged.get("inference_batch_size")
+    inference_batch_size = (
+        int(raw_inf_bs) if raw_inf_bs not in (None, "", "null") else loader_batch_size
+    )
+    if inference_batch_size < 1:
+        raise SystemExit("train_setbert.inference_batch_size must be >= 1.")
     num_workers = int(merged["num_workers"])
     collate = _make_collate(pad_token_id)
+    pin_memory = device.type == "cuda"
+    persistent_workers = num_workers > 0
     train_ds = SetBertRunDataset(train_entries, requested_set_size=requested_set_size)
     val_ds = SetBertRunDataset(val_entries, requested_set_size=requested_set_size)
+    test_ds = SetBertRunDataset(test_entries, requested_set_size=requested_set_size)
+    holdout_ds = (
+        SetBertRunDataset(holdout_entries, requested_set_size=requested_set_size)
+        if holdout_entries
+        else None
+    )
 
     sampler: Optional[WeightedRandomSampler] = None
     shuffle = True
@@ -1136,16 +1158,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         sampler=sampler,
         num_workers=num_workers,
         collate_fn=collate,
-        pin_memory=device.type == "cuda",
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
     )
+    # Inference loaders are reused across epochs so workers stay warm and
+    # .pt -> tensor decode overlaps with GPU forward. Earlier versions built
+    # these from scratch each epoch with num_workers=0, which serialized
+    # CPU load and GPU compute and was the dominant source of the 15-min
+    # post-train inference stall.
     val_loader = DataLoader(
         val_ds,
-        batch_size=loader_batch_size,
+        batch_size=inference_batch_size,
         shuffle=False,
         num_workers=num_workers,
         collate_fn=collate,
-        pin_memory=device.type == "cuda",
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
     )
+    test_loader = DataLoader(
+        test_ds,
+        batch_size=inference_batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+    )
+    holdout_loader: Optional[DataLoader] = None
+    if holdout_ds is not None:
+        holdout_loader = DataLoader(
+            holdout_ds,
+            batch_size=inference_batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            collate_fn=collate,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+        )
 
     # ----- Optimization knobs ----------------------------------------------
     lr = float(merged["learning_rate"])
@@ -1176,6 +1225,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     best_val_auc = float("nan")
     best_val_f1 = float("nan")
     best_state: Optional[Dict[str, torch.Tensor]] = None
+    best_test_scores: Optional[np.ndarray] = None
+    best_holdout_scores: Optional[np.ndarray] = None
 
     results_path = _results_json_out_path(
         repo_root, merged.get("results_json"), task=task
@@ -1212,7 +1263,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             scaler=scaler,
             pos_weight=pos_weight,
         )
-        val_loss = _eval_val_loss(
+        val_loss, val_scores = _eval_val_full(
             model,
             val_loader,
             device,
@@ -1220,28 +1271,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_dtype=amp_dtype,
             pos_weight=pos_weight,
         )
-
-        val_scores = _score_entries(
-            model, val_entries, device,
-            requested_set_size=requested_set_size,
-            pad_token_id=pad_token_id,
-            batch_size=loader_batch_size,
+        test_scores = _score_loader(
+            model, test_loader, device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
-        test_scores = _score_entries(
-            model, test_entries, device,
-            requested_set_size=requested_set_size,
-            pad_token_id=pad_token_id,
-            batch_size=loader_batch_size,
-            amp_enabled=amp_enabled,
-            amp_dtype=amp_dtype,
-        )
-        holdout_scores = _score_entries(
-            model, holdout_entries, device,
-            requested_set_size=requested_set_size,
-            pad_token_id=pad_token_id,
-            batch_size=loader_batch_size,
+        holdout_scores = _score_loader(
+            model, holdout_loader, device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
@@ -1264,6 +1300,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
+            # Test/holdout scores at the best epoch are reused for the final
+            # results JSON (no extra inference passes after training).
+            best_test_scores = test_scores
+            best_holdout_scores = holdout_scores
 
         epoch_log.append(
             {
@@ -1295,22 +1335,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         model.load_state_dict(best_state)
 
     if results_path is not None:
-        final_test_scores = _score_entries(
-            model, test_entries, device,
-            requested_set_size=requested_set_size,
-            pad_token_id=pad_token_id,
-            batch_size=loader_batch_size,
-            amp_enabled=amp_enabled,
-            amp_dtype=amp_dtype,
-        )
-        final_holdout_scores = _score_entries(
-            model, holdout_entries, device,
-            requested_set_size=requested_set_size,
-            pad_token_id=pad_token_id,
-            batch_size=loader_batch_size,
-            amp_enabled=amp_enabled,
-            amp_dtype=amp_dtype,
-        )
+        # Reuse the test/holdout scores captured at the best epoch instead of
+        # running two more full inference passes after restoring weights.
+        if best_test_scores is None:
+            final_test_scores = _score_loader(
+                model, test_loader, device,
+                amp_enabled=amp_enabled,
+                amp_dtype=amp_dtype,
+            )
+        else:
+            final_test_scores = best_test_scores
+        if best_holdout_scores is None:
+            final_holdout_scores = _score_loader(
+                model, holdout_loader, device,
+                amp_enabled=amp_enabled,
+                amp_dtype=amp_dtype,
+            )
+        else:
+            final_holdout_scores = best_holdout_scores
         final_test_auc, final_test_f1 = _binary_metrics(
             test_entries, final_test_scores, pos_label=pos_label, neg_label=neg_label
         )
