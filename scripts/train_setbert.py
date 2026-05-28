@@ -29,10 +29,14 @@ on every subsequent scoring pass. The cache is dropped as soon as the encoder un
 and is never used for the train split. Scoring loops also show per-batch ``tqdm``
 progress bars (Val / Test / Holdout) alongside the existing Train bar.
 
-Config: defaults.yaml (train_setbert + setbert + paths) with optional experiments.yaml
-``train_setbert.experiments`` overrides selected by ``--expt N`` (1-based). When the
-selected experiment row sets ``random_seed`` to a YAML list, the parent process forks
-one ``--child-run`` subprocess per seed (results JSON path templated by
+Config: defaults.yaml (``setbert_model`` + ``train_setbert`` + ``paths``) with optional
+experiments.yaml ``train_setbert.experiments`` overrides selected by ``--expt N``
+(1-based). The baseline merge combines ``setbert_model`` (pretrained checkpoint + device,
+shared with build_setbert_run_tensors.py) with ``train_setbert`` (precision, weight_init,
+task / optimization / head / output knobs); an experiment row may override keys from
+either block (e.g. ``weight_init: random``, ``device: cpu``). When the selected
+experiment row sets ``random_seed`` to a YAML list, the parent process forks one
+``--child-run`` subprocess per seed (results JSON path templated by
 ``train_setbert.results_json_template``); each subprocess runs a single training.
 """
 
@@ -62,7 +66,7 @@ from sklearn.metrics import f1_score
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
-from setbert_data import load_setbert_model, load_setbert_section, resolve_device
+from setbert_data import load_setbert_model, load_setbert_model_section
 from shared_utilities import (
     binary_auc_from_scores,
     build_run_task_table,
@@ -85,6 +89,7 @@ VALID_HEAD_TYPES = frozenset(
     )
 )
 VALID_PROTOTYPE_INITS = frozenset(("random", "class_means"))
+VALID_WEIGHT_INITS = frozenset(("pretrained", "random"))
 
 
 # ---------------------------------------------------------------------------
@@ -93,13 +98,31 @@ VALID_PROTOTYPE_INITS = frozenset(("random", "class_means"))
 
 
 def _load_train_setbert_section(defaults_path: Path) -> Dict[str, Any]:
+    """Merged baseline = ``setbert_model`` block + ``train_setbert`` block.
+
+    Shared model identity (``pretrained_repo``, ``pretrained_revision``,
+    ``device``) lives in ``setbert_model``; everything training-specific
+    (``amp``, ``amp_dtype``, ``weight_init``, task / optimization / head /
+    output knobs) lives in ``train_setbert``. Experiment overrides in
+    experiments.yaml may target keys from either block (e.g.
+    ``weight_init: random``, ``device: cpu``).
+    """
     cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
     if not isinstance(cfg, dict):
         raise SystemExit(f"{defaults_path} must contain a YAML mapping.")
-    sec = cfg.get("train_setbert")
-    if not isinstance(sec, dict):
+    model_sec = cfg.get("setbert_model")
+    if not isinstance(model_sec, dict):
+        raise SystemExit(f"{defaults_path} must define a setbert_model mapping.")
+    train_sec = cfg.get("train_setbert")
+    if not isinstance(train_sec, dict):
         raise SystemExit(f"{defaults_path} must define a train_setbert mapping.")
-    return dict(sec)
+    overlap = set(model_sec) & set(train_sec)
+    if overlap:
+        raise SystemExit(
+            "setbert_model and train_setbert must not share keys; conflict: "
+            f"{sorted(overlap)!r}."
+        )
+    return {**model_sec, **train_sec}
 
 
 def merge_train_setbert_config(
@@ -1094,14 +1117,10 @@ def _write_results_json(
             "val_f1": _float_or_none(best_val_f1),
         },
         "metrics": {
-            "test": {
-                "auc": _float_or_none(test_auc),
-                "f1": _float_or_none(test_f1),
-            },
-            "holdout": {
-                "auc": _float_or_none(holdout_auc),
-                "f1": _float_or_none(holdout_f1),
-            },
+            "test_auc": _float_or_none(test_auc),
+            "test_f1": _float_or_none(test_f1),
+            "holdout_auc": _float_or_none(holdout_auc),
+            "holdout_f1": _float_or_none(holdout_f1),
         },
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -1297,7 +1316,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     paths_cfg = defaults_cfg.get("paths")
     if not isinstance(paths_cfg, dict):
         raise SystemExit(f"{defaults_path} must define paths as a mapping.")
-    setbert_section = load_setbert_section(defaults_cfg)
+    # Validate that file-level ``setbert_model`` defaults exist and are well-typed; the
+    # actual values used come from ``merged`` so experiments.yaml overrides (e.g.
+    # ``device: cpu``) still take effect.
+    load_setbert_model_section(defaults_cfg)
+    pretrained_repo = str(merged["pretrained_repo"]).strip()
+    pretrained_revision = str(merged["pretrained_revision"]).strip()
     run_tensors_root = resolve_repo_path(
         repo_root, str(paths_cfg["setbert_run_tensors_dir"]).strip()
     )
@@ -1310,12 +1334,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     requested_set_size = int(merged["set_size"])
     if requested_set_size <= 0:
         raise SystemExit("train_setbert.set_size must be > 0.")
-    if requested_set_size > int(setbert_section["set_size"]):
-        raise SystemExit(
-            f"train_setbert.set_size ({requested_set_size}) exceeds "
-            f"setbert.set_size ({setbert_section['set_size']}); rebuild the run tensor "
-            "cache with a larger setbert.set_size."
-        )
 
     pos_label, neg_label = _pos_neg_for_task(task)
     all_records, n_missing_cache, missing_cache_examples = _build_run_records(
@@ -1355,15 +1373,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     sample_repo = str(sample_meta.get("pretrained_repo", "")).strip()
     sample_rev = str(sample_meta.get("pretrained_revision", "")).strip()
-    if sample_repo and sample_repo != setbert_section["pretrained_repo"]:
+    if sample_repo and sample_repo != pretrained_repo:
         raise SystemExit(
             f"Cache pretrained_repo {sample_repo!r} does not match "
-            f"setbert.pretrained_repo {setbert_section['pretrained_repo']!r}."
+            f"setbert_model.pretrained_repo {pretrained_repo!r}."
         )
-    if sample_rev and sample_rev != setbert_section["pretrained_revision"]:
+    if sample_rev and sample_rev != pretrained_revision:
         raise SystemExit(
             f"Cache pretrained_revision {sample_rev!r} does not match "
-            f"setbert.pretrained_revision {setbert_section['pretrained_revision']!r}."
+            f"setbert_model.pretrained_revision {pretrained_revision!r}."
         )
 
     seed = int(merged["random_seed"])
@@ -1401,19 +1419,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     chunk_size = int(merged["sequence_encoder_chunk_size"])
+    weight_init = str(merged.get("weight_init") or "pretrained").strip().lower()
+    if weight_init not in VALID_WEIGHT_INITS:
+        raise SystemExit(
+            f"train_setbert.weight_init must be one of {sorted(VALID_WEIGHT_INITS)}; "
+            f"got {weight_init!r}."
+        )
+    merged = {**merged, "weight_init": weight_init}
+    if weight_init == "pretrained":
+        load_desc = (
+            f"Loading SetBERT {pretrained_repo}@{pretrained_revision} "
+            "(pretrained weights)"
+        )
+    else:
+        load_desc = (
+            f"Loading SetBERT {pretrained_repo}@{pretrained_revision} "
+            f"(random weights; architecture only, seeded by random_seed={seed})"
+        )
     print(
-        f"Loading SetBERT {setbert_section['pretrained_repo']}@"
-        f"{setbert_section['pretrained_revision']} on {device} "
-        f"(sequence_encoder_chunk_size={chunk_size})",
+        f"{load_desc} on {device} (sequence_encoder_chunk_size={chunk_size})",
         flush=True,
     )
     try:
         base_model, _tokenizer, embed_dim, pad_token_id, kmer = load_setbert_model(
-            pretrained_repo=setbert_section["pretrained_repo"],
-            pretrained_revision=setbert_section["pretrained_revision"],
+            pretrained_repo=pretrained_repo,
+            pretrained_revision=pretrained_revision,
             sequence_encoder_chunk_size=chunk_size,
             device=device,
             eval_mode=False,
+            weight_init=weight_init,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Failed to load SetBERT model: {exc}", file=sys.stderr)
@@ -1759,7 +1793,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             _write_training_log(training_log_path, epoch_log)
 
         print(
-            f"  loss(train)={train_loss:.4f} loss(val)={val_loss:.4f}  "
+            f"  train_loss={train_loss:.4f} val_loss={val_loss:.4f}  "
             f"val_auc={val_auc:.4f} val_f1={val_f1:.4f}  "
             f"test_auc={test_auc:.4f} test_f1={test_f1:.4f}  "
             f"holdout_auc={holdout_auc:.4f} holdout_f1={holdout_f1:.4f}  "
@@ -1809,8 +1843,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cache_info={
                 "dir": str(run_tensors_root),
                 "cache_set_size": int(sample_meta.get("set_size", 0)),
-                "pretrained_repo": setbert_section["pretrained_repo"],
-                "pretrained_revision": setbert_section["pretrained_revision"],
+                "pretrained_repo": pretrained_repo,
+                "pretrained_revision": pretrained_revision,
                 "n_cached_runs": len(all_records),
             },
             task=task,

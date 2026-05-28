@@ -1,10 +1,10 @@
-"""SetBERT backbone used by the BreCol pipeline.
+"""SetBERT backbone.
 
 Only the base :class:`SetBert` model is kept here; the upstream
 ``SetBertForPretraining`` / ``SetBertForSequenceEmbedding`` /
-``SetBertForSampleEmbedding`` variants are not exercised by
-``scripts/train_setbert.py`` or ``scripts/build_setbert_embeddings.py`` and
-have been removed along with the Lightning pretraining hooks.
+``SetBertForSampleEmbedding`` variants and the Lightning pretraining hooks
+have been removed because this vendored copy only targets inference and
+fine-tuning on the released checkpoints.
 """
 
 from __future__ import annotations

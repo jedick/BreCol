@@ -1,7 +1,6 @@
 """Shared SetBERT helpers: config validation, model load, per-Run set selection and tokenization.
 
 Used by:
-- scripts/build_setbert_embeddings.py (run-level [CLS] embeddings, optional per-sequence cache)
 - scripts/build_setbert_run_tensors.py (token tensor cache for train_setbert.py)
 - scripts/train_setbert.py (model construction + batch token padding)
 
@@ -49,55 +48,59 @@ warnings.filterwarnings(
 # ----- Config -----
 
 
-VALID_COMPRESSION = frozenset(("zstd", "snappy", "gzip", "brotli", "lz4", "none"))
+def load_setbert_model_section(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate the shared ``setbert_model`` block; return a typed dict.
 
-
-def load_setbert_section(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    """Validate the ``setbert`` block in a defaults-style mapping; return a typed dict."""
-    section = cfg.get("setbert")
+    Holds only the pretrained checkpoint identity and the device default - the two
+    things both ``build_setbert_run_tensors.py`` and ``train_setbert.py`` need.
+    Training-only knobs (``amp``, ``amp_dtype``, ``weight_init``, etc.) live under
+    ``train_setbert``.
+    """
+    section = cfg.get("setbert_model")
     if not isinstance(section, dict):
-        raise SystemExit("defaults.yaml must define a `setbert` mapping.")
+        raise SystemExit("defaults.yaml must define a `setbert_model` mapping.")
     try:
         pretrained_repo = str(section["pretrained_repo"]).strip()
         pretrained_revision = str(section["pretrained_revision"]).strip()
-        set_size = int(section["set_size"])
-        min_sequence_length = int(section["min_sequence_length"])
-        max_sequence_length = int(section["max_sequence_length"])
-        truncation_seed = int(section["truncation_seed"])
-        sequence_encoder_chunk_size = int(section["sequence_encoder_chunk_size"])
-        run_batch_size = int(section["run_batch_size"])
-        device_raw = str(section.get("device") or "").strip().lower()
-        store_sequence_embeddings = bool(section["store_sequence_embeddings"])
-        parquet_compression = str(section["parquet_compression"]).strip()
     except KeyError as exc:
-        raise SystemExit(f"setbert missing required key: {exc.args[0]!r}") from exc
-    if set_size <= 0:
-        raise SystemExit("setbert.set_size must be a positive integer.")
-    if min_sequence_length <= 0 or max_sequence_length <= 0:
-        raise SystemExit("setbert.min_sequence_length / max_sequence_length must be positive.")
-    if min_sequence_length > max_sequence_length:
-        raise SystemExit("setbert.min_sequence_length must be <= setbert.max_sequence_length.")
-    if sequence_encoder_chunk_size < 0:
-        raise SystemExit("setbert.sequence_encoder_chunk_size must be >= 0.")
-    if run_batch_size < 1:
-        raise SystemExit("setbert.run_batch_size must be >= 1.")
-    if parquet_compression not in VALID_COMPRESSION:
         raise SystemExit(
-            f"setbert.parquet_compression must be one of {sorted(VALID_COMPRESSION)}; "
-            f"got {parquet_compression!r}."
+            f"setbert_model missing required key: {exc.args[0]!r}"
+        ) from exc
+    if not pretrained_repo or not pretrained_revision:
+        raise SystemExit(
+            "setbert_model.pretrained_repo and pretrained_revision must be non-empty."
         )
+    device_raw = str(section.get("device") or "").strip().lower()
     return {
         "pretrained_repo": pretrained_repo,
         "pretrained_revision": pretrained_revision,
+        "device_raw": device_raw,
+    }
+
+
+def load_setbert_run_tensors_section(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate the ``setbert_run_tensors`` block; return a typed dict."""
+    section = cfg.get("setbert_run_tensors")
+    if not isinstance(section, dict):
+        raise SystemExit("defaults.yaml must define a `setbert_run_tensors` mapping.")
+    try:
+        set_size = int(section["set_size"])
+        max_sequence_length = int(section["max_sequence_length"])
+        truncation_seed = int(section["truncation_seed"])
+    except KeyError as exc:
+        raise SystemExit(
+            f"setbert_run_tensors missing required key: {exc.args[0]!r}"
+        ) from exc
+    if set_size <= 0:
+        raise SystemExit("setbert_run_tensors.set_size must be a positive integer.")
+    if max_sequence_length <= 0:
+        raise SystemExit(
+            "setbert_run_tensors.max_sequence_length must be a positive integer."
+        )
+    return {
         "set_size": set_size,
-        "min_sequence_length": min_sequence_length,
         "max_sequence_length": max_sequence_length,
         "truncation_seed": truncation_seed,
-        "sequence_encoder_chunk_size": sequence_encoder_chunk_size,
-        "run_batch_size": run_batch_size,
-        "device_raw": device_raw,
-        "store_sequence_embeddings": store_sequence_embeddings,
-        "parquet_compression": parquet_compression,
     }
 
 
@@ -116,21 +119,49 @@ def load_setbert_model(
     *,
     pretrained_repo: str,
     pretrained_revision: str,
-    sequence_encoder_chunk_size: int,
     device: torch.device,
+    sequence_encoder_chunk_size: Optional[int] = None,
     eval_mode: bool = True,
+    weight_init: str = "pretrained",
 ) -> Tuple[torch.nn.Module, Any, int, int, int]:
     """Load SetBERT from HF Hub. Return (model, tokenizer, embed_dim, pad_token_id, kmer).
 
     ``sequence_encoder_chunk_size`` controls how many sequences are pushed through
     the DNABERT encoder per forward chunk inside ``SetBert.embed_sequences`` (also
-    the activation-checkpoint granularity during training). The same value is used
-    by inference and fine-tuning callers.
-    """
-    from setbert import SetBert
+    the activation-checkpoint granularity during training). When ``None`` (the
+    default), the value baked into the released checkpoint config is preserved -
+    callers that only need the tokenizer (e.g. ``build_setbert_run_tensors.py``)
+    can skip this argument. Pass an explicit int from training callers to control
+    memory.
 
-    model = SetBert.from_pretrained(pretrained_repo, revision=pretrained_revision)
-    model.config.sequence_encoder_chunk_size = int(sequence_encoder_chunk_size)
+    ``weight_init`` controls backbone weights:
+
+    - ``"pretrained"`` (default): load both the architecture and weights from
+      ``pretrained_repo @ pretrained_revision`` via ``SetBert.from_pretrained``.
+    - ``"random"``: load only the architecture (``SetBertConfig.from_pretrained``)
+      and construct ``SetBert(config)``, which leaves both the DNABERT sequence
+      encoder and the SAB transformer (including ``class_token``) with freshly
+      randomized weights. Tokenizer / k-mer / padding metadata still come from
+      the released config. Callers that need reproducibility should seed
+      ``torch.manual_seed`` before calling this function.
+    """
+    from setbert import SetBert, SetBertConfig
+
+    init_mode = (weight_init or "pretrained").strip().lower()
+    if init_mode == "pretrained":
+        model = SetBert.from_pretrained(pretrained_repo, revision=pretrained_revision)
+    elif init_mode == "random":
+        config = SetBertConfig.from_pretrained(
+            pretrained_repo, revision=pretrained_revision
+        )
+        model = SetBert(config)
+    else:
+        raise ValueError(
+            f"load_setbert_model: weight_init must be 'pretrained' or 'random'; "
+            f"got {weight_init!r}."
+        )
+    if sequence_encoder_chunk_size is not None:
+        model.config.sequence_encoder_chunk_size = int(sequence_encoder_chunk_size)
     model = model.to(device)
     if eval_mode:
         model.eval()
@@ -174,16 +205,17 @@ def select_trimmed_set_for_run(
     sample_mode: str,
     sampling_seed: int,
     truncation_seed: int,
-    min_sequence_length: int,
     max_sequence_length: int,
     run: str,
 ) -> Tuple[Optional[np.ndarray], Optional[List[str]], int]:
     """Return (1-based sequence indices, trimmed sequences, n_raw_records) or (None, None, n_raw).
 
     Sampling matches the without-replacement convention shared by tetramer/embedding caches.
-    Trim length is drawn per-sequence from [min_sequence_length, max_sequence_length]
-    using the per-Run RNG seeded by ``truncation_seed``. Returns ``n_raw_records`` so callers
-    can record provenance even on skip.
+    Sequences longer than ``max_sequence_length`` are randomly cut to ``max_sequence_length``
+    (random offset chosen by the per-Run RNG seeded by ``truncation_seed``), matching the
+    SetBERT paper's "trim either end to a fixed length" recipe (Suppl. §3.1-3.2). Shorter
+    sequences are passed through unchanged. Returns ``n_raw_records`` so callers can record
+    provenance even on skip.
     """
     n_raw = count_fasta_records(fasta_gz)
     if skip_reason(n_raw, seq_offset=seq_offset, min_seqs=min_seqs) is not None:
@@ -219,8 +251,7 @@ def select_trimmed_set_for_run(
     trimmed: List[str] = []
     for idx0 in indices_0.tolist():
         seq = seq_by_index[int(idx0)]
-        target_len = int(rng.integers(min_sequence_length, max_sequence_length + 1))
-        trimmed.append(trim_sequence(seq, target_len=target_len, rng=rng))
+        trimmed.append(trim_sequence(seq, target_len=max_sequence_length, rng=rng))
         index_rows.append(int(idx0) + 1)
     return np.asarray(index_rows, dtype=np.int32), trimmed, n_raw
 
@@ -256,7 +287,7 @@ def pad_set_to_token_len(
         if L > target_token_len:
             raise ValueError(
                 f"Token row length {L} exceeds target {target_token_len}; "
-                "increase setbert.max_sequence_length or check tokenizer."
+                "check setbert_run_tensors.max_sequence_length / tokenizer."
             )
         out[i, :L] = row
     return out

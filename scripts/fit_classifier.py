@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Train a classifier on run-level tetramer frequencies, UC/CAP cluster features, or
-SetBERT [CLS] embeddings.
+Train a classifier on run-level tetramer frequencies or UC/CAP cluster features.
 
 Modes (mutually exclusive):
   --tetramer   Inputs: paths.tetramer_frequencies_csv (256 ACGT tetramer columns).
   --uc_cap     Inputs: CAP CSV from run_uc_cap_pipeline (cluster_* columns).
                Optional --emb selects embedding-based CAP outputs (embedding_uc_cap_root).
-  --setbert    Inputs: paths.setbert_embeddings_csv (Run + embed_dim signed dim_* columns).
-               use_clr is forced to False regardless of YAML/experiment overrides.
 
-All modes use scripts/shared_utilities.py for train/val/test/holdout, support the same
+Both modes use scripts/shared_utilities.py for train/val/test/holdout, support the same
 model families (baseline, knn, random_forest, svm), hyperparameter grids from
 defaults.yaml fit_classifier (YAML lists; validation tuning_metric, default auc),
 and optional experiment overlays from experiments.yaml (fit_classifier.experiments).
@@ -258,21 +255,11 @@ def _load_experiment_args(
         csv_path = _cap_csv_path(
             root, paths_cfg, merged_uc, use_embeddings=use_embeddings
         )
-    elif features == "setbert":
-        csv_path = root / str(paths_cfg["setbert_embeddings_csv"]).strip()
     else:
         raise SystemExit(f"Unknown features mode: {features!r}")
 
     use_scaler = bool(config["use_scaler"])
     use_clr = bool(config["use_clr"])
-    # SetBERT embeddings are signed activations; CLR's nonnegativity check would fail.
-    if features == "setbert" and use_clr:
-        print(
-            "Note: --setbert forces use_clr=False "
-            "(SetBERT embeddings are signed; CLR is not applicable).",
-            flush=True,
-        )
-        use_clr = False
 
     args_dict: Dict[str, Any] = {
         "features": features,
@@ -503,31 +490,6 @@ def _load_tetramer_features(csv_path: Path) -> pd.DataFrame:
     if (out["Run"] == "").any():
         raise SystemExit("Found empty 'Run' values in tetramer CSV.")
     return out
-
-
-def _load_setbert_features(csv_path: Path) -> Tuple[pd.DataFrame, List[str]]:
-    """Load the SetBERT [CLS] embeddings CSV.
-
-    Returns (dataframe with Run + numeric feature columns, feature column names).
-    Feature columns are all non-Run columns in their CSV order.
-    """
-    if not csv_path.is_file():
-        raise SystemExit(f"SetBERT embeddings CSV not found: {csv_path}")
-    df = pd.read_csv(csv_path)
-    if df.empty:
-        raise SystemExit("No data rows in SetBERT embeddings CSV.")
-    if "Run" not in df.columns:
-        raise SystemExit("SetBERT embeddings CSV missing required column: Run")
-    feature_cols = [c for c in df.columns if c != "Run"]
-    if not feature_cols:
-        raise SystemExit(
-            "SetBERT embeddings CSV has no feature columns (need at least one dim_* column)."
-        )
-    out = df.copy()
-    out["Run"] = out["Run"].astype(str).str.strip()
-    if (out["Run"] == "").any():
-        raise SystemExit("Found empty 'Run' values in SetBERT embeddings CSV.")
-    return out, feature_cols
 
 
 def _build_task_splits(
@@ -1175,11 +1137,6 @@ def run_classifier(args: argparse.Namespace, root: Path) -> int:
         merged = run_task_df.merge(
             cap_df[["Run"] + feature_cols], on="Run", how="inner"
         )
-    elif args.features == "setbert":
-        setbert_df, feature_cols = _load_setbert_features(Path(args.csv))
-        merged = run_task_df.merge(
-            setbert_df[["Run"] + feature_cols], on="Run", how="inner"
-        )
     else:
         raise SystemExit(f"Unknown features mode: {args.features!r}")
 
@@ -1249,11 +1206,6 @@ def _parse_main_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     mx = parser.add_mutually_exclusive_group(required=True)
     mx.add_argument("--tetramer", action="store_true", help="Use tetramer frequency features.")
     mx.add_argument("--uc_cap", action="store_true", help="Use UC/CAP cluster features.")
-    mx.add_argument(
-        "--setbert",
-        action="store_true",
-        help="Use SetBERT [CLS] embeddings (paths.setbert_embeddings_csv).",
-    )
     parser.add_argument(
         "--emb",
         action="store_true",
@@ -1296,8 +1248,6 @@ def _parse_main_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         )
     if args.tetramer and args.feat is not None:
         raise SystemExit("--feat is not valid with --tetramer.")
-    if args.setbert and args.feat is not None:
-        raise SystemExit("--feat is not valid with --setbert.")
     if args.uc_cap and args.feat is not None and args.feat < 1:
         raise SystemExit("--feat must be >= 1 when provided.")
     if args.emb and not args.uc_cap:
@@ -1313,10 +1263,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         features = "tetramer"
     elif cli.uc_cap:
         features = "uc_cap"
-    elif cli.setbert:
-        features = "setbert"
     else:
-        raise SystemExit("Specify --tetramer, --uc_cap, or --setbert.")
+        raise SystemExit("Specify --tetramer or --uc_cap.")
     if hasattr(cli, "results_json"):
         results_json_cli: Optional[str] = cli.results_json
     else:

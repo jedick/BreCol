@@ -23,11 +23,6 @@ paths:
   run_tensors_dir: outputs/run_tensors
   # HyenaDNA weights root (subdir per model; cloned from Hugging Face if missing on first load)
   checkpoint_dir: checkpoints
-  # Run-level SetBERT [CLS] embeddings (input for scripts/fit_classifier.py --setbert)
-  setbert_embeddings_csv: outputs/setbert_embeddings.csv
-  # Hive-partitioned per-sequence SetBERT contextualized embeddings (written when
-  # setbert.store_sequence_embeddings is true; partitioned under n<set_size>/study_name=/Run=/)
-  setbert_embedding_cache_dir: outputs/setbert_embedding_cache
   # Feature-only per-run SetBERT token tensors from scripts/build_setbert_run_tensors.py
   setbert_run_tensors_dir: outputs/setbert_run_tensors
 
@@ -80,8 +75,6 @@ fit_classifier:
   # Random seed for PCA and model initialization
   random_state: 0
   # Whether CLR is applied before scaler/PCA.
-  # Note: forced to False internally when running --setbert (SetBERT embeddings are signed
-  # activations and CLR's nonnegativity check would otherwise fail).
   use_clr: true
   # Additive constant before log in CLR
   clr_pseudocount: 1.0e-6
@@ -201,69 +194,60 @@ train_hyenadna:
   # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template
   results_json: null
 
-# SetBERT inference (scripts/build_setbert_embeddings.py)
-# Reuses sequence_cache.{seq_offset, min_seqs, sample_mode, sampling_seed} for run-row selection.
-# Numeric defaults below match the released qiita-16s checkpoint; YAML comments note where the
-# SetBERT paper (Suppl. §3.1-3.2) describes different values.
-setbert:
+# Shared SetBERT model identity (used by both scripts/build_setbert_run_tensors.py
+# and scripts/train_setbert.py).
+setbert_model:
   ## Pre-trained checkpoint (loaded from Hugging Face Hub; cached under $HF_HOME)
   # Paper: SetBERT pre-trained on ~280k Qiita 16S amplicon samples.
-  pretrained_repo: sirdavidludwig/setbert
-  pretrained_revision: qiita-16s
   # Note on dimensions: the released `qiita-16s` checkpoint is the "large" variant
   # (embed_dim=768, 6 SAB layers, 12 heads, DNABERT base "768d-silva16s-250bp", kmer=3).
   # The SetBERT paper describes a 64-dim model (8 SAB layers, 8 heads, DNABERT base
-  # "64d-silva16s-250bp") which is not available on HF. The output CSV dimensionality
-  # is determined by the loaded checkpoint (currently 768 for qiita-16s).
+  # "64d-silva16s-250bp") which is not available on HF.
+  pretrained_repo: sirdavidludwig/setbert
+  pretrained_revision: qiita-16s
 
+  ## Device: cuda, cpu, or null / auto for torch.cuda.is_available()
+  device: null
+
+# SetBERT run tensor cache (scripts/build_setbert_run_tensors.py)
+# Reuses sequence_cache.{seq_offset, min_seqs, sample_mode, sampling_seed} for run-row selection.
+# Numeric defaults below match the released qiita-16s checkpoint; YAML comments note where the
+# SetBERT paper (Suppl. §3.1-3.2) describes different values.
+# The pretrained checkpoint and device come from `setbert_model:` above.
+setbert_run_tensors:
   ## Sample (run) construction
   # Sequences sampled per Run (the SetBERT set size / n_sample of the SAB stack)
   # Paper: n_sample = 1,000 sequences per subsample.
   set_size: 1000
-  # Per-sequence trim window in bp; each selected sequence is randomly truncated to a length
-  # sampled uniformly in [min, max]. Set min == max for a fixed length.
-  # Paper: each sequence trimmed to exactly 150 bp by randomly cutting either end.
-  # Released DNABERT base accepts up to 250 bp; its pretraining datamodule samples in [65, 250].
-  min_sequence_length: 150
+  # Trim window in bp: sequences longer than max_sequence_length are randomly truncated to
+  # max_sequence_length by cutting either end; shorter sequences are passed through unchanged
+  # and the tokenizer's [PAD] right-pads each token row to the per-run max during caching.
+  # Paper (Suppl. §3.1-3.2): each sequence trimmed to exactly 150 bp by randomly cutting
+  # either end. Released DNABERT base accepts up to 250 bp.
   max_sequence_length: 150
   # Seed for the random trim-window offset and selection (combined with a per-Run hash)
   truncation_seed: 0
   # Note: this script samples sequences from a run *without replacement* (consistent with
-  # tetramer/embedding caches via cache_operations.select_row_indices_0based). The SetBERT
-  # paper samples uniformly *with replacement*; switching would require a small tweak.
+  # tetramer/embedding caches via cache_operations.select_row_indices_0based).
   # Note: ambiguous bases (non-ACGT IUPAC codes) are tokenized to [UNK] by DnaTokenizer.
-  # The SetBERT paper randomly resolves them to concrete bases at training time; for inference
-  # on 16S amplicon data (rare ambiguous bases) we keep the simpler tokenizer behavior.
-
-  ## Forward pass / batching
-  # DNABERT activation-checkpoint chunk size (sequences embedded per checkpoint chunk within
-  # a single forward pass). Released checkpoint default is 256; lower this on small GPUs.
-  sequence_encoder_chunk_size: 1000
-  # Run-level mini-batch (Runs processed in parallel per forward pass). 1 = one Run at a time.
-  # Increase for throughput if multiple sets fit in GPU memory.
-  run_batch_size: 4
-  # Device: cuda, cpu, or null / auto for torch.cuda.is_available()
-  device: null
-
-  ## Sidecar outputs
-  # When true, also persist contextualized per-sequence embeddings under
-  # paths.setbert_embedding_cache_dir as hive-partitioned Parquet (study_name=/Run=),
-  # so run_uc_cap_pipeline.py could later consume them.
-  store_sequence_embeddings: false
-  # Compression for the sequence-embedding Parquet cache (zstd / snappy / gzip / brotli / lz4 / none)
-  parquet_compression: zstd
 
 # SetBERT fine-tuning (scripts/train_setbert.py)
 # Reads the feature-only per-run token tensor cache at paths.setbert_run_tensors_dir/
 # (one <Run>.pt per run from scripts/build_setbert_run_tensors.py).
-# Sequence-selection / trim-window / pretrained checkpoint come from the shared `setbert:`
-# block above; train_setbert below adds training-only knobs.
+# The pretrained checkpoint and device come from `setbert_model:` above; train_setbert below
+# holds all training-time knobs (and may override setbert_model values via experiments.yaml).
 # Optional --expt overlays train_setbert.experiments in experiments.yaml (1-based index).
 train_setbert:
-  ## Device / precision
-  device: null
+  ## Precision
   amp: true
   amp_dtype: bfloat16
+
+  ## Backbone initialization
+  # pretrained (default): load weights from setbert_model.pretrained_repo @ pretrained_revision.
+  # random: keep the released architecture/config but reinitialize both the DNABERT
+  # sequence encoder and the SAB transformer (incl. class_token) with random weights.
+  # Random init is seeded by train_setbert.random_seed for reproducibility.
+  weight_init: pretrained
 
   ## Task / tuning (single-task only; no multitask in this implementation)
   # cancer_diagnosis or cancer_type
@@ -271,12 +255,13 @@ train_setbert:
   # Validation metric used to pick the best epoch: auc | f1
   tuning_metric: auc
 
-  ## Set construction (override of setbert.set_size for training only)
+  ## Set construction (override of setbert_run_tensors.set_size for training only)
   # Must be <= the set_size baked into the run tensor cache.
   # 350/1000 fits in 16GB GPU RAM for frozen/unfrozen encoder
   set_size: 100
-  # DNABERT activation-checkpoint chunk size during fine-tuning. Smaller than inference
-  # default (1000) because activations are stored for backward through the SAB stack.
+  # DNABERT activation-checkpoint chunk size during fine-tuning. Activations are stored for
+  # backward through the SAB stack, so this is typically lower than the bundled checkpoint
+  # default; lower it further on small GPUs.
   sequence_encoder_chunk_size: 500
 
   ## Optimization
@@ -293,7 +278,7 @@ train_setbert:
   weight_decay: 0.1
   # lr_backbone = learning_rate * backbone_lr_mult (applies to both DNABERT and SAB);
   # head uses learning_rate unchanged (1.0 = no scale)
-  backbone_lr_mult: 1.0
+  backbone_lr_mult: 0.1
 
   ## Two-knob backbone freezing
   # DNABERT sequence encoder: 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
@@ -319,7 +304,7 @@ train_setbert:
   #   pooled     - LayerNorm + Linear([CLS] || mean_pool || max_pool) -> 1       (uses set tokens too)
   #   cosine     - cosine([CLS], w) * temperature                                (one normalized direction)
   #   prototype  - cos_sim to two class prototypes; logit = sim(pos) - sim(neg)
-  head_type: cosine
+  head_type: linear
   # linear, spectral pooled: dropout applied to the head input
   # mlp: dropout applied between GELU and the final Linear (standard MLP regularization).
   head_dropout: 0.1

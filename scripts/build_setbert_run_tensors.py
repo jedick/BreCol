@@ -8,13 +8,14 @@ and splits are joined later by scripts/train_setbert.py via shared metadata util
 
 For each data/ CSV row with sample_used=TRUE, the builder:
   1. counts FASTA records and skips runs that fail sequence_cache offset / min_seqs;
-  2. picks ``setbert.set_size`` 0-based row indices via select_row_indices_0based
-     (without replacement, deterministic per Run);
-  3. iterates the FASTA and randomly trims each selected sequence to a length drawn
-     uniformly in [setbert.min_sequence_length, setbert.max_sequence_length] using the
-     per-Run RNG seeded by ``setbert.truncation_seed`` (same convention as
-     build_setbert_embeddings.py);
-  4. tokenizes with the SetBERT-bundled DNABERT tokenizer;
+  2. picks ``setbert_run_tensors.set_size`` 0-based row indices via
+     select_row_indices_0based (without replacement, deterministic per Run);
+  3. iterates the FASTA and, for each selected sequence longer than
+     ``setbert_run_tensors.max_sequence_length``, randomly cuts it down to that length
+     (random offset from the per-Run RNG seeded by ``setbert_run_tensors.truncation_seed``);
+     shorter sequences are passed through unchanged;
+  4. tokenizes with the DNABERT tokenizer bundled with the SetBERT checkpoint
+     (``setbert_model.pretrained_repo`` @ ``setbert_model.pretrained_revision``);
   5. right-pads each token row to the run's max token length and writes a small .pt
      file at paths.setbert_run_tensors_dir/<Run>.pt.
 
@@ -44,7 +45,8 @@ from cache_operations import (
 )
 from setbert_data import (
     load_setbert_model,
-    load_setbert_section,
+    load_setbert_model_section,
+    load_setbert_run_tensors_section,
     pad_set_to_token_len,
     resolve_device,
     select_trimmed_set_for_run,
@@ -106,28 +108,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             repo_root, str(paths["setbert_run_tensors_dir"])
         )
         selection = load_sequence_row_selection(cfg)
-        settings = load_setbert_section(cfg)
+        model_cfg = load_setbert_model_section(cfg)
+        settings = load_setbert_run_tensors_section(cfg)
     except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
         print(f"Invalid pipeline config in {defaults_path}: {exc}", file=sys.stderr)
         return 1
+
+    pretrained_repo = model_cfg["pretrained_repo"]
+    pretrained_revision = model_cfg["pretrained_revision"]
 
     if not data_dir.is_dir():
         print(f"Error: data directory not found: {data_dir}", file=sys.stderr)
         return 1
 
     set_size = int(settings["set_size"])
-    device = resolve_device(settings["device_raw"])
+    device = resolve_device(model_cfg["device_raw"])
 
     print(
-        f"Loading SetBERT {settings['pretrained_repo']}@{settings['pretrained_revision']} "
+        f"Loading SetBERT {pretrained_repo}@{pretrained_revision} "
         f"for tokenizer on {device}",
         flush=True,
     )
     try:
         _model, tokenizer, embed_dim, pad_token_id, kmer = load_setbert_model(
-            pretrained_repo=settings["pretrained_repo"],
-            pretrained_revision=settings["pretrained_revision"],
-            sequence_encoder_chunk_size=settings["sequence_encoder_chunk_size"],
+            pretrained_repo=pretrained_repo,
+            pretrained_revision=pretrained_revision,
             device=torch.device("cpu"),
             eval_mode=True,
         )
@@ -177,8 +182,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(
         f"\nBuilding SetBERT run tensors ({len(pending)} runs) -> {run_tensors_root} "
-        f"(set_size={set_size}, trim=[{settings['min_sequence_length']},"
-        f"{settings['max_sequence_length']}], kmer={kmer}, pad_token_id={pad_token_id})",
+        f"(set_size={set_size}, max_sequence_length={settings['max_sequence_length']}, "
+        f"kmer={kmer}, pad_token_id={pad_token_id})",
         flush=True,
     )
 
@@ -203,7 +208,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 sample_mode=selection["sample_mode"],
                 sampling_seed=selection["sampling_seed"],
                 truncation_seed=settings["truncation_seed"],
-                min_sequence_length=settings["min_sequence_length"],
                 max_sequence_length=settings["max_sequence_length"],
                 run=run,
             )
@@ -243,8 +247,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "token_len": int(target_token_len),
                 "pad_token_id": int(pad_token_id),
                 "kmer": int(kmer),
-                "pretrained_repo": settings["pretrained_repo"],
-                "pretrained_revision": settings["pretrained_revision"],
+                "pretrained_repo": pretrained_repo,
+                "pretrained_revision": pretrained_revision,
                 "study_name": str(study_name),
                 "n_raw_sequences": int(n_raw),
                 "n_after_offset_sequences": int(n_after_offset),
@@ -253,7 +257,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "sample_mode": str(selection["sample_mode"]),
                 "sampling_seed": int(selection["sampling_seed"]),
                 "truncation_seed": int(settings["truncation_seed"]),
-                "min_sequence_length": int(settings["min_sequence_length"]),
                 "max_sequence_length": int(settings["max_sequence_length"]),
             },
             out_path,

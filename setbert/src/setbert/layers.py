@@ -5,8 +5,8 @@ kept here: ``MultiHeadAttention`` → ``RelativeMultiHeadAttention`` →
 ``MultiHeadAttentionBlock`` → ``TransformerEncoderBlock`` →
 ``TransformerEncoder``. The flex-attention path, induced-set / decoder
 blocks, and the ``nn.TransformerEncoderLayer`` override from the upstream
-deepbio-toolkit are unused by ``scripts/train_setbert.py`` /
-``scripts/build_setbert_embeddings.py`` and have been removed.
+deepbio-toolkit are unused at inference / fine-tuning time on the released
+checkpoints and have been removed.
 
 All deprecated classes are left flagged with ``@deprecated("")`` for parity
 with the upstream module; the decorator is a no-op stub (see

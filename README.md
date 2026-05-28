@@ -56,8 +56,8 @@ See the list for a quick overview of the steps and read below for details.
 9. Embedding+UC/CAP classifier: `make run_uc_cap EMB=1` / `make fit_uc_cap EMB=1` drive the embedding UC/CAP path.
 10. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
 11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
-12. SetBERT embeddings: `make setbert_embeddings` writes one row of run-level [CLS] embeddings per run to `outputs/setbert_embeddings.csv` (about 2 hr).
-13. SetBERT classifier: `make -j4 fit_setbert EXPT=0` generates results files in `results/setbert/` (analogous to `fit_tetramer`).
+12. SetBERT run tensors: `make setbert_run_tensors` writes per-run DNABERT-tokenized FASTA windows to `outputs/setbert_run_tensors/<Run>.pt` for SetBERT fine-tuning.
+13. SetBERT fine-tuning: `make train_setbert EXPT=0` fine-tunes SetBERT on those tensors and writes experiment results to `results/setbert/`.
 14. Run `helpers/table*.py` and `helpers/figure*.py` to generate tables and figures in `manuscript/`.
 
 Notes:
@@ -161,7 +161,6 @@ Local changes:
 - Match the destination embedding dtype to the encoder output to avoid bf16/fp32 conversions under AMP.
 
 Project execution:
-- `make setbert_embeddings` loads the pre-trained SetBERT checkpoint (`setbert.pretrained_repo` @ `setbert.pretrained_revision` in `defaults.yaml`, cached under `$HF_HOME`), samples `setbert.set_size` sequences per run from `fasta/<study>/<Run>.fasta.gz` (same `sequence_cache` row-selection rules as the tetramer/embedding caches), randomly trims each sequence to `setbert.min_sequence_length`..`setbert.max_sequence_length` bp, and forwards through SetBERT to produce one run-level [CLS] embedding. Output rows are appended to `outputs/setbert_embeddings.csv` as `Run, dim_0, ..., dim_{D-1}` where `D = model.config.embed_dim` (768 for `qiita-16s`).
-- Set `setbert.store_sequence_embeddings: true` in `defaults.yaml` to also persist per-sequence contextualized embeddings as hive-partitioned Parquet under `outputs/setbert_embedding_cache/n<set_size>/study_name=/Run=/`.
-- `make fit_setbert` fits classifiers on `outputs/setbert_embeddings.csv`. CLR is automatically disabled for SetBERT (signed activations). `EXPT=N` writes `results/setbert/{name}.json` using the same `experiments.yaml` rows as `fit_tetramer`.
+- `make setbert_run_tensors` samples `setbert_run_tensors.set_size` sequences per run from `fasta/<study>/<Run>.fasta.gz`, cuts any sequence longer than `setbert_run_tensors.max_sequence_length` bp down to that length at a random offset, tokenizes with the DNABERT k-mer tokenizer bundled in the SetBERT checkpoint, and saves the right-padded token tensors to `outputs/setbert_run_tensors/<Run>.pt`. Resumable; per-run `.pt` files newer than their FASTA are skipped.
+- `make train_setbert` fine-tunes SetBERT on the cached run tensors, joining labels/splits from study CSVs and reporting AUC/F1 on test and holdout. `EXPT=N` writes `results/setbert/{task_abbrv}_{name}_s{seed}.json`.
 - Note: the released `qiita-16s` checkpoint is the "large" variant (embed_dim=768). The SetBERT paper describes a 64-dim model (DNABERT base `64d-silva16s-250bp`) that is not published on Hugging Face.

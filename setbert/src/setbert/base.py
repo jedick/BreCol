@@ -3,9 +3,9 @@
 ``DbtkModel`` is a thin extension of :class:`transformers.PreTrainedModel` that
 knows how to instantiate nested sub-models declared in the configuration. The
 upstream deepbio-toolkit version also mixed in ``lightning.LightningModule``;
-that hook is unused by ``scripts/train_setbert.py`` (which runs its own
-PyTorch training loop) and by ``scripts/build_setbert_embeddings.py``, so it
-has been removed to drop the PyTorch Lightning dependency.
+that hook is removed here to drop the PyTorch Lightning dependency, since
+this vendored copy is only used for inference and a plain PyTorch
+fine-tuning loop.
 """
 
 from __future__ import annotations

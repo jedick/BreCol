@@ -129,35 +129,47 @@ train_setbert:
   experiments:
     # Timing for 3 epochs (set_size 100, batch_size 2):
     #   7 minutes for cancer_type
+    # Timing for 10 epochs (set_size 350, batch_size 1):
+    #   78 minutes for cancer_type
     - name: best_model
       overrides:
         task: cancer_type
         set_size: 350
         batch_size: 1
         epochs: 10
-        head_type: linear
-        backbone_lr_mult: 0.1
-    - name: head_linear
+    # 9.5 minutes (set_size 100, batch_size 2, 4 epochs)
+    - name: random_init
       overrides:
         task: cancer_type
+        weight_init: random
+    - name: random_init
+      overrides:
+        task: cancer_diagnosis
+        weight_init: random
+
+    # Quick head sweep for cancer_diagnosis (EXPT 4-9)
+    - name: head_linear
+      overrides:
+        task: cancer_diagnosis
         head_type: linear
     - name: head_mlp
       overrides:
-        task: cancer_type
+        task: cancer_diagnosis
         head_type: mlp
     - name: head_spectral
       overrides:
-        task: cancer_type
+        task: cancer_diagnosis
         head_type: spectral
     - name: head_pooled
       overrides:
-        task: cancer_type
+        task: cancer_diagnosis
         head_type: pooled
     - name: head_cosine
       overrides:
-        task: cancer_type
+        task: cancer_diagnosis
         head_type: cosine
     - name: head_prototype
       overrides:
-        task: cancer_type
+        task: cancer_diagnosis
         head_type: prototype
+
