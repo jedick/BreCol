@@ -74,6 +74,17 @@ VALID_TUNING = frozenset(("auc", "f1"))
 VALID_AMP_DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16}
 VALID_CLASS_WEIGHTS = frozenset(("none", "null", "", "balanced", "balanced_sqrt"))
 VALID_TRAIN_SAMPLERS = frozenset(("random", "study_balanced"))
+VALID_HEAD_TYPES = frozenset(
+    (
+        "linear",
+        "layernorm",
+        "cosine",
+        "spectral",
+        "prototype",
+        "pooled",
+        "pooled_cosine",
+    )
+)
 
 
 # ---------------------------------------------------------------------------
@@ -381,12 +392,115 @@ def _study_sampler_weights(entries: Sequence[RunRecord]) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# Model wrapper: SetBERT + dropout + single-neuron linear head (BCE)
+# Model wrapper: SetBERT + configurable binary classification head (BCE)
 # ---------------------------------------------------------------------------
 
 
+class SetBertHead(nn.Module):
+    """Binary classification head over a transformed SetBERT batch.
+
+    Selected via ``head_type`` (see :data:`VALID_HEAD_TYPES`). All variants
+    accept the three tensors emitted by ``SetBert`` for a batch:
+
+    - ``cls``: transformed ``[CLS]`` token, shape ``[B, embed_dim]``
+    - ``set_tokens``: transformed per-sequence tokens, shape ``[B, set_size, embed_dim]``
+    - ``pad_mask``: boolean padding mask for ``set_tokens``, shape ``[B, set_size]``
+      (``True`` at padded positions)
+
+    Non-pooled heads consume only ``cls``; the ``pooled`` head additionally uses
+    masked mean and max over ``set_tokens``. ``dropout`` is applied to the head
+    input (after ``LayerNorm`` when present); for the ``linear`` head it matches
+    the original SetBERT-paper recipe (dropout on the raw ``[CLS]``).
+    """
+
+    def __init__(self, embed_dim: int, *, kind: str, dropout: float = 0.0):
+        super().__init__()
+        kind = str(kind).strip().lower()
+        if kind not in VALID_HEAD_TYPES:
+            raise SystemExit(
+                f"Unknown head_type {kind!r} "
+                f"(use one of {sorted(VALID_HEAD_TYPES)})."
+            )
+        self.kind = kind
+        self.dropout = nn.Dropout(float(dropout))
+        d = int(embed_dim)
+        if kind == "linear":
+            self.classifier = nn.Linear(d, 1)
+        elif kind == "layernorm":
+            self.norm = nn.LayerNorm(d)
+            self.classifier = nn.Linear(d, 1)
+        elif kind == "cosine":
+            self.norm = nn.LayerNorm(d)
+            self.weight = nn.Parameter(torch.randn(d) * (d ** -0.5))
+            self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
+        elif kind == "spectral":
+            self.norm = nn.LayerNorm(d)
+            self.classifier = nn.utils.parametrizations.spectral_norm(
+                nn.Linear(d, 1)
+            )
+        elif kind == "prototype":
+            self.norm = nn.LayerNorm(d)
+            self.prototypes = nn.Parameter(torch.randn(2, d) * (d ** -0.5))
+            self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
+        elif kind == "pooled":
+            self.norm = nn.LayerNorm(3 * d)
+            self.classifier = nn.Linear(3 * d, 1)
+        elif kind == "pooled_cosine":
+            self.norm = nn.LayerNorm(3 * d)
+            self.weight = nn.Parameter(
+                torch.randn(3 * d) * ((3 * d) ** -0.5)
+            )
+            self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
+        else:  # pragma: no cover - guarded above
+            raise SystemExit(f"Unknown head_type {kind!r}.")
+
+    def _pool_set(
+        self, set_tokens: torch.Tensor, pad_mask: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        valid = (~pad_mask).unsqueeze(-1).to(set_tokens.dtype)
+        denom = valid.sum(dim=1).clamp_min(1.0)
+        mean_pool = (set_tokens * valid).sum(dim=1) / denom
+        neg_inf = torch.finfo(set_tokens.dtype).min
+        masked = set_tokens.masked_fill(pad_mask.unsqueeze(-1), neg_inf)
+        max_pool = masked.max(dim=1).values
+        return mean_pool, max_pool
+
+    def forward(
+        self,
+        cls: torch.Tensor,
+        set_tokens: torch.Tensor,
+        pad_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.kind == "linear":
+            return self.classifier(self.dropout(cls)).squeeze(-1)
+        if self.kind == "layernorm":
+            return self.classifier(self.dropout(self.norm(cls))).squeeze(-1)
+        if self.kind == "spectral":
+            return self.classifier(self.dropout(self.norm(cls))).squeeze(-1)
+        if self.kind == "cosine":
+            x = F.normalize(self.dropout(self.norm(cls)), dim=-1)
+            w = F.normalize(self.weight, dim=-1)
+            return self.log_temperature.exp() * (x @ w)
+        if self.kind == "prototype":
+            x = F.normalize(self.dropout(self.norm(cls)), dim=-1)
+            p = F.normalize(self.prototypes, dim=-1)
+            sims = self.log_temperature.exp() * (x @ p.T)
+            return sims[:, 0] - sims[:, 1]
+        if self.kind == "pooled":
+            mean_pool, max_pool = self._pool_set(set_tokens, pad_mask)
+            feat = torch.cat([cls, mean_pool, max_pool], dim=-1)
+            return self.classifier(self.dropout(self.norm(feat))).squeeze(-1)
+        if self.kind == "pooled_cosine":
+            mean_pool, max_pool = self._pool_set(set_tokens, pad_mask)
+            feat = torch.cat([cls, mean_pool, max_pool], dim=-1)
+            x = F.normalize(self.dropout(self.norm(feat)), dim=-1)
+            w = F.normalize(self.weight, dim=-1)
+            return self.log_temperature.exp() * (x @ w)
+        raise SystemExit(f"Unknown head_type {self.kind!r}.")
+
+
 class SetBertBinaryClassifier(nn.Module):
-    """Wrap ``SetBert`` and predict directly from the transformed ``[CLS]`` token.
+    """Wrap ``SetBert`` and predict via a configurable :class:`SetBertHead`.
 
     When the DNABERT sequence encoder is frozen during training, the forward pass
     computes per-sequence embeddings under ``torch.no_grad()`` (skipping the
@@ -396,11 +510,19 @@ class SetBertBinaryClassifier(nn.Module):
     wasted forward recomputation that would otherwise happen during backward.
     """
 
-    def __init__(self, base_model: nn.Module, embed_dim: int, *, head_dropout: float = 0.0):
+    def __init__(
+        self,
+        base_model: nn.Module,
+        embed_dim: int,
+        *,
+        head_type: str = "linear",
+        head_dropout: float = 0.0,
+    ):
         super().__init__()
         self.base_model = base_model
-        self.dropout = nn.Dropout(float(head_dropout))
-        self.classifier = nn.Linear(int(embed_dim), 1)
+        self.head = SetBertHead(
+            int(embed_dim), kind=str(head_type), dropout=float(head_dropout)
+        )
 
     def _encoder_trainable(self) -> bool:
         return any(
@@ -444,9 +566,13 @@ class SetBertBinaryClassifier(nn.Module):
                 sequence_embeddings=embeddings, padding_mask=pad_mask
             )
         else:
-            out = self.base_model(sequence_tokens=sequence_tokens)
-        cls = out["class"]
-        return self.classifier(self.dropout(cls)).squeeze(-1)
+            pad_mask = self.base_model.compute_padding_mask(
+                sequence_tokens=sequence_tokens
+            )
+            out = self.base_model(
+                sequence_tokens=sequence_tokens, padding_mask=pad_mask
+            )
+        return self.head(out["class"], out["sequences"], pad_mask)
 
 
 def _set_backbone_requires_grad(
@@ -460,7 +586,7 @@ def _set_backbone_requires_grad(
     for p in model.base_model.transformer.parameters():
         p.requires_grad = bool(train_sab)
     model.base_model.class_token.requires_grad = bool(train_sab)
-    for p in model.classifier.parameters():
+    for p in model.head.parameters():
         p.requires_grad = True
 
 
@@ -480,7 +606,7 @@ def _make_optimizer(
             backbone_params.append(p)
     if model.base_model.class_token.requires_grad:
         backbone_params.append(model.base_model.class_token)
-    head_params = [p for p in model.classifier.parameters() if p.requires_grad]
+    head_params = [p for p in model.head.parameters() if p.requires_grad]
     groups: List[Dict[str, object]] = []
     if backbone_params:
         groups.append({"params": backbone_params, "lr": lr * float(backbone_lr_mult)})
@@ -615,14 +741,13 @@ def _forward_from_cache(
     cache: Dict[str, torch.Tensor],
     device: torch.device,
 ) -> torch.Tensor:
-    """Stack cached encoder embeddings and run SAB + linear head only."""
+    """Stack cached encoder embeddings and run SAB + classification head only."""
     stack = torch.stack([cache[str(r)] for r in runs], dim=0).to(
         device, non_blocking=True
     )
     pad_mask = torch.zeros(stack.shape[:2], dtype=torch.bool, device=device)
     out = model.base_model(sequence_embeddings=stack, padding_mask=pad_mask)
-    cls = out["class"]
-    return model.classifier(model.dropout(cls)).squeeze(-1)
+    return model.head(out["class"], out["sequences"], pad_mask)
 
 
 @torch.no_grad()
@@ -1180,8 +1305,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     head_dropout = float(merged.get("head_dropout") or 0.0)
     if head_dropout < 0.0:
         raise SystemExit("train_setbert.head_dropout must be >= 0.")
+    head_type = str(merged.get("head_type") or "linear").strip().lower()
+    if head_type not in VALID_HEAD_TYPES:
+        raise SystemExit(
+            f"train_setbert.head_type must be one of {sorted(VALID_HEAD_TYPES)}; "
+            f"got {head_type!r}."
+        )
+    merged = {**merged, "head_type": head_type}
     model = SetBertBinaryClassifier(
-        base_model, embed_dim=embed_dim, head_dropout=head_dropout
+        base_model,
+        embed_dim=embed_dim,
+        head_type=head_type,
+        head_dropout=head_dropout,
     ).to(device)
 
     pos_weight = _compute_pos_weight(train_entries, class_weight_mode, device)

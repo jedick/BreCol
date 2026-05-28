@@ -267,24 +267,25 @@ train_setbert:
 
   ## Task / tuning (single-task only; no multitask in this implementation)
   # cancer_diagnosis or cancer_type
-  task: cancer_diagnosis
+  task: cancer_type
   # Validation metric used to pick the best epoch: auc | f1
   tuning_metric: auc
 
   ## Set construction (override of setbert.set_size for training only)
   # Must be <= the set_size baked into the run tensor cache.
-  set_size: 500
+  # 350/1000 fits in 16GB GPU RAM for frozen/unfrozen encoder
+  set_size: 100
   # DNABERT activation-checkpoint chunk size during fine-tuning. Smaller than inference
   # default (1000) because activations are stored for backward through the SAB stack.
   sequence_encoder_chunk_size: 500
 
   ## Optimization
-  batch_size: 8
+  batch_size: 2
   # Forward-only batch size for val/test/holdout scoring; no activations are
   # stored for backward so this can usually be larger than batch_size.
   # null / unset -> use batch_size.
   inference_batch_size: 20
-  epochs: 4
+  epochs: 3
   random_seed: 0
   num_workers: 4
   # Paper default for SetBERT fine-tuning (Adam, constant LR). AdamW is used here.
@@ -296,7 +297,7 @@ train_setbert:
 
   ## Two-knob backbone freezing
   # DNABERT sequence encoder: 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
-  freeze_sequence_encoder_epochs: 100
+  freeze_sequence_encoder_epochs: 0
   # SAB transformer (incl. class_token): 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
   freeze_sab_epochs: 0
 
@@ -307,7 +308,16 @@ train_setbert:
   class_weight: none
 
   ## Head
-  # Dropout applied to the transformed [CLS] vector before the linear classifier
+  # Classifier head architecture on the transformed SetBERT outputs:
+  #   linear         - Linear([CLS]) -> 1                                  (paper default)
+  #   layernorm      - LayerNorm + Linear([CLS]) -> 1                      (absorbs feature-scale shift)
+  #   cosine         - LayerNorm + cosine([CLS], w) * temperature          (one normalized direction)
+  #   spectral       - LayerNorm + spectral-norm(Linear([CLS])) -> 1       (Lipschitz-bounded head)
+  #   prototype      - LayerNorm + cos_sim to two class prototypes         (margin = pos - neg)
+  #   pooled         - LayerNorm + Linear([CLS] || mean || max) -> 1       (uses set tokens, not just CLS)
+  #   pooled_cosine  - LayerNorm + cosine([CLS] || mean || max, w) * tau   (pooled features, cosine readout)
+  head_type: cosine
+  # Dropout applied to the head input before the classifier (after LayerNorm when present)
   head_dropout: 0.1
 
   ## Output

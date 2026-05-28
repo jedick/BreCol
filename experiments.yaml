@@ -127,29 +127,21 @@ train_setbert:
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
   sigsegv_retries: 2
   experiments:
-    # Timing for n=200, 6 epochs:
-    #   About 13 min for cancer_diagnosis
-    #   About 7 min for cancer_type
-    # Timing for n=500, 4 epochs:
-    #   About 11.5 min for cancer_type
-    - name: best_recipe_fp16
+    # Timing for 3 epochs:
+    #   7 minutes for cancer_type
+    - name: head_linear
       overrides:
         task: cancer_type
-        amp_dtype: float16
-    - name: best_recipe_bf16
+        head_type: linear
+    - name: head_cosine
       overrides:
         task: cancer_type
-        amp_dtype: bfloat16
-    - name: best_recipe_bf16_sab1
+        head_type: cosine
+    - name: head_prototype
       overrides:
         task: cancer_type
-        amp_dtype: bfloat16
-        freeze_sab_epochs: 1
-    - name: high_dropout_frz5
+        head_type: prototype
+    - name: head_pooled
       overrides:
         task: cancer_type
-        epochs: 10
-        freeze_sab_epochs: 5
-        set_size: 250
-        head_dropout: 0.2
-        backbone_lr_mult: 0.1
+        head_type: pooled
