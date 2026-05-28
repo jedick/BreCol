@@ -1,41 +1,53 @@
+"""Shared base class for the vendored DNABERT / SetBERT models.
+
+``DbtkModel`` is a thin extension of :class:`transformers.PreTrainedModel` that
+knows how to instantiate nested sub-models declared in the configuration. The
+upstream deepbio-toolkit version also mixed in ``lightning.LightningModule``;
+that hook is unused by ``scripts/train_setbert.py`` (which runs its own
+PyTorch training loop) and by ``scripts/build_setbert_embeddings.py``, so it
+has been removed to drop the PyTorch Lightning dependency.
+"""
+
+from __future__ import annotations
+
 import importlib
-import lightning as L
-from pathlib import Path
 import re
-from transformers import AutoModel, PreTrainedModel, PretrainedConfig
+from pathlib import Path
 from typing import List, Optional, Type, TypeVar, Union
 
-_T = TypeVar('_T', bound=PreTrainedModel)
+from transformers import AutoModel, PreTrainedModel, PretrainedConfig
+
+_T = TypeVar("_T", bound=PreTrainedModel)
 
 BaseModelType = Union[str, Path, PretrainedConfig, _T]
 BaseModelClassType = Union[str, Type[_T]]
 
-class DbtkModel(PreTrainedModel, L.LightningModule):
-    """
-    A base class for Dbtk models.
 
-    Nested models can be specified in the configuration. Example:
+class DbtkModel(PreTrainedModel):
+    """Base class for nested ``transformers`` models with sub-model wiring.
 
-    ```
-    config = PretrainedConfig(
-        base="bert-base-uncased",
-        base_class="transformers.models.bert.modeling_bert.BertModel"
-    )
+    Sub-models are listed in ``sub_models`` and resolved from the model
+    configuration at construction time via :meth:`instantiate_sub_model`. Each
+    sub-model contributes two config attributes:
 
-    class CustomConfig(PretrainedConfig):
-        base: Optional[BaseModelType[T]] = None
-        base_class: Optional[BaseModelClassType[T]] = None
+    - ``<key>`` — either a config dict / :class:`PretrainedConfig` / model
+      instance / HF repo-id string.
+    - ``<key>_class`` — either a fully-qualified class path string or a class
+      object.
 
-    class CustomModel(DbtkModel):
-        config_class = CustomConfig
-        sub_models = ["base"]
+    Example::
 
-    ```
+        class CustomConfig(PretrainedConfig):
+            base: Optional[BaseModelType] = None
+            base_class: Optional[BaseModelClassType] = None
+
+        class CustomModel(DbtkModel):
+            config_class = CustomConfig
+            sub_models = ["base"]
     """
 
     config_class = PretrainedConfig
 
-    # List of sub-model keys to instantiate
     sub_models: List[str] = []
 
     def __init__(self, config: Optional[Union[PretrainedConfig, dict]] = None):
@@ -48,42 +60,35 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
             self.instantiate_sub_model(model_key)
 
     def instantiate_sub_model(self, model_key: str):
-        """
-        Instantiate a sub-model from the configuration.
-
-        Args:
-            model_key: The key of the sub-model to instantiate.
-        """
+        """Resolve and attach the sub-model identified by ``model_key``."""
         config_key = f"{model_key}"
         class_key = f"{model_key}_class"
 
-        # Extract sub model information
         model_config: Optional[BaseModelType] = getattr(self.config, config_key, None)
         model_class: Optional[BaseModelClassType] = getattr(self.config, class_key, None)
         model_instance: Optional[PreTrainedModel] = None
 
-        # Load model class if provided
         if isinstance(model_class, str):
-            module_name, class_name = model_class.rsplit('.', 1)
+            module_name, class_name = model_class.rsplit(".", 1)
             model_class = getattr(importlib.import_module(module_name), class_name)
         model_class: Optional[Type[PreTrainedModel]] = model_class
 
-        # If the config is a dictionary, create a PretrainedConfig or model_class.config_class instance
         if isinstance(model_config, dict):
             if model_class is None:
                 model_config = PretrainedConfig(**model_config)
             else:
                 model_config = model_class.config_class(**model_config)
 
-        # If a model class was provided without a config, instantiate with default config
         if model_class is not None and model_config is None:
             model_config = model_class.config_class()
             model_instance = model_class(model_config)
 
-        # If a model instance was supplied directly,
         elif isinstance(model_config, PreTrainedModel):
             if model_class is not None and model_config.__class__ != model_class:
-                raise ValueError(f"Model class {model_class} does not match the class of the provided model {model_config.__class__}")
+                raise ValueError(
+                    f"Model class {model_class} does not match the class of the "
+                    f"provided model {model_config.__class__}"
+                )
             model_instance = model_config
 
         elif isinstance(model_config, PretrainedConfig):
@@ -102,9 +107,14 @@ class DbtkModel(PreTrainedModel, L.LightningModule):
                 model_instance = model_class.from_pretrained(model_config)
 
         if model_instance is None:
-            assert model_class is None and model_config is None, f"Failed to instantiate nested model: config: {model_config}, class: {model_class}"
+            assert model_class is None and model_config is None, (
+                f"Failed to instantiate nested model: config: {model_config}, "
+                f"class: {model_class}"
+            )
         else:
-            model_class = ".".join([model_instance.__class__.__module__, model_instance.__class__.__name__])
+            model_class = ".".join(
+                [model_instance.__class__.__module__, model_instance.__class__.__name__]
+            )
             model_config = model_instance.config
 
         setattr(self.config, config_key, model_config)

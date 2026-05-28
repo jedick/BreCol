@@ -24,6 +24,5 @@ PyYAML>=6.0
 -e hyenadna
 
 # SetBERT
--e deepbio-toolkit
--e dbtk-dnabert
--e dbtk-setbert
+# This consolidates upstream dbtk-setbert + dbtk-dnabert + deepbio-toolkit.
+-e setbert

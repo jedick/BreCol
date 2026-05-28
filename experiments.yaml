@@ -127,8 +127,16 @@ train_setbert:
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
   sigsegv_retries: 2
   experiments:
-    # Timing for 3 epochs:
+    # Timing for 3 epochs (set_size 100, batch_size 2):
     #   7 minutes for cancer_type
+    - name: best_model
+      overrides:
+        task: cancer_type
+        set_size: 350
+        batch_size: 1
+        epochs: 10
+        head_type: linear
+        backbone_lr_mult: 0.1
     - name: head_linear
       overrides:
         task: cancer_type
