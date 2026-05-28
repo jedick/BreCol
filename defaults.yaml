@@ -308,17 +308,27 @@ train_setbert:
   class_weight: none
 
   ## Head
-  # Classifier head architecture on the transformed SetBERT outputs:
-  #   linear         - Linear([CLS]) -> 1                                  (paper default)
-  #   layernorm      - LayerNorm + Linear([CLS]) -> 1                      (absorbs feature-scale shift)
-  #   cosine         - LayerNorm + cosine([CLS], w) * temperature          (one normalized direction)
-  #   spectral       - LayerNorm + spectral-norm(Linear([CLS])) -> 1       (Lipschitz-bounded head)
-  #   prototype      - LayerNorm + cos_sim to two class prototypes         (margin = pos - neg)
-  #   pooled         - LayerNorm + Linear([CLS] || mean || max) -> 1       (uses set tokens, not just CLS)
-  #   pooled_cosine  - LayerNorm + cosine([CLS] || mean || max, w) * tau   (pooled features, cosine readout)
+  # Classifier head architecture on the transformed SetBERT outputs.
+  # LayerNorm reasoning:
+  # spectral - Lipschitz bound is meaningful only if input scale is bounded
+  # pooled - equalizes the heterogeneous scales of the concatenated [CLS] || mean || max blocks
+  # Other heads rely on the LayerNorm already present at the end of the SetBERT backbone.
+  #   linear     - Linear([CLS]) -> 1                                            (paper default)
+  #   mlp        - Linear(d, h) + GELU + Dropout + Linear(h, 1)                  (one-hidden-layer MLP)
+  #   spectral   - LayerNorm + spectral-norm(Linear([CLS])) -> 1                 (Lipschitz-bounded head)
+  #   pooled     - LayerNorm + Linear([CLS] || mean_pool || max_pool) -> 1       (uses set tokens too)
+  #   cosine     - cosine([CLS], w) * temperature                                (one normalized direction)
+  #   prototype  - cos_sim to two class prototypes; logit = sim(pos) - sim(neg)
   head_type: cosine
-  # Dropout applied to the head input before the classifier (after LayerNorm when present)
+  # linear, spectral pooled: dropout applied to the head input
+  # mlp: dropout applied between GELU and the final Linear (standard MLP regularization).
   head_dropout: 0.1
+  # Hidden width for the one-hidden-layer MLP head (must be > 0).
+  head_hidden: 256
+  # prototype head init: random or class_means
+  # class_means uses one extra train-set forward pass at startup;
+  # anchors the the decision direction before any SGD update.
+  prototype_init: class_means
 
   ## Output
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses

@@ -77,14 +77,14 @@ VALID_TRAIN_SAMPLERS = frozenset(("random", "study_balanced"))
 VALID_HEAD_TYPES = frozenset(
     (
         "linear",
-        "layernorm",
+        "mlp",
         "cosine",
         "spectral",
         "prototype",
         "pooled",
-        "pooled_cosine",
     )
 )
+VALID_PROTOTYPE_INITS = frozenset(("random", "class_means"))
 
 
 # ---------------------------------------------------------------------------
@@ -408,12 +408,31 @@ class SetBertHead(nn.Module):
       (``True`` at padded positions)
 
     Non-pooled heads consume only ``cls``; the ``pooled`` head additionally uses
-    masked mean and max over ``set_tokens``. ``dropout`` is applied to the head
-    input (after ``LayerNorm`` when present); for the ``linear`` head it matches
-    the original SetBERT-paper recipe (dropout on the raw ``[CLS]``).
+    masked mean and max over ``set_tokens``. ``LayerNorm`` is used **only** by
+    the ``spectral`` and ``pooled`` heads, where it has a non-trivial role:
+    ``spectral`` needs a bounded input scale for its Lipschitz bound to be
+    meaningful, and ``pooled`` needs to equalize the heterogeneous scales of
+    its concatenated ``[CLS] || mean || max`` feature blocks. Other heads rely
+    on the LayerNorm already present at the end of the SetBERT backbone.
+
+    ``dropout`` is applied to the head input only for ``linear``, ``spectral``,
+    and ``pooled``; for ``mlp`` it is applied between the GELU and the final
+    ``Linear`` instead (standard MLP regularization). The ``cosine`` and
+    ``prototype`` heads do **not** use ``dropout``: their immediate
+    ``F.normalize`` discards the standard ``1/(1-p)`` magnitude rescaling, so
+    dropout would degrade into coordinate-dropping direction noise on the unit
+    sphere - a different regularizer than the one users expect from the
+    ``head_dropout`` knob. ``head_hidden`` selects the MLP hidden width.
     """
 
-    def __init__(self, embed_dim: int, *, kind: str, dropout: float = 0.0):
+    def __init__(
+        self,
+        embed_dim: int,
+        *,
+        kind: str,
+        dropout: float = 0.0,
+        head_hidden: int = 0,
+    ):
         super().__init__()
         kind = str(kind).strip().lower()
         if kind not in VALID_HEAD_TYPES:
@@ -422,37 +441,68 @@ class SetBertHead(nn.Module):
                 f"(use one of {sorted(VALID_HEAD_TYPES)})."
             )
         self.kind = kind
-        self.dropout = nn.Dropout(float(dropout))
         d = int(embed_dim)
         if kind == "linear":
+            self.dropout = nn.Dropout(float(dropout))
             self.classifier = nn.Linear(d, 1)
-        elif kind == "layernorm":
-            self.norm = nn.LayerNorm(d)
-            self.classifier = nn.Linear(d, 1)
+        elif kind == "mlp":
+            h = int(head_hidden)
+            if h <= 0:
+                raise SystemExit(
+                    f"head_type='mlp' requires head_hidden > 0; got {h}."
+                )
+            self.classifier = nn.Sequential(
+                nn.Linear(d, h),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+                nn.Linear(h, 1),
+            )
         elif kind == "cosine":
-            self.norm = nn.LayerNorm(d)
             self.weight = nn.Parameter(torch.randn(d) * (d ** -0.5))
             self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
         elif kind == "spectral":
+            self.dropout = nn.Dropout(float(dropout))
             self.norm = nn.LayerNorm(d)
             self.classifier = nn.utils.parametrizations.spectral_norm(
                 nn.Linear(d, 1)
             )
         elif kind == "prototype":
-            self.norm = nn.LayerNorm(d)
             self.prototypes = nn.Parameter(torch.randn(2, d) * (d ** -0.5))
             self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
         elif kind == "pooled":
+            self.dropout = nn.Dropout(float(dropout))
             self.norm = nn.LayerNorm(3 * d)
             self.classifier = nn.Linear(3 * d, 1)
-        elif kind == "pooled_cosine":
-            self.norm = nn.LayerNorm(3 * d)
-            self.weight = nn.Parameter(
-                torch.randn(3 * d) * ((3 * d) ** -0.5)
-            )
-            self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
         else:  # pragma: no cover - guarded above
             raise SystemExit(f"Unknown head_type {kind!r}.")
+
+    @torch.no_grad()
+    def init_prototypes_from_means(
+        self, pos_mean: torch.Tensor, neg_mean: torch.Tensor
+    ) -> None:
+        """Overwrite prototype rows from per-class mean raw ``cls`` vectors.
+
+        Row 0 holds the positive class because :meth:`forward` returns
+        ``sims[:, 0] - sims[:, 1]``. Centralizing the row ordering here keeps the
+        caller from getting the sign wrong. Because the prototype head has no
+        LayerNorm, the prototype-as-class-mean interpretation survives across
+        training (the prototypes only move by the SGD updates applied to them).
+        Only valid for ``kind='prototype'``.
+        """
+        if self.kind != "prototype":
+            raise SystemExit(
+                "init_prototypes_from_means is only valid for kind='prototype'; "
+                f"head kind is {self.kind!r}."
+            )
+        stacked = torch.stack(
+            [pos_mean.detach(), neg_mean.detach()], dim=0
+        ).to(self.prototypes.dtype)
+        if stacked.shape != self.prototypes.shape:
+            raise SystemExit(
+                f"Prototype init shape mismatch: got {tuple(stacked.shape)}, "
+                f"expected {tuple(self.prototypes.shape)}."
+            )
+        self.prototypes.data.copy_(stacked)
 
     def _pool_set(
         self, set_tokens: torch.Tensor, pad_mask: torch.Tensor
@@ -473,16 +523,16 @@ class SetBertHead(nn.Module):
     ) -> torch.Tensor:
         if self.kind == "linear":
             return self.classifier(self.dropout(cls)).squeeze(-1)
-        if self.kind == "layernorm":
-            return self.classifier(self.dropout(self.norm(cls))).squeeze(-1)
+        if self.kind == "mlp":
+            return self.classifier(cls).squeeze(-1)
         if self.kind == "spectral":
             return self.classifier(self.dropout(self.norm(cls))).squeeze(-1)
         if self.kind == "cosine":
-            x = F.normalize(self.dropout(self.norm(cls)), dim=-1)
+            x = F.normalize(cls, dim=-1)
             w = F.normalize(self.weight, dim=-1)
             return self.log_temperature.exp() * (x @ w)
         if self.kind == "prototype":
-            x = F.normalize(self.dropout(self.norm(cls)), dim=-1)
+            x = F.normalize(cls, dim=-1)
             p = F.normalize(self.prototypes, dim=-1)
             sims = self.log_temperature.exp() * (x @ p.T)
             return sims[:, 0] - sims[:, 1]
@@ -490,12 +540,6 @@ class SetBertHead(nn.Module):
             mean_pool, max_pool = self._pool_set(set_tokens, pad_mask)
             feat = torch.cat([cls, mean_pool, max_pool], dim=-1)
             return self.classifier(self.dropout(self.norm(feat))).squeeze(-1)
-        if self.kind == "pooled_cosine":
-            mean_pool, max_pool = self._pool_set(set_tokens, pad_mask)
-            feat = torch.cat([cls, mean_pool, max_pool], dim=-1)
-            x = F.normalize(self.dropout(self.norm(feat)), dim=-1)
-            w = F.normalize(self.weight, dim=-1)
-            return self.log_temperature.exp() * (x @ w)
         raise SystemExit(f"Unknown head_type {self.kind!r}.")
 
 
@@ -517,11 +561,15 @@ class SetBertBinaryClassifier(nn.Module):
         *,
         head_type: str = "linear",
         head_dropout: float = 0.0,
+        head_hidden: int = 0,
     ):
         super().__init__()
         self.base_model = base_model
         self.head = SetBertHead(
-            int(embed_dim), kind=str(head_type), dropout=float(head_dropout)
+            int(embed_dim),
+            kind=str(head_type),
+            dropout=float(head_dropout),
+            head_hidden=int(head_hidden),
         )
 
     def _encoder_trainable(self) -> bool:
@@ -733,6 +781,79 @@ def _populate_encoder_cache(
         for i, run in enumerate(runs):
             cache[str(run)] = embeddings[i].detach().to("cpu").clone()
     return cache
+
+
+@torch.no_grad()
+def _compute_train_class_mean_cls(
+    model: SetBertBinaryClassifier,
+    train_entries: Sequence[RunRecord],
+    pad_token_id: int,
+    device: torch.device,
+    *,
+    embed_dim: int,
+    requested_set_size: int,
+    inference_batch_size: int,
+    num_workers: int,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+) -> Tuple[torch.Tensor, torch.Tensor, int, int]:
+    """Forward all train Runs once; return per-class mean of raw ``cls`` vectors.
+
+    Used by the prototype head's data-anchored initialization (see
+    :meth:`SetBertHead.init_prototypes_from_means`). One deterministic pass
+    over the train split (no oversampling, no shuffle) so each Run contributes
+    exactly once. The means are computed on the raw ``[CLS]`` outputs of the
+    SetBERT backbone (the prototype head has no LayerNorm), which matches the
+    inputs the head's forward pass consumes at runtime. Returns
+    ``(pos_mean, neg_mean, n_pos, n_neg)`` with the means in fp32 on CPU; the
+    caller moves them to the model's device. Raises :class:`SystemExit` if
+    either class has zero training Runs.
+    """
+    ds = SetBertRunDataset(train_entries, requested_set_size=requested_set_size)
+    pin_memory = device.type == "cuda"
+    persistent_workers = num_workers > 0
+    loader = DataLoader(
+        ds,
+        batch_size=inference_batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=_make_collate(pad_token_id),
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+    )
+    model.eval()
+    sum_pos = torch.zeros(int(embed_dim), dtype=torch.float64)
+    sum_neg = torch.zeros(int(embed_dim), dtype=torch.float64)
+    n_pos = 0
+    n_neg = 0
+    for batch in tqdm(loader, desc="Cache(train cls)", leave=False):
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        labels = batch["label"]
+        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+            pad_mask = model.base_model.compute_padding_mask(
+                sequence_tokens=input_ids
+            )
+            out = model.base_model(
+                sequence_tokens=input_ids, padding_mask=pad_mask
+            )
+            cls = out["class"]
+        cls_cpu = cls.float().detach().cpu()
+        pos_mask = labels > 0.5
+        if bool(pos_mask.any()):
+            sum_pos += cls_cpu[pos_mask].sum(dim=0).to(torch.float64)
+            n_pos += int(pos_mask.sum().item())
+        neg_mask = ~pos_mask
+        if bool(neg_mask.any()):
+            sum_neg += cls_cpu[neg_mask].sum(dim=0).to(torch.float64)
+            n_neg += int(neg_mask.sum().item())
+    if n_pos == 0 or n_neg == 0:
+        raise SystemExit(
+            "Prototype class-means init requires both positive and negative "
+            f"training Runs; got n_pos={n_pos}, n_neg={n_neg}."
+        )
+    pos_mean = (sum_pos / float(n_pos)).to(torch.float32)
+    neg_mean = (sum_neg / float(n_neg)).to(torch.float32)
+    return pos_mean, neg_mean, n_pos, n_neg
 
 
 def _forward_from_cache(
@@ -1311,12 +1432,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"train_setbert.head_type must be one of {sorted(VALID_HEAD_TYPES)}; "
             f"got {head_type!r}."
         )
-    merged = {**merged, "head_type": head_type}
+    prototype_init = str(merged.get("prototype_init") or "class_means").strip().lower()
+    if prototype_init not in VALID_PROTOTYPE_INITS:
+        raise SystemExit(
+            f"train_setbert.prototype_init must be one of {sorted(VALID_PROTOTYPE_INITS)}; "
+            f"got {prototype_init!r}."
+        )
+    raw_head_hidden = merged.get("head_hidden", 0)
+    try:
+        head_hidden = int(raw_head_hidden) if raw_head_hidden is not None else 0
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"train_setbert.head_hidden must be an integer; got {raw_head_hidden!r}."
+        ) from exc
+    if head_type == "mlp" and head_hidden <= 0:
+        raise SystemExit(
+            "train_setbert.head_type='mlp' requires head_hidden > 0; "
+            f"got {head_hidden}."
+        )
+    merged = {
+        **merged,
+        "head_type": head_type,
+        "head_hidden": head_hidden,
+        "prototype_init": prototype_init,
+    }
     model = SetBertBinaryClassifier(
         base_model,
         embed_dim=embed_dim,
         head_type=head_type,
         head_dropout=head_dropout,
+        head_hidden=head_hidden,
     ).to(device)
 
     pos_weight = _compute_pos_weight(train_entries, class_weight_mode, device)
@@ -1402,6 +1547,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             collate_fn=collate,
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
+        )
+
+    # ----- Prototype head: data-anchored initialization ---------------------
+    if head_type == "prototype" and prototype_init == "class_means":
+        print(
+            "  initializing prototype head from train class means "
+            "(one forward pass over train split)...",
+            flush=True,
+        )
+        pos_mean, neg_mean, n_pos_init, n_neg_init = _compute_train_class_mean_cls(
+            model,
+            train_entries,
+            pad_token_id,
+            device,
+            embed_dim=embed_dim,
+            requested_set_size=requested_set_size,
+            inference_batch_size=inference_batch_size,
+            num_workers=num_workers,
+            amp_enabled=amp_enabled,
+            amp_dtype=amp_dtype,
+        )
+        cos_sim = float(
+            F.cosine_similarity(pos_mean.unsqueeze(0), neg_mean.unsqueeze(0), dim=1)
+            .squeeze(0)
+            .item()
+        )
+        print(
+            f"  prototype init: class means from {n_pos_init} pos / {n_neg_init} neg "
+            f"train Runs, cos(pos_mean, neg_mean)={cos_sim:.4f}",
+            flush=True,
+        )
+        model.head.init_prototypes_from_means(
+            pos_mean.to(device), neg_mean.to(device)
         )
 
     # ----- Optimization knobs ----------------------------------------------

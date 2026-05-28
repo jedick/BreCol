@@ -133,6 +133,18 @@ train_setbert:
       overrides:
         task: cancer_type
         head_type: linear
+    - name: head_mlp
+      overrides:
+        task: cancer_type
+        head_type: mlp
+    - name: head_spectral
+      overrides:
+        task: cancer_type
+        head_type: spectral
+    - name: head_pooled
+      overrides:
+        task: cancer_type
+        head_type: pooled
     - name: head_cosine
       overrides:
         task: cancer_type
@@ -141,7 +153,3 @@ train_setbert:
       overrides:
         task: cancer_type
         head_type: prototype
-    - name: head_pooled
-      overrides:
-        task: cancer_type
-        head_type: pooled
