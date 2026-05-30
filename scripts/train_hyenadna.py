@@ -2,9 +2,9 @@
 """
 Fine-tune HyenaDNA with the classification head.
 
-Uses a pre-built feature-only per-run tensor cache under paths.run_tensors_dir/ from
-scripts/build_run_tensors.py, joins labels/splits from shared metadata at runtime, and reports
-run-level AUC on the test and holdout splits (one score per Run).
+Uses a pre-built feature-only per-run tensor cache under paths.hyenadna_run_tensors_dir/ from
+scripts/build_hyenadna_run_tensors.py, joins labels/splits from shared metadata at runtime, and
+reports run-level AUC on the test and holdout splits (one score per Run).
 
 Training logs (`*_training.json`) record per-epoch loss, binary F1, and AUC metrics
 aligned with console output (task-suffixed keys in multitask mode). Checkpoints are
@@ -15,7 +15,7 @@ Multitask mode trains two binary heads on a shared pooled backbone; loss is
 ``loss_ratio * L_diagnosis + (1 - loss_ratio) * L_type``. Results JSON nests metrics under
 ``cancer_diagnosis`` and ``cancer_type``; prediction CSVs use ``cd_*`` and ``ct_*`` columns.
 
-Config: defaults.yaml (train_hyenadna + run_tensors + paths) with optional
+Config: defaults.yaml (train_hyenadna + hyenadna_run_tensors + paths) with optional
 experiments.yaml train_hyenadna overrides (--expt).
 
 Intermittent ``Signals.SIGSEGV`` during grid runs usually indicates a GPU driver or
@@ -207,8 +207,8 @@ class RunTensorDataset(Dataset):
         start = self.cache_max_len - self.requested_max_len
         if start < 0:
             raise SystemExit(
-                "train_hyenadna.max_length exceeds run_tensors.max_length. "
-                "Increase run_tensors.max_length and rebuild run tensors."
+                "train_hyenadna.max_length exceeds hyenadna_run_tensors.max_length. "
+                "Increase hyenadna_run_tensors.max_length and rebuild run tensors."
             )
         input_ids = blob["input_ids"][: self.requested_num_sets, start:self.cache_max_len]
         attention_mask = blob["attention_mask"][: self.requested_num_sets, start:self.cache_max_len]
@@ -866,16 +866,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     paths_cfg = defaults_cfg.get("paths")
     if not isinstance(paths_cfg, dict):
         raise SystemExit(f"{defaults_path} must define paths as a mapping.")
-    run_tensors_cfg = defaults_cfg.get("run_tensors")
-    if not isinstance(run_tensors_cfg, dict):
-        raise SystemExit(f"{defaults_path} must define run_tensors as a mapping.")
+    hyenadna_run_tensors_cfg = defaults_cfg.get("hyenadna_run_tensors")
+    if not isinstance(hyenadna_run_tensors_cfg, dict):
+        raise SystemExit(
+            f"{defaults_path} must define hyenadna_run_tensors as a mapping."
+        )
     run_tensors_root = resolve_repo_path(
         repo_root,
-        str(paths_cfg.get("run_tensors_dir", "outputs/run_tensors")).strip(),
+        str(
+            paths_cfg.get("hyenadna_run_tensors_dir", "outputs/hyenadna_run_tensors")
+        ).strip(),
     )
 
-    cache_num_sets = int(run_tensors_cfg["num_sets"])
-    cache_max_len = int(run_tensors_cfg["max_length"])
+    cache_num_sets = int(hyenadna_run_tensors_cfg["num_sets"])
+    cache_max_len = int(hyenadna_run_tensors_cfg["max_length"])
     selection = load_sequence_row_selection(defaults_cfg)
     cache_seq_offset = selection["seq_offset"]
     cache_min_seqs = selection["min_seqs"]
@@ -895,18 +899,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise SystemExit(f"head_pooling_mode must be one of {HEAD_MODES}; got {head_mode!r}.")
     if num_sets > cache_num_sets:
         raise SystemExit(
-            f"train_hyenadna.num_sets ({num_sets}) exceeds run_tensors.num_sets "
+            f"train_hyenadna.num_sets ({num_sets}) exceeds hyenadna_run_tensors.num_sets "
             f"({cache_num_sets}). Rebuild run tensors with a larger cache."
         )
     if max_len > cache_max_len:
         raise SystemExit(
-            f"Resolved max_length ({max_len}) exceeds run_tensors.max_length "
+            f"Resolved max_length ({max_len}) exceeds hyenadna_run_tensors.max_length "
             f"({cache_max_len}). Rebuild run tensors with a larger cache."
         )
     if not run_tensors_root.is_dir():
         raise SystemExit(
-            f"Missing run tensors directory: {run_tensors_root}. "
-            "Run: python scripts/build_run_tensors.py"
+            f"Missing HyenaDNA run tensors directory: {run_tensors_root}. "
+            "Run: python scripts/build_hyenadna_run_tensors.py"
         )
     multitask = is_multitask(task)
     ce_weight_ct: Optional[torch.Tensor] = None
@@ -1301,8 +1305,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             merged=merged,
             cache_info={
                 "dir": str(run_tensors_root),
-                "run_tensors_num_sets": cache_num_sets,
-                "run_tensors_max_length": cache_max_len,
+                "hyenadna_run_tensors_num_sets": cache_num_sets,
+                "hyenadna_run_tensors_max_length": cache_max_len,
                 "sequence_cache_seq_offset": cache_seq_offset,
                 "sequence_cache_min_seqs": cache_min_seqs,
                 "n_cached_runs": len(all_records),

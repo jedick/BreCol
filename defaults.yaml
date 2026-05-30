@@ -15,8 +15,8 @@ paths:
   tetramer_cache_dir: outputs/tetramer_cache
   # UC/CAP cluster outputs from tetramer counts (scripts/run_uc_cap_pipeline.py)
   tetramer_uc_cap_root: outputs/tetramer_uc_cap
-  # Feature-only per-run HyenaDNA tensors from scripts/build_run_tensors.py
-  run_tensors_dir: outputs/run_tensors
+  # Feature-only per-run HyenaDNA tensors from scripts/build_hyenadna_run_tensors.py
+  hyenadna_run_tensors_dir: outputs/hyenadna_run_tensors
   # HyenaDNA weights root (subdir per model; cloned from Hugging Face if missing on first load)
   checkpoint_dir: checkpoints
   # Feature-only per-run SetBERT token tensors from scripts/build_setbert_run_tensors.py
@@ -30,7 +30,7 @@ shared_splits:
   test_fraction: 0.15
 
 sequence_cache:
-  ## Sequence selection (tetramer cache and run_tensors)
+  ## Sequence selection (tetramer cache and HyenaDNA/SetBERT run tensors)
   # Drop this many leading sequences per run before sampling; runs with fewer rows are skipped
   seq_offset: 1000
   # Minimum sequences after seq_offset; runs with fewer sequences are skipped
@@ -40,7 +40,7 @@ sequence_cache:
   # Base seed when sample_mode is random (combined with a per-Run hash)
   sampling_seed: 0
 
-  ## Tetramer cache only (run_tensors uses separate config)
+  ## Tetramer cache only (HyenaDNA/SetBERT run tensors use separate config)
   # Max sequences per run after seq_offset
   n_max_per_run: 5000
   # Compression: zstd or snappy (faster, larger files than zstd)
@@ -102,18 +102,17 @@ run_uc_cap_pipeline:
     # MiniBatchKMeans max iterations
     max_iter: 200
 
-# Feature-only run tensor cache (scripts/build_run_tensors.py)
-# One .pt file per run under paths.run_tensors_dir/
-run_tensors:
-  # If set, cap the number of post-offset sequences considered per run before set packing
-  # null uses all available post-offset sequences
-  max_sequences_per_run: null
-  # If true, remove exact duplicate sequence strings per run before sampling/packing
-  deduplicate_sequences: false
+# Feature-only HyenaDNA run tensor cache (scripts/build_hyenadna_run_tensors.py)
+# One .pt file per run under paths.hyenadna_run_tensors_dir/. Per-run tensors pack
+# all post-offset sequences (sequence_cache.seq_offset/min_seqs) into num_sets rows;
+# the splitter's per-set character budget naturally caps how many sequences land in
+# each set. A summary CSV (sequence_counts.csv) is written next to the .pt
+# files with one row per study and one column per set position.
+hyenadna_run_tensors:
   # Number of set rows in each cached tensor; non-overlapping sequence groups (see max_length)
   num_sets: 5
   # Per-set DNA character budget when packing FASTA records; train_hyenadna.max_length must not exceed this
-  max_length: 32768
+  max_length: 16384
   # Parallel worker processes for FASTA -> .pt (1 runs jobs sequentially)
   max_workers: 8
 

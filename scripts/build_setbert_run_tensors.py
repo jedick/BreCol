@@ -2,7 +2,7 @@
 """
 Build a feature-only SetBERT token tensor cache per sequencing run (FASTA -> .pt).
 
-Mirrors scripts/build_run_tensors.py for HyenaDNA, but uses the DNABERT k-mer tokenizer
+Mirrors scripts/build_hyenadna_run_tensors.py for HyenaDNA, but uses the DNABERT k-mer tokenizer
 bundled with the SetBERT checkpoint. Each run file stores token tensors only; labels
 and splits are joined later by scripts/train_setbert.py via shared metadata utilities.
 

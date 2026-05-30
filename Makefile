@@ -13,7 +13,7 @@ DATA_DIR := $(call yaml_section_value,paths,data_dir)
 DATASETS_CSV := $(ROOT)/$(call yaml_section_value,paths,datasets_csv)
 TETRAMER_FREQUENCIES_CSV := $(call yaml_section_value,paths,tetramer_frequencies_csv)
 TETRAMER_CACHE_DIR := $(call yaml_section_value,paths,tetramer_cache_dir)
-RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,run_tensors_dir)
+HYENADNA_RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,hyenadna_run_tensors_dir)
 SETBERT_RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,setbert_run_tensors_dir)
 SEQUENCE_CACHE_N_MAX := $(call yaml_section_value,sequence_cache,n_max_per_run)
 UC_CAP_RESULTS_DIR := results/tetramer_uc_cap
@@ -50,8 +50,9 @@ DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 .DEFAULT_GOAL := help
 
 .PHONY: help download_data tetramer_frequencies tetramer_cache fit_tetramer \
-	fit_uc_cap run_uc_cap train_hyenadna audit_run_tensors explain explain-% \
+	fit_uc_cap run_uc_cap hyenadna_run_tensors train_hyenadna \
 	setbert_run_tensors train_setbert \
+	explain explain-% \
 	manuscript_pdf manuscript_jekyll publish_blog
 
 help:
@@ -85,14 +86,12 @@ help:
 	@echo "      Optional: FEAT=<n> builds that feature-set CAP (1-based experiments.yaml index)."
 	@echo "      Optional: FEAT=0 builds all configured UC/CAP pipeline feature sets incrementally."
 	@echo ""
-	@echo "  make run_tensors"
-	@echo "      Run scripts/build_run_tensors.py once from defaults.yaml run_tensors settings."
-	@echo ""
-	@echo "  make audit_run_tensors"
-	@echo "      Summarize outputs/run_tensors/*.pt coverage/utilization under cache_audit/run_tensors/."
+	@echo "  make hyenadna_run_tensors"
+	@echo "      FASTA -> per-Run HyenaDNA token tensor cache at $(HYENADNA_RUN_TENSORS_DIR) via"
+	@echo "      build_hyenadna_run_tensors.py. Resumable; existing .pt files are kept unless --force."
 	@echo ""
 	@echo "  make train_hyenadna"
-	@echo "      Run scripts/train_hyenadna.py against outputs/run_tensors/*.pt."
+	@echo "      Run scripts/train_hyenadna.py against $(HYENADNA_RUN_TENSORS_DIR)/*.pt."
 	@echo "      Optional: EXPT=<n> runs one train_hyenadna experiment from experiments.yaml."
 	@echo ""
 	@echo "  make setbert_run_tensors"
@@ -186,20 +185,16 @@ endef
 
 $(foreach i,$(CLASSIFIER_EXPERIMENT_INDICES),$(eval $(call tetramer_experiment_rule,$(i))))
 
-$(RUN_TENSORS_DIR): $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/build_run_tensors.py \
+$(HYENADNA_RUN_TENSORS_DIR): $(DATA_CSVS) $(DATASETS_CSV) \
+		$(ROOT)/scripts/build_hyenadna_run_tensors.py \
 		$(ROOT)/scripts/cache_operations.py \
 		$(ROOT)/scripts/hyenadna_fasta_data.py \
 		$(ROOT)/scripts/shared_utilities.py \
 		$(ROOT)/defaults.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/build_run_tensors.py
+	cd "$(ROOT)" && $(PYTHON) scripts/build_hyenadna_run_tensors.py
 
-run_tensors: $(RUN_TENSORS_DIR)
-	@echo "Up to date: $(RUN_TENSORS_DIR)"
-
-audit_run_tensors: $(ROOT)/scripts/audit_run_tensors.py \
-		$(ROOT)/scripts/shared_utilities.py \
-		$(ROOT)/defaults.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/audit_run_tensors.py
+hyenadna_run_tensors: $(HYENADNA_RUN_TENSORS_DIR)
+	@echo "Up to date: $(HYENADNA_RUN_TENSORS_DIR)"
 
 train_hyenadna: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/train_hyenadna.py \
 		$(ROOT)/scripts/cache_operations.py \

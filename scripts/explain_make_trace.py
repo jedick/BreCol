@@ -190,7 +190,7 @@ def main() -> None:
 
     # If the requested root is an alias target (no backing file) that points to a
     # single concrete prerequisite, pivot to that prerequisite for more useful mtime
-    # relation output (e.g. run_tensors -> outputs/run_tensors).
+    # relation output (e.g. setbert_run_tensors -> outputs/setbert_run_tensors).
     if (
         root == requested
         and not path_exists(root, repo_root)

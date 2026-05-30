@@ -52,10 +52,10 @@ See the list for a quick overview of the steps and read below for details.
 5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (3 min).
 6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/tetramer_uc_cap/` (29 min / 13 GB RAM).
 7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/tetramer_uc_cap` (26 min).
-8. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
-9. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
-10. SetBERT run tensors: `make setbert_run_tensors` writes per-run DNABERT-tokenized FASTA windows to `outputs/setbert_run_tensors/<Run>.pt` for SetBERT fine-tuning.
-11. SetBERT fine-tuning: `make train_setbert EXPT=0` fine-tunes SetBERT on those tensors and writes experiment results to `results/setbert/`.
+8. HyenaDNA run tensors: `make hyenadna_run_tensors` builds `outputs/hyenadna_run_tensors/*.pt` from FASTA files (12 min/ 2.5 GB on disk).
+9. HyenaDNA classifier: `make train_hyenadna EXPT=0` generates HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
+10. SetBERT run tensors: `make setbert_run_tensors` writes DNABERT-tokenized FASTA windows to `outputs/setbert_run_tensors/<Run>.pt`.
+11. SetBERT fine-tuning: `make train_setbert EXPT=0` generates SetBERT experiment results in `results/setbert/`.
 12. Run `helpers/table*.py` and `helpers/figure*.py` to generate tables and figures in `manuscript/`.
 
 Notes:
@@ -129,7 +129,7 @@ Source files:
 - To run the inference example: `cd hyenadna; python -c 'import inference_example as ex; ex.inference_single()'`
 
 Project execution:
-- Build cached tensors: `make run_tensors` reads FASTA files and saves run-level tensors to `outputs/run_tensors/<Run>.pt`.
+- Build cached tensors: `make hyenadna_run_tensors` reads FASTA files and saves run-level tensors to `outputs/hyenadna_run_tensors/<Run>.pt`.
 - Train/evaluate HyenaDNA: `make train_hyenadna` uses defaults from `defaults.yaml`.
 - Experiments: `make train_hyenadna EXPT=N` runs the selected `train_hyenadna` experiment row from `experiments.yaml`.
   If an experiment override uses YAML list grids (for example `random_seed` and/or `max_length`), the training script runs the full grid.

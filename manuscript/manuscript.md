@@ -416,7 +416,7 @@ Claude Sonnet 4.6 was used for polishing the text.
 AI-generated text was incorporated into the manuscript after human review and cleanup by the author.
 For example, Claude Sonnet wrote "Microbiome-based cancer prediction benchmarks routinely overestimate real-world performance" for the Abstract.
 The author decided that this was an exaggeration and changed "routinely" to "sometimes".
-The author remains accountable for this work but cannot guarantee that it is completely free of AI biases or mistakes.
+As with other products of human-AI collaboration, the author cannot guarantee that this work is 100% free of AI biases.
 
 ## Code and data availability
 

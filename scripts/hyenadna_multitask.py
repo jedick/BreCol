@@ -135,8 +135,8 @@ def _load_run_tensor(
     start = cache_max_len - requested_max_len
     if start < 0:
         raise SystemExit(
-            "train_hyenadna.max_length exceeds run_tensors.max_length. "
-            "Increase run_tensors.max_length and rebuild run tensors."
+            "train_hyenadna.max_length exceeds hyenadna_run_tensors.max_length. "
+            "Increase hyenadna_run_tensors.max_length and rebuild run tensors."
         )
     x = blob["input_ids"][:requested_num_sets, start:cache_max_len]
     nv = min(n_sets, requested_num_sets, cache_num_sets)
