@@ -258,19 +258,19 @@ train_setbert:
   ## Set construction (override of setbert_run_tensors.set_size for training only)
   # Must be <= the set_size baked into the run tensor cache.
   # 350/1000 fits in 16GB GPU RAM for frozen/unfrozen encoder
-  set_size: 100
+  set_size: 350
   # DNABERT activation-checkpoint chunk size during fine-tuning. Activations are stored for
   # backward through the SAB stack, so this is typically lower than the bundled checkpoint
   # default; lower it further on small GPUs.
   sequence_encoder_chunk_size: 500
 
   ## Optimization
-  batch_size: 2
+  batch_size: 1
   # Forward-only batch size for val/test/holdout scoring; no activations are
   # stored for backward so this can usually be larger than batch_size.
   # null / unset -> use batch_size.
   inference_batch_size: 20
-  epochs: 3
+  epochs: 5
   random_seed: 0
   num_workers: 4
   # Paper default for SetBERT fine-tuning (Adam, constant LR). AdamW is used here.
@@ -319,6 +319,4 @@ train_setbert:
   # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
   # results/scratch/train_setbert_<task>_<utc>.json. Experiments may set via template.
   results_json: null
-  # Extra retries per child after SIGSEGV (signal 11) when running an experiment grid
-  sigsegv_retries: 2
 

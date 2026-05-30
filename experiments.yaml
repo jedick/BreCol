@@ -129,47 +129,46 @@ train_setbert:
   experiments:
     # Timing for 3 epochs (set_size 100, batch_size 2):
     #   7 minutes for cancer_type
+    #   14 minutes for cancer_type
     # Timing for 10 epochs (set_size 350, batch_size 1):
     #   78 minutes for cancer_type
-    - name: best_model
-      overrides:
-        task: cancer_type
-        set_size: 350
-        batch_size: 1
-        epochs: 10
-    # 9.5 minutes (set_size 100, batch_size 2, 4 epochs)
-    - name: random_init
-      overrides:
-        task: cancer_type
-        weight_init: random
-    - name: random_init
-      overrides:
-        task: cancer_diagnosis
-        weight_init: random
+    # Timing for 5 epochs (set_size 350, batch_size 1):
+    #   39 minutes for cancer_type
+    #   77 minutes for cancer_diagnosis
 
-    # Quick head sweep for cancer_diagnosis (EXPT 4-9)
+    # Cancer_type
     - name: head_linear
       overrides:
-        task: cancer_diagnosis
+        random_seed: [0,1]
+        task: cancer_type
         head_type: linear
-    - name: head_mlp
-      overrides:
-        task: cancer_diagnosis
-        head_type: mlp
-    - name: head_spectral
-      overrides:
-        task: cancer_diagnosis
-        head_type: spectral
-    - name: head_pooled
-      overrides:
-        task: cancer_diagnosis
-        head_type: pooled
     - name: head_cosine
       overrides:
+        random_seed: [0,1]
+        task: cancer_type
+        head_type: cosine
+    - name: cosine_random
+      overrides:
+        random_seed: [0,1,2]
+        task: cancer_type
+        head_type: cosine
+        weight_init: random
+        epochs: 10
+
+    # Cancer_diagnosis
+    - name: head_linear
+      overrides:
+        random_seed: [0,1]
+        task: cancer_diagnosis
+        head_type: linear
+    - name: head_cosine
+      overrides:
+        random_seed: [0,1]
         task: cancer_diagnosis
         head_type: cosine
-    - name: head_prototype
+    - name: cosine_random
       overrides:
+        random_seed: [0,1]
         task: cancer_diagnosis
-        head_type: prototype
-
+        head_type: cosine
+        weight_init: random
