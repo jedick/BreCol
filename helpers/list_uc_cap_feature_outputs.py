@@ -27,14 +27,10 @@ def cap_csv_path(
     repo_root: Path,
     defaults_cfg: Mapping[str, Any],
     merged: Mapping[str, Any],
-    *,
-    use_embeddings: bool,
 ) -> str:
     """Return repo-relative POSIX path to the CAP CSV for ``merged`` UC/CAP parameters."""
     paths = defaults_cfg["paths"]
-    uc_root = str(
-        paths["embedding_uc_cap_root" if use_embeddings else "tetramer_uc_cap_root"]
-    ).strip()
+    uc_root = str(paths["tetramer_uc_cap_root"]).strip()
     n_uc = int(merged["n_uc"])
     n_clusters = int(merged["n_clusters"])
     n_cap = int(merged["n_cap"])
@@ -73,20 +69,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print only the baseline CAP path (defaults.yaml merge; no experiments row).",
     )
-    parser.add_argument(
-        "--emb",
-        action="store_true",
-        help="Use embedding_uc_cap_root instead of tetramer_uc_cap_root.",
-    )
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root
     defaults_cfg = _load_defaults(repo_root)
     base = merge_run_uc_cap_baseline(defaults_cfg)
-    use_embeddings = bool(args.emb)
 
     if args.baseline:
-        print(cap_csv_path(repo_root, defaults_cfg, base, use_embeddings=use_embeddings))
+        print(cap_csv_path(repo_root, defaults_cfg, base))
         return 0
 
     experiments_cfg = _load_experiments(repo_root)
@@ -96,9 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(row, dict):
             raise SystemExit("experiments.yaml run_uc_cap_pipeline entries must be mappings")
         merged = {**base, **row}
-        paths.append(
-            cap_csv_path(repo_root, defaults_cfg, merged, use_embeddings=use_embeddings)
-        )
+        paths.append(cap_csv_path(repo_root, defaults_cfg, merged))
     print(" ".join(paths))
     return 0
 

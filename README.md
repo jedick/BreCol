@@ -52,13 +52,11 @@ See the list for a quick overview of the steps and read below for details.
 5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (3 min).
 6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/tetramer_uc_cap/` (29 min / 13 GB RAM).
 7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/tetramer_uc_cap` (26 min).
-8. Embedding cache: `make embedding_cache` writes per-sequence HyenaDNA embeddings to `outputs/embedding_cache/` (3.5 hr / 9.5 GB on disk).
-9. Embedding+UC/CAP classifier: `make run_uc_cap EMB=1` / `make fit_uc_cap EMB=1` drive the embedding UC/CAP path.
-10. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
-11. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
-12. SetBERT run tensors: `make setbert_run_tensors` writes per-run DNABERT-tokenized FASTA windows to `outputs/setbert_run_tensors/<Run>.pt` for SetBERT fine-tuning.
-13. SetBERT fine-tuning: `make train_setbert EXPT=0` fine-tunes SetBERT on those tensors and writes experiment results to `results/setbert/`.
-14. Run `helpers/table*.py` and `helpers/figure*.py` to generate tables and figures in `manuscript/`.
+8. HyenaDNA run tensors: `make run_tensors` builds `outputs/run_tensors/*.pt` from FASTA files (12 min).
+9. HyenaDNA classifier: `make train_hyenadna EXPT=0` generate HyenaDNA experiment results in `results/hyenadna` (about 12.5 hr).
+10. SetBERT run tensors: `make setbert_run_tensors` writes per-run DNABERT-tokenized FASTA windows to `outputs/setbert_run_tensors/<Run>.pt` for SetBERT fine-tuning.
+11. SetBERT fine-tuning: `make train_setbert EXPT=0` fine-tunes SetBERT on those tensors and writes experiment results to `results/setbert/`.
+12. Run `helpers/table*.py` and `helpers/figure*.py` to generate tables and figures in `manuscript/`.
 
 Notes:
 
@@ -108,7 +106,7 @@ Output files:
 
 This stage takes the per-run tetramer count files and generates feature sets (cluster abundance profiles) used for classification.
 
-- `make run_uc_cap` (default `EMB=0`) reads the tetramer Parquet cache from **`make tetramer_cache`**. `EMB=1` uses **`make embedding_cache`** instead.
+- `make run_uc_cap` reads the tetramer Parquet cache from **`make tetramer_cache`**.
 - `make run_uc_cap` without arguments builds a CSV at **`outputs/tetramer_uc_cap/uc{n}_k{k}/cap{n}.csv`** with defaults from `defaults.yaml`.
   With `FEAT=N` / `FEAT=0`, it drives the same pipeline to generate one or all feature sets using parameters from `run_uc_cap_pipeline` in `experiments.yaml` .
   Each CSV row is a sequencing run; `cluster_*` columns are normalized per-run abundances.
@@ -116,8 +114,7 @@ This stage takes the per-run tetramer count files and generates feature sets (cl
     - Use `make fit_uc_cap FEAT=0 EXPT=0` to run all experiments for all UC/CAP feature sets.
     - `make fit_uc_cap FEAT=0` or `EXPT=0` alone is rejected; a specific FEAT or EXPT is required when sweeping over the other.
 - `make fit_uc_cap` fits the UC/CAP features using the same models and hyperparameters described above for the tetramer classifier.
-  With `FEAT=M EXPT=N` it writes results to `results/tetramer_uc_cap/{M}/{name}.json` (or `results/embedding_uc_cap/` when `EMB=1`).
-    - Outputs: default `make fit_uc_cap` uses scratch JSON; Make-driven `FEAT`/`EXPT` sweeps write under `results/tetramer_uc_cap/<FEAT>/` (or `results/embedding_uc_cap/<FEAT>/` with `EMB=1`).
+    - Outputs: default `make fit_uc_cap` uses scratch JSON; Make-driven `FEAT`/`EXPT` sweeps write under `results/tetramer_uc_cap/<FEAT>/`.
 
 ### HyenaDNA
 
@@ -133,7 +130,6 @@ Source files:
 
 Project execution:
 - Build cached tensors: `make run_tensors` reads FASTA files and saves run-level tensors to `outputs/run_tensors/<Run>.pt`.
-- Build per-sequence embedding cache: `make embedding_cache` writes hive-partitioned Parquet under `outputs/embedding_cache/` for the UC/CAP pipeline (`EMB=1`).
 - Train/evaluate HyenaDNA: `make train_hyenadna` uses defaults from `defaults.yaml`.
 - Experiments: `make train_hyenadna EXPT=N` runs the selected `train_hyenadna` experiment row from `experiments.yaml`.
   If an experiment override uses YAML list grids (for example `random_seed` and/or `max_length`), the training script runs the full grid.

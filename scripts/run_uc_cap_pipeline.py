@@ -9,13 +9,12 @@ CAP (cluster abundance profiles):
   - Assign n_cap sequences per run to nearest centroid and aggregate K-dimensional
     cluster count/abundance vectors per run.
 
-Input sequence features come from a hive-partitioned Parquet cache:
-  tetramer counts (256 columns) under paths.tetramer_cache_dir (default), or
-  HyenaDNA backbone embeddings under paths.embedding_cache_dir (--emb).
+Input sequence features come from the hive-partitioned tetramer Parquet cache
+(256 columns under paths.tetramer_cache_dir).
 
 Configuration is read from <repo>/defaults.yaml (run_uc_cap_pipeline baseline list,
 merged in order, then overlaid by experiments.yaml when --feat is set).
-CLI: --feat (optional), --emb (embedding cache instead of tetramer).
+CLI: --feat (optional).
 """
 
 from __future__ import annotations
@@ -34,12 +33,7 @@ import pandas as pd
 import yaml
 from sklearn.cluster import MiniBatchKMeans
 
-from cache_operations import (
-    EmbeddingCacheReader,
-    TetramerCacheReader,
-    embedding_cache_dataset_root,
-    tetramer_cache_dataset_root,
-)
+from cache_operations import TetramerCacheReader, tetramer_cache_dataset_root
 from shared_utilities import TETRAMERS, build_run_table
 
 
@@ -63,22 +57,15 @@ class SequenceTransform:
 def _cache_root(
     repo_root: Path,
     defaults_cfg: Mapping[str, Any],
-    *,
-    use_embeddings: bool,
 ) -> Path:
     try:
         paths_cfg = defaults_cfg["paths"]
         n_max = int(defaults_cfg["sequence_cache"]["n_max_per_run"])
-        if use_embeddings:
-            cache_dir_rel = str(paths_cfg["embedding_cache_dir"]).strip()
-            cache_dir = repo_root / cache_dir_rel
-            return embedding_cache_dataset_root(cache_dir, n_max)
         cache_dir_rel = str(paths_cfg["tetramer_cache_dir"]).strip()
         cache_dir = repo_root / cache_dir_rel
         return tetramer_cache_dataset_root(cache_dir, n_max)
     except (TypeError, KeyError, ValueError) as exc:
-        kind = "embedding" if use_embeddings else "tetramer"
-        raise SystemExit(f"Invalid pipeline config for {kind} cache path: {exc}") from exc
+        raise SystemExit(f"Invalid pipeline config for tetramer cache path: {exc}") from exc
 
 
 def fit_uc_model(
@@ -211,19 +198,13 @@ _FEAT_HELP = (
 )
 
 
-def _parse_feature_cli(argv: Optional[Sequence[str]]) -> Tuple[int, bool]:
+def _parse_feature_cli(argv: Optional[Sequence[str]]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--feat", type=int, default=None, help=_FEAT_HELP)
-    parser.add_argument(
-        "--emb",
-        action="store_true",
-        help="Use embedding_cache (HyenaDNA per-sequence embeddings) instead of tetramer cache.",
-    )
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.feat is not None and args.feat <= 0:
         raise SystemExit("--feat must be a positive integer (1-based index), or omit it.")
-    feat = int(args.feat) if args.feat is not None else 0
-    return feat, bool(args.emb)
+    return int(args.feat) if args.feat is not None else 0
 
 
 def _shallow_merge_uc_cap(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
@@ -354,7 +335,6 @@ def run_pipeline_from_merged(
     config_path: Path,
     merged: Dict[str, Any],
     feature_index: int,
-    use_embeddings: bool,
 ) -> int:
     paths_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))["paths"]
 
@@ -371,8 +351,7 @@ def run_pipeline_from_merged(
         seq_log1p = bool(merged["seq_log1p"])
         batch_size = int(merged["batch_size"])
         max_iter = int(merged["max_iter"])
-        uc_root_key = "embedding_uc_cap_root" if use_embeddings else "tetramer_uc_cap_root"
-        out_dir = _resolve_cfg_path(paths_cfg[uc_root_key])
+        out_dir = _resolve_cfg_path(paths_cfg["tetramer_uc_cap_root"])
     except (KeyError, TypeError, ValueError) as exc:
         raise SystemExit(f"Invalid merged run_uc_cap_pipeline config: {exc}") from exc
 
@@ -393,29 +372,21 @@ def run_pipeline_from_merged(
         raise SystemExit(
             f"n_cap ({n_cap}) exceeds sequence_cache.n_max_per_run ({n_max})."
         )
-    cache_root = _cache_root(repo_root, defaults_cfg, use_embeddings=use_embeddings)
+    cache_root = _cache_root(repo_root, defaults_cfg)
     complete_marker = cache_root / "_complete"
-    cache_target = "embedding_cache" if use_embeddings else "tetramer_cache"
     if not complete_marker.is_file():
         raise SystemExit(
-            f"{cache_target} not built: {cache_root} (run: make {cache_target})"
+            f"tetramer_cache not built: {cache_root} (run: make tetramer_cache)"
         )
 
     prefix = f"F{feature_index} " if feature_index > 0 else ""
-    mode = "embeddings" if use_embeddings else "tetramer"
-    print(f"{prefix}[{mode}] n_uc={n_uc} n_clusters={n_clusters} n_cap={n_cap}", flush=True)
+    print(f"{prefix}n_uc={n_uc} n_clusters={n_clusters} n_cap={n_cap}", flush=True)
 
     start = time.perf_counter()
-    if use_embeddings:
-        transform = SequenceTransform(normalize=False, log1p=False)
-    else:
-        transform = SequenceTransform(normalize=seq_normalize, log1p=seq_log1p)
+    transform = SequenceTransform(normalize=seq_normalize, log1p=seq_log1p)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if use_embeddings:
-        cache = EmbeddingCacheReader(cache_root)
-    else:
-        cache = TetramerCacheReader(cache_root)
+    cache = TetramerCacheReader(cache_root)
     run_meta = build_run_table(config_path=config_path)
     train_runs = set(run_meta.loc[run_meta["split"] == "train", "Run"])
     train_keys = [
@@ -505,7 +476,6 @@ def run_pipeline_from_merged(
                     },
                     "split_train_runs": sorted(train_runs),
                     "tetramers": list(TETRAMERS),
-                    "use_embeddings": use_embeddings,
                 },
                 f,
             )
@@ -553,7 +523,6 @@ def run_pipeline_from_merged(
         json.dump(
             {
                 "sequence_cache_root": str(cache_root),
-                "use_embeddings": use_embeddings,
                 "datasets_csv": str(datasets_csv_abs),
                 "data_dir": str(data_dir_abs),
                 "n_uc": n_uc,
@@ -601,7 +570,7 @@ def run_pipeline_from_merged(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     config_path = repo_root / "defaults.yaml"
-    feat, use_embeddings = _parse_feature_cli(argv)
+    feat = _parse_feature_cli(argv)
     merged, feature_index = load_merged_uc_cap_config(repo_root, feat=feat)
     if feature_index == 0:
         print("Baseline config (defaults.yaml only)", flush=True)
@@ -610,7 +579,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         config_path=config_path,
         merged=merged,
         feature_index=feature_index,
-        use_embeddings=use_embeddings,
     )
 
 

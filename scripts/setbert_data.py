@@ -210,7 +210,7 @@ def select_trimmed_set_for_run(
 ) -> Tuple[Optional[np.ndarray], Optional[List[str]], int]:
     """Return (1-based sequence indices, trimmed sequences, n_raw_records) or (None, None, n_raw).
 
-    Sampling matches the without-replacement convention shared by tetramer/embedding caches.
+    Sampling matches the without-replacement convention used by the tetramer cache.
     Sequences longer than ``max_sequence_length`` are randomly cut to ``max_sequence_length``
     (random offset chosen by the per-Run RNG seeded by ``truncation_seed``), matching the
     SetBERT paper's "trim either end to a fixed length" recipe (Suppl. §3.1-3.2). Shorter

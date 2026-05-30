@@ -13,14 +13,10 @@ DATA_DIR := $(call yaml_section_value,paths,data_dir)
 DATASETS_CSV := $(ROOT)/$(call yaml_section_value,paths,datasets_csv)
 TETRAMER_FREQUENCIES_CSV := $(call yaml_section_value,paths,tetramer_frequencies_csv)
 TETRAMER_CACHE_DIR := $(call yaml_section_value,paths,tetramer_cache_dir)
-EMBEDDING_CACHE_DIR := $(call yaml_section_value,paths,embedding_cache_dir)
 RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,run_tensors_dir)
 SETBERT_RUN_TENSORS_DIR := $(ROOT)/$(call yaml_section_value,paths,setbert_run_tensors_dir)
 SEQUENCE_CACHE_N_MAX := $(call yaml_section_value,sequence_cache,n_max_per_run)
-EMB ?= 0
-EMB_ARG := $(if $(filter 1,$(strip $(EMB))),--emb,)
-UC_CAP_EMB_SHELL_ARG := $(if $(filter 1,$(strip $(EMB))),--emb)
-UC_CAP_RESULTS_DIR := $(if $(filter 1,$(strip $(EMB))),results/embedding_uc_cap,results/tetramer_uc_cap)
+UC_CAP_RESULTS_DIR := results/tetramer_uc_cap
 EXPT ?=
 EXPT_ARG := $(if $(strip $(EXPT)),--expt $(EXPT),)
 FEAT ?=
@@ -35,27 +31,25 @@ CLASSIFIER_EXPERIMENT_INDICES := $(shell seq 1 $(words $(CLASSIFIER_EXPERIMENT_O
 # Select a single fit_tetramer output path by 1-based EXPT index.
 CLASSIFIER_EXPERIMENT_OUTPUT := $(if $(filter-out 0,$(strip $(EXPT))),$(word $(EXPT),$(CLASSIFIER_EXPERIMENT_OUTPUTS)),)
 
-# CAP CSV outputs for each run_uc_cap_pipeline row (EMB selects tetramer vs embedding UC/CAP root).
-UC_CAP_FEATURE_OUTPUTS := $(shell $(PYTHON) $(ROOT)/helpers/list_uc_cap_feature_outputs.py "$(ROOT)" $(UC_CAP_EMB_SHELL_ARG))
+# CAP CSV outputs for each run_uc_cap_pipeline row.
+UC_CAP_FEATURE_OUTPUTS := $(shell $(PYTHON) $(ROOT)/helpers/list_uc_cap_feature_outputs.py "$(ROOT)")
 UC_CAP_FEATURE_INDICES := $(shell seq 1 $(words $(UC_CAP_FEATURE_OUTPUTS)))
 UC_CAP_FEATURE_OUTPUT := $(if $(filter-out 0,$(strip $(FEAT))),$(word $(FEAT),$(UC_CAP_FEATURE_OUTPUTS)),)
 # Deferred: FEAT/EXPT come from the command line when these are expanded as fit_uc_cap prerequisites.
 UC_CAP_SINGLE_EXPT_ALL_FEAT_OUTPUTS = $(foreach f,$(UC_CAP_FEATURE_INDICES),$(ROOT)/$(UC_CAP_RESULTS_DIR)/$(f)/$(word $(EXPT),$(EXPERIMENT_NAMES)).json)
 UC_CAP_SINGLE_FEAT_ALL_EXPT_OUTPUTS = $(foreach e,$(CLASSIFIER_EXPERIMENT_INDICES),$(ROOT)/$(UC_CAP_RESULTS_DIR)/$(FEAT)/$(word $(e),$(EXPERIMENT_NAMES)).json)
 UC_CAP_FULL_GRID_OUTPUTS = $(foreach f,$(UC_CAP_FEATURE_INDICES),$(foreach e,$(CLASSIFIER_EXPERIMENT_INDICES),$(ROOT)/$(UC_CAP_RESULTS_DIR)/$(f)/$(word $(e),$(EXPERIMENT_NAMES)).json))
-UC_CAP_BASELINE_CAP_CSV := $(shell $(PYTHON) $(ROOT)/helpers/list_uc_cap_feature_outputs.py "$(ROOT)" --baseline $(UC_CAP_EMB_SHELL_ARG))
-UC_CAP_CACHE := $(if $(filter 1,$(strip $(EMB))),$(ROOT)/$(EMBEDDING_CACHE_DIR)/n$(SEQUENCE_CACHE_N_MAX)/_complete,$(ROOT)/$(TETRAMER_CACHE_DIR)/n$(SEQUENCE_CACHE_N_MAX)/_complete)
+UC_CAP_BASELINE_CAP_CSV := $(shell $(PYTHON) $(ROOT)/helpers/list_uc_cap_feature_outputs.py "$(ROOT)" --baseline)
 
 TETRA_CSV := $(ROOT)/$(TETRAMER_FREQUENCIES_CSV)
 TETRAMER_CACHE := $(ROOT)/$(TETRAMER_CACHE_DIR)/n$(SEQUENCE_CACHE_N_MAX)/_complete
-EMBEDDING_CACHE := $(ROOT)/$(EMBEDDING_CACHE_DIR)/n$(SEQUENCE_CACHE_N_MAX)/_complete
 
 # Study metadata CSVs (typically small); used to rebuild tetramer frequencies when data change.
 DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help download_data tetramer_frequencies tetramer_cache embedding_cache fit_tetramer \
+.PHONY: help download_data tetramer_frequencies tetramer_cache fit_tetramer \
 	fit_uc_cap run_uc_cap train_hyenadna audit_run_tensors explain explain-% \
 	setbert_run_tensors train_setbert \
 	manuscript_pdf manuscript_jekyll publish_blog
@@ -78,12 +72,9 @@ help:
 	@echo "      --results-json (metrics under results/scratch/). Optional: EXPT=<n> for experiments."
 	@echo "      Optional: EXPT=0 builds all configured experiments incrementally."
 	@echo ""
-	@echo "  make embedding_cache"
-	@echo "      FASTA -> partitioned HyenaDNA embedding Parquet at $(EMBEDDING_CACHE)."
-	@echo ""
 	@echo "  make fit_uc_cap"
 	@echo "      fit_classifier.py --uc_cap; default uses baseline CAP and --results-json (scratch)."
-	@echo "      EMB=0 (default) → tetramer CAP / results/tetramer_uc_cap; EMB=1 → embedding paths."
+	@echo "      Outputs land under results/tetramer_uc_cap/."
 	@echo "      FEAT=<n> / EXPT=<n> mirror experiments.yaml (same indices as run_uc_cap / fit_tetramer)."
 	@echo "      FEAT=0 EXPT=<n>: one experiment, all feature sets → results/<dir>/1..N/<name>.json."
 	@echo "      FEAT=<n> EXPT=0: one feature set, all experiments → results/<dir>/<n>/<name>.json"
@@ -91,7 +82,6 @@ help:
 	@echo ""
 	@echo "  make run_uc_cap"
 	@echo "      Build the baseline CAP CSV (defaults.yaml) if needed; incremental vs inputs."
-	@echo "      EMB=0 (default) uses tetramer cache; EMB=1 uses embedding cache."
 	@echo "      Optional: FEAT=<n> builds that feature-set CAP (1-based experiments.yaml index)."
 	@echo "      Optional: FEAT=0 builds all configured UC/CAP pipeline feature sets incrementally."
 	@echo ""
@@ -145,15 +135,6 @@ $(TETRAMER_CACHE): $(DATA_CSVS) $(ROOT)/scripts/build_tetramer_cache.py \
 tetramer_cache: $(TETRAMER_CACHE)
 	@echo "Up to date: $(TETRAMER_CACHE)"
 
-$(EMBEDDING_CACHE): $(DATA_CSVS) $(ROOT)/scripts/build_embedding_cache.py \
-		$(ROOT)/scripts/cache_operations.py \
-		$(ROOT)/scripts/hyenadna_fasta_data.py \
-		$(ROOT)/defaults.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/build_embedding_cache.py
-
-embedding_cache: $(EMBEDDING_CACHE)
-	@echo "Up to date: $(EMBEDDING_CACHE)"
-
 $(SETBERT_RUN_TENSORS_DIR): $(DATA_CSVS) $(DATASETS_CSV) \
 		$(ROOT)/scripts/build_setbert_run_tensors.py \
 		$(ROOT)/scripts/cache_operations.py \
@@ -171,11 +152,11 @@ train_setbert: $(DATA_CSVS) $(DATASETS_CSV) $(ROOT)/scripts/train_setbert.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
 	cd "$(ROOT)" && $(PYTHON) scripts/train_setbert.py --results-json $(EXPT_ARG)
 
-$(UC_CAP_BASELINE_CAP_CSV): $(UC_CAP_CACHE) \
+$(UC_CAP_BASELINE_CAP_CSV): $(TETRAMER_CACHE) \
 		$(ROOT)/scripts/run_uc_cap_pipeline.py \
 		$(ROOT)/defaults.yaml \
 		$(ROOT)/helpers/list_uc_cap_feature_outputs.py
-	cd "$(ROOT)" && $(PYTHON) scripts/run_uc_cap_pipeline.py $(EMB_ARG)
+	cd "$(ROOT)" && $(PYTHON) scripts/run_uc_cap_pipeline.py
 
 download_data:
 	cd "$(ROOT)" && $(PYTHON) scripts/download_sra_data.py
@@ -243,12 +224,12 @@ run_uc_cap: $(UC_CAP_BASELINE_CAP_CSV)
 endif
 
 define uc_cap_feature_rule
-$(word $(1),$(UC_CAP_FEATURE_OUTPUTS)): $(UC_CAP_CACHE) \
+$(word $(1),$(UC_CAP_FEATURE_OUTPUTS)): $(TETRAMER_CACHE) \
 		$(ROOT)/scripts/run_uc_cap_pipeline.py \
 		$(ROOT)/helpers/list_uc_cap_feature_outputs.py \
 		$(ROOT)/defaults.yaml \
 		$(ROOT)/experiments.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/run_uc_cap_pipeline.py --feat $(1) $(EMB_ARG)
+	cd "$(ROOT)" && $(PYTHON) scripts/run_uc_cap_pipeline.py --feat $(1)
 endef
 
 $(foreach i,$(UC_CAP_FEATURE_INDICES),$(eval $(call uc_cap_feature_rule,$(i))))
@@ -271,7 +252,7 @@ $(ROOT)/$(UC_CAP_RESULTS_DIR)/$(1)/$(word $(2),$(EXPERIMENT_NAMES)).json: $(word
 		$(ROOT)/scripts/fit_classifier.py \
 		$(ROOT)/defaults.yaml \
 		$(ROOT)/experiments.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/fit_classifier.py --uc_cap --feat $(1) --expt $(2) $(EMB_ARG) --results-json $(ROOT)/$(UC_CAP_RESULTS_DIR)/$(1)/$(word $(2),$(EXPERIMENT_NAMES)).json
+	cd "$(ROOT)" && $(PYTHON) scripts/fit_classifier.py --uc_cap --feat $(1) --expt $(2) --results-json $(ROOT)/$(UC_CAP_RESULTS_DIR)/$(1)/$(word $(2),$(EXPERIMENT_NAMES)).json
 endef
 $(foreach f,$(UC_CAP_FEATURE_INDICES),$(foreach e,$(CLASSIFIER_EXPERIMENT_INDICES),$(eval $(call uc_cap_subdir_json_rule,$(f),$(e)))))
 
@@ -302,11 +283,11 @@ fit_uc_cap: $(UC_CAP_FEATURE_OUTPUT) $(ROOT)/scripts/fit_classifier.py \
 		echo "Invalid FEAT=$(FEAT). Use FEAT=1..N from experiments.yaml, FEAT=0 EXPT=0 (full grid), or FEAT=0 EXPT=1..N."; \
 		exit 2; \
 	fi
-	cd "$(ROOT)" && $(PYTHON) scripts/fit_classifier.py --uc_cap --feat $(FEAT) $(EMB_ARG) $(EXPT_ARG)
+	cd "$(ROOT)" && $(PYTHON) scripts/fit_classifier.py --uc_cap --feat $(FEAT) $(EXPT_ARG)
 else
 fit_uc_cap: $(UC_CAP_BASELINE_CAP_CSV) $(ROOT)/scripts/fit_classifier.py \
 		$(ROOT)/defaults.yaml $(ROOT)/experiments.yaml
-	cd "$(ROOT)" && $(PYTHON) scripts/fit_classifier.py --uc_cap $(EMB_ARG) $(EXPT_ARG) --results-json
+	cd "$(ROOT)" && $(PYTHON) scripts/fit_classifier.py --uc_cap $(EXPT_ARG) --results-json
 endif
 
 TARGET ?=

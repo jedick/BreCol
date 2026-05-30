@@ -1,4 +1,4 @@
-"""Shared UC/CAP stability figure logic for tetramer and embedding result trees."""
+"""Shared UC/CAP stability figure logic for tetramer result trees."""
 
 from __future__ import annotations
 
@@ -16,10 +16,6 @@ TASKS: List[Tuple[str, str]] = [
 MODELS_SVM_KNN: List[Tuple[str, str]] = [
     ("svm", "SVM"),
     ("knn", "KNN"),
-]
-MODELS_SVM_RF: List[Tuple[str, str]] = [
-    ("svm", "SVM"),
-    ("random_forest", "Random Forest"),
 ]
 
 

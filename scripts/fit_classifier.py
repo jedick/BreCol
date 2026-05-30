@@ -5,7 +5,6 @@ Train a classifier on run-level tetramer frequencies or UC/CAP cluster features.
 Modes (mutually exclusive):
   --tetramer   Inputs: paths.tetramer_frequencies_csv (256 ACGT tetramer columns).
   --uc_cap     Inputs: CAP CSV from run_uc_cap_pipeline (cluster_* columns).
-               Optional --emb selects embedding-based CAP outputs (embedding_uc_cap_root).
 
 Both modes use scripts/shared_utilities.py for train/val/test/holdout, support the same
 model families (baseline, knn, random_forest, svm), hyperparameter grids from
@@ -144,12 +143,8 @@ def _cap_csv_path(
     repo_root: Path,
     paths_cfg: Mapping[str, Any],
     merged: Dict[str, Any],
-    *,
-    use_embeddings: bool,
 ) -> Path:
-    uc_root = str(
-        paths_cfg["embedding_uc_cap_root" if use_embeddings else "tetramer_uc_cap_root"]
-    ).strip()
+    uc_root = str(paths_cfg["tetramer_uc_cap_root"]).strip()
     n_uc = int(merged["n_uc"])
     n_clusters = int(merged["n_clusters"])
     n_cap = int(merged["n_cap"])
@@ -182,7 +177,6 @@ def _load_experiment_args(
     features: str,
     feat: Optional[int],
     results_json_cli: Optional[str],
-    use_embeddings: bool = False,
 ) -> SimpleNamespace:
     defaults_path = root / "defaults.yaml"
     experiments_path = root / "experiments.yaml"
@@ -252,9 +246,7 @@ def _load_experiment_args(
         csv_path = root / str(paths_cfg["tetramer_frequencies_csv"]).strip()
     elif features == "uc_cap":
         merged_uc = _merge_uc_cap_row(defaults_cfg, experiments_cfg, feat=feat)
-        csv_path = _cap_csv_path(
-            root, paths_cfg, merged_uc, use_embeddings=use_embeddings
-        )
+        csv_path = _cap_csv_path(root, paths_cfg, merged_uc)
     else:
         raise SystemExit(f"Unknown features mode: {features!r}")
 
@@ -264,7 +256,6 @@ def _load_experiment_args(
     args_dict: Dict[str, Any] = {
         "features": features,
         "feat_index": feat,
-        "use_embeddings": use_embeddings,
         "csv": csv_path,
         "model": str(config["model"]).strip(),
         "task": str(config["task"]).strip(),
@@ -317,8 +308,7 @@ def _print_experiment_line(args: argparse.Namespace) -> None:
         print(_prefixed(prefix, f"Config - model: {model}, task: {task}"), flush=True)
     if features == "uc_cap":
         fi = "baseline" if feat is None else str(feat)
-        emb = "embeddings" if getattr(args, "use_embeddings", False) else "tetramer"
-        print(_prefixed(prefix, f"UC/CAP feature set: {fi} ({emb})"), flush=True)
+        print(_prefixed(prefix, f"UC/CAP feature set: {fi}"), flush=True)
 
 
 def _validate_basic_args(args: argparse.Namespace) -> None:
@@ -1207,11 +1197,6 @@ def _parse_main_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     mx.add_argument("--tetramer", action="store_true", help="Use tetramer frequency features.")
     mx.add_argument("--uc_cap", action="store_true", help="Use UC/CAP cluster features.")
     parser.add_argument(
-        "--emb",
-        action="store_true",
-        help="With --uc_cap: use embedding-based CAP CSVs (embedding_uc_cap_root).",
-    )
-    parser.add_argument(
         "--expt",
         type=int,
         default=None,
@@ -1250,8 +1235,6 @@ def _parse_main_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
         raise SystemExit("--feat is not valid with --tetramer.")
     if args.uc_cap and args.feat is not None and args.feat < 1:
         raise SystemExit("--feat must be >= 1 when provided.")
-    if args.emb and not args.uc_cap:
-        raise SystemExit("--emb is only valid with --uc_cap.")
     return args
 
 
@@ -1276,7 +1259,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         features=features,
         feat=cli.feat,
         results_json_cli=results_json_cli,
-        use_embeddings=bool(cli.emb),
     )
     return run_classifier(args, repo_root)
 

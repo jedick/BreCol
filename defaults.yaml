@@ -13,12 +13,8 @@ paths:
   tetramer_frequencies_csv: outputs/tetramer_frequencies.csv
   # Hive-partitioned per-sequence tetramer cache (scripts/build_tetramer_cache.py)
   tetramer_cache_dir: outputs/tetramer_cache
-  # UC/CAP cluster outputs from tetramer counts (scripts/run_uc_cap_pipeline.py, EMB=0)
+  # UC/CAP cluster outputs from tetramer counts (scripts/run_uc_cap_pipeline.py)
   tetramer_uc_cap_root: outputs/tetramer_uc_cap
-  # Hive-partitioned per-sequence HyenaDNA embeddings (scripts/build_embedding_cache.py)
-  embedding_cache_dir: outputs/embedding_cache
-  # UC/CAP cluster outputs from embeddings (scripts/run_uc_cap_pipeline.py, EMB=1)
-  embedding_uc_cap_root: outputs/embedding_uc_cap
   # Feature-only per-run HyenaDNA tensors from scripts/build_run_tensors.py
   run_tensors_dir: outputs/run_tensors
   # HyenaDNA weights root (subdir per model; cloned from Hugging Face if missing on first load)
@@ -34,7 +30,7 @@ shared_splits:
   test_fraction: 0.15
 
 sequence_cache:
-  ## Sequence selection (tetramer/embedding caches and run_tensors)
+  ## Sequence selection (tetramer cache and run_tensors)
   # Drop this many leading sequences per run before sampling; runs with fewer rows are skipped
   seq_offset: 1000
   # Minimum sequences after seq_offset; runs with fewer sequences are skipped
@@ -44,25 +40,13 @@ sequence_cache:
   # Base seed when sample_mode is random (combined with a per-Run hash)
   sampling_seed: 0
 
-  ## Tetramer and embedding caches only (run_tensors uses separate config)
+  ## Tetramer cache only (run_tensors uses separate config)
   # Max sequences per run after seq_offset
   n_max_per_run: 5000
   # Compression: zstd or snappy (faster, larger files than zstd)
   parquet_compression: zstd
   # tetramer_cache: parallel worker processes (one run per process)
-  # embedding_cache on CPU: parallel runs (one HyenaDNA model per process)
-  # embedding_cache on GPU: one GPU process; max_workers is ignored
   max_workers: 8
-
-  ## HyenaDNA embedding cache (build_embedding_cache.py)
-  model: hyenadna-small-32k-seqlen
-  # Sequences per GPU/CPU forward pass within a run (independent rows, left-padded)
-  # Batch size 300 maxes out at about 14 GB GPU RAM (for study YTK+26)
-  embedding_batch_size: 300
-  # Reduce backbone hidden states per sequence: masked_mean (default) or last (causal)
-  sequence_reduce: masked_mean
-  # Device for embedding_cache: cuda, cpu, or null / auto
-  device: null
 
 # Classifier training defaults (scripts/fit_classifier.py)
 # Optional --expt overlays fit_classifier.experiments (from experiments.yaml)
@@ -109,10 +93,9 @@ run_uc_cap_pipeline:
   - { n_uc: 10, n_clusters: 20, n_cap: 50 }
   # Remaining keys (second list fragment merges over the triple above)
   - random_state: 0 # Random seed for MiniBatchKMeans
-    # Tetramer UC/CAP only: normalize each sequence 4-mer vector to relative frequencies
-    # Ignored for embedding UC/CAP (EMB=1)
+    # Normalize each sequence 4-mer vector to relative frequencies
     seq_normalize: true
-    # Tetramer UC/CAP only: log1p after optional per-sequence normalization. Ignored for EMB=1
+    # log1p after optional per-sequence normalization
     seq_log1p: false
     # MiniBatchKMeans batch size
     batch_size: 8192

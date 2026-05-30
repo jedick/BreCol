@@ -1,4 +1,4 @@
-"""Shared UC/CAP classifier table logic for tetramer and embedding result trees."""
+"""Shared UC/CAP classifier table logic for tetramer result trees."""
 
 from __future__ import annotations
 
