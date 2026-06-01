@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """
-Fine-tune HyenaDNA with the classification head.
+Fine-tune HyenaDNA with a single-task binary classification head.
 
 Uses a pre-built feature-only per-run tensor cache under paths.hyenadna_run_tensors_dir/ from
 scripts/build_hyenadna_run_tensors.py, joins labels/splits from shared metadata at runtime, and
 reports run-level AUC on the test and holdout splits (one score per Run).
 
-Training logs (`*_training.json`) record per-epoch loss, binary F1, and AUC metrics
-aligned with console output (task-suffixed keys in multitask mode). Checkpoints are
-selected by ``train_hyenadna.tuning_metric`` (default ``auc``); for ``task: multitask``,
-``tuning_ratio`` (with ``tuning_metric``) sets the blend of diagnosis vs type validation scores for checkpointing.
-
-Multitask mode trains two binary heads on a shared pooled backbone; loss is
-``loss_ratio * L_diagnosis + (1 - loss_ratio) * L_type``. Results JSON nests metrics under
-``cancer_diagnosis`` and ``cancer_type``; prediction CSVs use ``cd_*`` and ``ct_*`` columns.
+Training logs (`*_training.json`) record per-epoch loss, binary F1, and AUC metrics aligned
+with console output. Checkpoints are selected by ``train_hyenadna.tuning_metric`` (default
+``auc``).
 
 Config: defaults.yaml (train_hyenadna + hyenadna_run_tensors + paths) with optional
 experiments.yaml train_hyenadna overrides (--expt).
@@ -26,6 +21,7 @@ PyTorch CUDA native crash rather than bad Python tensor logic. We use
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import signal
@@ -34,16 +30,17 @@ import sys
 import time
 from collections import defaultdict
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, ContextManager, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
 from hyenadna import HyenaDNAPreTrainedModel
+from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -53,34 +50,73 @@ from hyenadna_fasta_data import (
     merge_train_hyenadna_config,
     model_max_length,
 )
-from shared_utilities import resolve_repo_path
-from cache_operations import load_sequence_row_selection
-from hyenadna_multitask import (
-    HEAD_CD,
-    HEAD_CT,
-    MULTITASK_TASK,
-    RunRecord,
-    ScoreContext,
-    apply_task_training_overrides,
-    build_multitask_records,
-    build_single_task_records,
-    epoch_progress_fields,
-    eval_splits,
-    is_multitask,
-    multitask_training_loss_sum_and_count,
-    prepare_multitask_config,
-    prepare_single_task_config,
-    score_entries,
-    tuning_score_from_heads,
-    tuning_score_single,
-    write_run_artifacts,
+from shared_utilities import (
+    binary_auc_from_scores,
+    build_run_task_table,
+    resolve_repo_path,
 )
+from cache_operations import load_sequence_row_selection
 
 HEAD_MODES = ("last", "first", "pool", "sum")
 
-_HYENADNA_TASK_GRID_VALUES = frozenset(
-    {"cancer_diagnosis", "cancer_type", "multitask"}
-)
+_HYENADNA_TASK_VALUES = frozenset({"cancer_diagnosis", "cancer_type"})
+
+
+# ---------------------------------------------------------------------------
+# Data containers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    run: str
+    split: str
+    label: int
+    task_label: str
+    study_name: str
+    n_sets: int
+    file: Path
+
+
+@dataclass(frozen=True)
+class ScoreContext:
+    requested_num_sets: int
+    requested_max_len: int
+    cache_num_sets: int
+    cache_max_len: int
+
+
+@dataclass(frozen=True)
+class HeadScores:
+    """Metrics use ``entries``/``y_true``/``y_score``; CSV uses ``all_*`` (one row per input run)."""
+
+    entries: Tuple[RunRecord, ...]
+    y_true: np.ndarray
+    y_score: np.ndarray
+    auc: float
+    f1: float
+    all_entries: Tuple[RunRecord, ...] = ()
+    all_scores: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.float64))
+
+
+@dataclass(frozen=True)
+class SplitScores:
+    val: HeadScores
+    test: HeadScores
+    holdout: HeadScores
+
+
+@dataclass(frozen=True)
+class TaskConfig:
+    pos_class_index: int
+    neg_label: str
+    pos_label: str
+    class_names: Tuple[str, ...]
+
+
+# ---------------------------------------------------------------------------
+# Grid-mode subprocess helpers
+# ---------------------------------------------------------------------------
 
 
 def _grid_child_subprocess_env() -> Dict[str, str]:
@@ -137,17 +173,20 @@ def _run_grid_child_check(
             raise
 
 
+# ---------------------------------------------------------------------------
+# Results path helpers
+# ---------------------------------------------------------------------------
+
+
 def _task_abbrv(task: str) -> str:
     t = str(task).strip()
     if t == "cancer_diagnosis":
         return "cd"
     if t == "cancer_type":
         return "ct"
-    if t == MULTITASK_TASK:
-        return "mt"
     raise SystemExit(
         f"Unknown task {task!r} for results path "
-        "(expected cancer_diagnosis, cancer_type, or multitask)."
+        "(expected cancer_diagnosis or cancer_type)."
     )
 
 
@@ -175,6 +214,82 @@ def _results_json_out_path(
     return p if p.is_absolute() else repo_root / p
 
 
+# ---------------------------------------------------------------------------
+# Run record construction
+# ---------------------------------------------------------------------------
+
+
+def prepare_task_config(
+    task: str,
+    defaults_path: Path,
+) -> Tuple[Any, LabelEncoder, TaskConfig]:
+    """Build the run metadata frame, fit a LabelEncoder on the training rows, and return the task config."""
+    run_df = build_run_task_table(task, config_path=defaults_path)
+    enc = LabelEncoder()
+    y_train = run_df.loc[run_df["split"] == "train", "task_label"].to_numpy(dtype=object)
+    if y_train.size == 0:
+        raise SystemExit("No training runs found after shared split assignment.")
+    enc.fit(y_train)
+    class_names = [str(x) for x in enc.classes_.tolist()]
+    if len(class_names) < 2:
+        raise SystemExit("HyenaDNA training expects at least 2 task classes.")
+    # Lexicographic LabelEncoder convention: index 0 is the negative class, index 1 the positive class.
+    cfg = TaskConfig(
+        pos_class_index=1,
+        neg_label=class_names[0],
+        pos_label=class_names[1],
+        class_names=tuple(class_names),
+    )
+    return run_df, enc, cfg
+
+
+def build_run_records(
+    run_task_df,
+    cache_root: Path,
+    *,
+    label_encoder: LabelEncoder,
+    requested_num_sets: int,
+) -> Tuple[List[RunRecord], int, Tuple[str, ...]]:
+    """Build RunRecords from a per-task metadata frame and the per-run tensor cache."""
+    cols = ["Run", "split", "task_label", "study_name"]
+    rows = run_task_df.loc[:, cols].drop_duplicates(subset=["Run"]).reset_index(drop=True)
+    out: List[RunRecord] = []
+    missing_runs: List[str] = []
+
+    for _, row in rows.iterrows():
+        run = str(row["Run"]).strip()
+        pt_path = cache_root / f"{run}.pt"
+        if not pt_path.is_file():
+            missing_runs.append(run)
+            continue
+        try:
+            blob = torch.load(pt_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            blob = torch.load(pt_path, map_location="cpu")
+        n_sets = int(blob.get("n_sets", 0))
+        if n_sets <= 0:
+            continue
+        primary_label = str(row["task_label"]).strip()
+        out.append(
+            RunRecord(
+                run=run,
+                split=str(row["split"]),
+                label=int(label_encoder.transform([primary_label])[0]),
+                task_label=primary_label,
+                study_name=str(row["study_name"]).strip(),
+                n_sets=min(n_sets, requested_num_sets),
+                file=pt_path,
+            )
+        )
+
+    return out, len(missing_runs), tuple(sorted(missing_runs)[:5])
+
+
+# ---------------------------------------------------------------------------
+# Dataset / DataLoader
+# ---------------------------------------------------------------------------
+
+
 class RunTensorDataset(Dataset):
     def __init__(
         self,
@@ -184,14 +299,12 @@ class RunTensorDataset(Dataset):
         requested_max_len: int,
         cache_num_sets: int,
         cache_max_len: int,
-        multitask: bool = False,
     ):
         self.entries = list(entries)
         self.requested_num_sets = requested_num_sets
         self.requested_max_len = requested_max_len
         self.cache_num_sets = cache_num_sets
         self.cache_max_len = cache_max_len
-        self.multitask = bool(multitask)
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -212,16 +325,13 @@ class RunTensorDataset(Dataset):
             )
         input_ids = blob["input_ids"][: self.requested_num_sets, start:self.cache_max_len]
         attention_mask = blob["attention_mask"][: self.requested_num_sets, start:self.cache_max_len]
-        item: Dict[str, object] = {
+        return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "n_sets": n_sets,
             "label": e.label,
             "run": e.run,
         }
-        if self.multitask:
-            item["ct_label"] = int(e.ct_label)
-        return item
 
 
 def collate_batch(batch: List[Dict[str, object]]) -> Dict[str, object]:
@@ -230,88 +340,18 @@ def collate_batch(batch: List[Dict[str, object]]) -> Dict[str, object]:
     n_sets = torch.tensor([b["n_sets"] for b in batch], dtype=torch.long)
     labels = torch.tensor([b["label"] for b in batch], dtype=torch.long)
     runs = [str(b["run"]) for b in batch]
-    out: Dict[str, object] = {
+    return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "n_sets": n_sets,
         "label": labels,
         "run": runs,
     }
-    if "ct_label" in batch[0]:
-        out["ct_label"] = torch.tensor(
-            [int(b["ct_label"]) for b in batch], dtype=torch.long
-        )
-    return out
 
 
-def training_loss(
-    model: torch.nn.Module,
-    batch: Mapping[str, object],
-    device: torch.device,
-    *,
-    amp_enabled: bool,
-    amp_dtype: torch.dtype,
-    ce_weight: Optional[torch.Tensor],
-) -> torch.Tensor:
-    loss_sum, denom, _ = training_loss_sum_and_count(
-        model,
-        batch,
-        device,
-        amp_enabled=amp_enabled,
-        amp_dtype=amp_dtype,
-        ce_weight=ce_weight,
-    )
-    if denom <= 0:
-        raise SystemExit("Training batch has zero valid sets after masking.")
-    return loss_sum / float(denom)
-
-
-def training_loss_sum_and_count(
-    model: torch.nn.Module,
-    batch: Mapping[str, object],
-    device: torch.device,
-    *,
-    amp_enabled: bool,
-    amp_dtype: torch.dtype,
-    ce_weight: Optional[torch.Tensor] = None,
-    ce_weight_ct: Optional[torch.Tensor] = None,
-    loss_ratio: float = 1.0,
-) -> Tuple[torch.Tensor, int, None]:
-    if getattr(model, "multitask_mode", False):
-        return multitask_training_loss_sum_and_count(
-            model,
-            batch,
-            device,
-            amp_enabled=amp_enabled,
-            amp_dtype=amp_dtype,
-            ce_weight_cd=ce_weight,
-            ce_weight_ct=ce_weight_ct,
-            loss_ratio=float(loss_ratio),
-        )
-
-    input_ids = batch["input_ids"].to(device)
-    bsz, n_set, seq_len = input_ids.shape
-    flat_in = input_ids.view(bsz * n_set, seq_len)
-    nv = batch["n_sets"]
-    labels = batch["label"].to(device)
-    mask = torch.arange(n_set, device=device).unsqueeze(0) < nv.to(device).unsqueeze(1)
-
-    with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
-        logits = model(flat_in)
-        logits = logits.view(bsz, n_set, -1)
-        flat_logits = logits[mask]
-        flat_y = labels.unsqueeze(1).expand(bsz, n_set)[mask]
-    if flat_logits.numel() == 0:
-        return torch.zeros((), device=device), 0, None
-    ce_kw: Dict[str, object] = {"reduction": "sum"}
-    if ce_weight is not None:
-        # AMP can produce bf16/fp16 logits; class-weight tensor must match.
-        ce_kw["weight"] = ce_weight.to(
-            device=flat_logits.device,
-            dtype=flat_logits.dtype,
-        )
-    task_ce = F.cross_entropy(flat_logits, flat_y, **ce_kw)
-    return task_ce, int(flat_y.shape[0]), None
+# ---------------------------------------------------------------------------
+# Training utilities
+# ---------------------------------------------------------------------------
 
 
 def _resolve_train_batch_size(raw: object) -> int:
@@ -369,14 +409,12 @@ def _compute_ce_weight_tensor(
     mode: str,
     n_classes: int,
     device: torch.device,
-    label_getter: Optional[Callable[[RunRecord], int]] = None,
 ) -> Optional[torch.Tensor]:
     m = str(mode or "none").strip().lower()
     if m in ("none", "null", ""):
         return None
     if m in ("balanced", "balanced_sqrt"):
-        get_label = label_getter or (lambda e: e.label)
-        y = np.array([int(get_label(e)) for e in train_entries], dtype=np.int64)
+        y = np.array([int(e.label) for e in train_entries], dtype=np.int64)
         if y.size == 0:
             return None
         present = np.unique(y)
@@ -395,6 +433,40 @@ def _compute_ce_weight_tensor(
     )
 
 
+def training_loss_sum_and_count(
+    model: torch.nn.Module,
+    batch: Mapping[str, object],
+    device: torch.device,
+    *,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+    ce_weight: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, int]:
+    input_ids = batch["input_ids"].to(device)
+    bsz, n_set, seq_len = input_ids.shape
+    flat_in = input_ids.view(bsz * n_set, seq_len)
+    nv = batch["n_sets"]
+    labels = batch["label"].to(device)
+    mask = torch.arange(n_set, device=device).unsqueeze(0) < nv.to(device).unsqueeze(1)
+
+    with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+        logits = model(flat_in)
+        logits = logits.view(bsz, n_set, -1)
+        flat_logits = logits[mask]
+        flat_y = labels.unsqueeze(1).expand(bsz, n_set)[mask]
+    if flat_logits.numel() == 0:
+        return torch.zeros((), device=device), 0
+    ce_kw: Dict[str, object] = {"reduction": "sum"}
+    if ce_weight is not None:
+        # AMP can produce bf16/fp16 logits; class-weight tensor must match.
+        ce_kw["weight"] = ce_weight.to(
+            device=flat_logits.device,
+            dtype=flat_logits.dtype,
+        )
+    task_ce = F.cross_entropy(flat_logits, flat_y, **ce_kw)
+    return task_ce, int(flat_y.shape[0])
+
+
 def _eval_mean_ce_loss(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -403,23 +475,19 @@ def _eval_mean_ce_loss(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     ce_weight: Optional[torch.Tensor],
-    ce_weight_ct: Optional[torch.Tensor] = None,
-    loss_ratio: float = 1.0,
 ) -> float:
     model.eval()
     total = 0.0
     count = 0
     with torch.no_grad():
         for batch in loader:
-            loss_sum, n, _ = training_loss_sum_and_count(
+            loss_sum, n = training_loss_sum_and_count(
                 model,
                 batch,
                 device,
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
                 ce_weight=ce_weight,
-                ce_weight_ct=ce_weight_ct,
-                loss_ratio=loss_ratio,
             )
             total += float(loss_sum.item())
             count += int(n)
@@ -427,14 +495,6 @@ def _eval_mean_ce_loss(
 
 
 def _classification_head_params(model: torch.nn.Module) -> List[torch.nn.Parameter]:
-    if getattr(model, "multitask_mode", False):
-        params: List[torch.nn.Parameter] = []
-        if model.pooler is not None:
-            params.extend([p for p in model.pooler.parameters() if p.requires_grad])
-        if model.task_heads is not None:
-            for head in model.task_heads:
-                params.extend([p for p in head.parameters() if p.requires_grad])
-        return params
     if model.head is None:
         return []
     return [p for p in model.head.parameters() if p.requires_grad]
@@ -488,22 +548,18 @@ def train_epoch(
     amp_dtype: torch.dtype,
     scaler: Optional[torch.amp.GradScaler],
     ce_weight: Optional[torch.Tensor],
-    ce_weight_ct: Optional[torch.Tensor] = None,
-    loss_ratio: float = 1.0,
 ) -> float:
     model.train()
     total = 0.0
     n_batches = 0
     for batch in tqdm(loader, desc="Train", leave=False):
-        loss_sum, denom, _extra = training_loss_sum_and_count(
+        loss_sum, denom = training_loss_sum_and_count(
             model,
             batch,
             device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             ce_weight=ce_weight,
-            ce_weight_ct=ce_weight_ct,
-            loss_ratio=loss_ratio,
         )
         if denom <= 0:
             raise SystemExit("Training batch has zero valid sets after masking.")
@@ -517,6 +573,231 @@ def train_epoch(
         total += float(loss.item())
         n_batches += 1
     return total / max(n_batches, 1)
+
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+
+def _load_run_tensor(
+    path: Path,
+    *,
+    requested_num_sets: int,
+    requested_max_len: int,
+    cache_num_sets: int,
+    cache_max_len: int,
+) -> Tuple[Optional[torch.Tensor], int]:
+    try:
+        blob = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        blob = torch.load(path, map_location="cpu")
+    n_sets = int(blob.get("n_sets", 0))
+    if n_sets <= 0:
+        return None, 0
+    start = cache_max_len - requested_max_len
+    if start < 0:
+        raise SystemExit(
+            "train_hyenadna.max_length exceeds hyenadna_run_tensors.max_length. "
+            "Increase hyenadna_run_tensors.max_length and rebuild run tensors."
+        )
+    x = blob["input_ids"][:requested_num_sets, start:cache_max_len]
+    nv = min(n_sets, requested_num_sets, cache_num_sets)
+    return x, nv
+
+
+def _positive_class_score(logits: torch.Tensor, pos_class_index: int) -> float:
+    """Run-level score: mean logits over sequence sets, then softmax positive class."""
+    agg = logits.mean(dim=0)
+    return float(torch.softmax(agg, dim=-1)[pos_class_index].item())
+
+
+def _binary_f1(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    *,
+    pos_label: str,
+    neg_label: str,
+) -> float:
+    """Positive-class F1 at threshold 0.5 on the positive-class score."""
+    if y_true.size == 0:
+        return float("nan")
+    y_pred = np.where(y_score >= 0.5, pos_label, neg_label)
+    return float(
+        f1_score(
+            y_true,
+            y_pred,
+            pos_label=pos_label,
+            average="binary",
+            zero_division=0,
+        )
+    )
+
+
+def _head_metrics(
+    entries: Sequence[RunRecord],
+    scores: np.ndarray,
+    task_cfg: TaskConfig,
+) -> HeadScores:
+    scores = np.asarray(scores, dtype=np.float64)
+    valid = scores == scores
+    pairs = [(e, float(s)) for e, s, ok in zip(entries, scores, valid) if ok]
+    all_entries = tuple(entries)
+    all_scores = np.asarray(scores, dtype=np.float64)
+    if not pairs:
+        return HeadScores(
+            (),
+            np.asarray([], dtype=object),
+            np.asarray([], dtype=np.float64),
+            float("nan"),
+            float("nan"),
+            all_entries=all_entries,
+            all_scores=all_scores,
+        )
+    sub_entries, sub_scores = zip(*pairs)
+    sub_entries_t = tuple(sub_entries)
+    y_true = np.array([e.task_label for e in sub_entries_t], dtype=object)
+    y_score = np.asarray(sub_scores, dtype=np.float64)
+    auc = binary_auc_from_scores(y_true, y_score, positive_label=task_cfg.pos_label)
+    f1 = _binary_f1(y_true, y_score, pos_label=task_cfg.pos_label, neg_label=task_cfg.neg_label)
+    return HeadScores(
+        sub_entries_t,
+        y_true,
+        y_score,
+        float(auc),
+        f1,
+        all_entries=all_entries,
+        all_scores=all_scores,
+    )
+
+
+def _forward_entry_score(
+    model: torch.nn.Module,
+    entry: RunRecord,
+    pos_class_index: int,
+    ctx: ScoreContext,
+    device: torch.device,
+    *,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+) -> float:
+    x, nv = _load_run_tensor(
+        entry.file,
+        requested_num_sets=ctx.requested_num_sets,
+        requested_max_len=ctx.requested_max_len,
+        cache_num_sets=ctx.cache_num_sets,
+        cache_max_len=ctx.cache_max_len,
+    )
+    if x is None or nv <= 0:
+        return float("nan")
+    x = x.to(device)
+    with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+        logits = model(x[:nv])
+    return _positive_class_score(logits, pos_class_index)
+
+
+def score_entries(
+    model: torch.nn.Module,
+    entries: Sequence[RunRecord],
+    device: torch.device,
+    task_cfg: TaskConfig,
+    ctx: ScoreContext,
+    *,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+) -> HeadScores:
+    """Score all entries with one backbone forward per run."""
+    if not entries:
+        return HeadScores(
+            (),
+            np.asarray([], dtype=object),
+            np.asarray([], dtype=np.float64),
+            float("nan"),
+            float("nan"),
+            all_entries=(),
+            all_scores=np.asarray([], dtype=np.float64),
+        )
+    model.eval()
+    raw: List[float] = []
+    with torch.no_grad():
+        for e in entries:
+            raw.append(
+                _forward_entry_score(
+                    model,
+                    e,
+                    task_cfg.pos_class_index,
+                    ctx,
+                    device,
+                    amp_enabled=amp_enabled,
+                    amp_dtype=amp_dtype,
+                )
+            )
+    return _head_metrics(entries, np.asarray(raw, dtype=np.float64), task_cfg)
+
+
+def eval_splits(
+    model: torch.nn.Module,
+    *,
+    val_entries: Sequence[RunRecord],
+    test_entries: Sequence[RunRecord],
+    holdout_entries: Sequence[RunRecord],
+    task_cfg: TaskConfig,
+    ctx: ScoreContext,
+    device: torch.device,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype,
+) -> SplitScores:
+    return SplitScores(
+        val=score_entries(
+            model, val_entries, device, task_cfg, ctx,
+            amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+        ),
+        test=score_entries(
+            model, test_entries, device, task_cfg, ctx,
+            amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+        ),
+        holdout=score_entries(
+            model, holdout_entries, device, task_cfg, ctx,
+            amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+        ),
+    )
+
+
+def tuning_score(f1: float, auc: float, metric: str) -> float:
+    m = str(metric).strip()
+    if m == "auc":
+        v = float(auc)
+    elif m == "f1":
+        v = float(f1)
+    else:
+        raise SystemExit(
+            f"Unknown tuning_metric {metric!r} (use auc or f1)."
+        )
+    return v if v == v else float("-inf")
+
+
+def epoch_progress_fields(
+    *,
+    split_eval: SplitScores,
+    train_loss: float,
+    val_loss: float,
+    best_epoch: int,
+) -> List[str]:
+    fields = [f"train_loss={train_loss:.4f}", f"val_loss={val_loss:.4f}"]
+    fields.extend(
+        [
+            f"val_auc={split_eval.val.auc:.4f}",
+            f"test_auc={split_eval.test.auc:.4f}",
+            f"holdout_auc={split_eval.holdout.auc:.4f}",
+        ]
+    )
+    fields.append(f"best_epoch={int(best_epoch)}")
+    return fields
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing and per-experiment grid driver
+# ---------------------------------------------------------------------------
 
 
 def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
@@ -588,21 +869,21 @@ def _parse_task_grid(raw: object) -> Optional[List[str]]:
         task = raw.strip()
         if not task:
             return None
-        if task not in _HYENADNA_TASK_GRID_VALUES:
+        if task not in _HYENADNA_TASK_VALUES:
             raise SystemExit(
                 f"Unknown train_hyenadna.task {task!r} "
-                "(use cancer_diagnosis, cancer_type, or multitask)."
+                "(use cancer_diagnosis or cancer_type)."
             )
         return [task]
     if isinstance(raw, (list, tuple)):
         if not raw:
             raise SystemExit("task grid must not be empty.")
         tasks = [str(t).strip() for t in raw]
-        bad = [p for p in tasks if p not in _HYENADNA_TASK_GRID_VALUES]
+        bad = [p for p in tasks if p not in _HYENADNA_TASK_VALUES]
         if bad:
             raise SystemExit(
-                "train_hyenadna task grid must list only cancer_diagnosis, "
-                f"cancer_type, and/or multitask; unknown value(s): {bad!r}."
+                "train_hyenadna task grid must list only cancer_diagnosis and/or "
+                f"cancer_type; unknown value(s): {bad!r}."
             )
         return tasks
     raise SystemExit(
@@ -630,56 +911,83 @@ def _format_hyenadna_results_template(
     )
 
 
+# ---------------------------------------------------------------------------
+# Results / prediction writing
+# ---------------------------------------------------------------------------
+
+
+_PREDICTION_CSV_FIELDS = ("Run", "task_label", "predicted_label", "positive_score")
+
+
+def _prediction_rows(
+    entries: Sequence[RunRecord],
+    scores: HeadScores,
+    task_cfg: TaskConfig,
+) -> List[Dict[str, object]]:
+    use_entries = scores.all_entries if scores.all_entries else tuple(entries)
+    use_scores = scores.all_scores if scores.all_scores.size else scores.y_score
+    if len(use_entries) != len(use_scores):
+        raise SystemExit("Prediction row count mismatch.")
+    rows: List[Dict[str, object]] = []
+    for e, score in zip(use_entries, use_scores):
+        pred = task_cfg.pos_label if float(score) >= 0.5 else task_cfg.neg_label
+        rows.append(
+            {
+                "Run": str(e.run),
+                "task_label": str(e.task_label),
+                "predicted_label": str(pred),
+                "positive_score": float(score),
+            }
+        )
+    return rows
+
+
+def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_PREDICTION_CSV_FIELDS, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            out_row: Dict[str, str] = {}
+            for key in _PREDICTION_CSV_FIELDS:
+                if key == "positive_score":
+                    out_row[key] = f"{float(row[key]):.10f}"
+                else:
+                    out_row[key] = str(row[key])
+            writer.writerow(out_row)
+
+
+def _float_or_none(x: float) -> Optional[float]:
+    return float(x) if x == x else None
+
+
 def _write_results_json(
     path: Path,
     *,
     merged: Mapping[str, Any],
     cache_info: Mapping[str, Any],
-    test_primary_curve: float,
-    holdout_primary_curve: float,
+    test_auc: float,
+    holdout_auc: float,
     best_epoch: int,
     tuning_metric: str,
     best_tuning_score: float,
-    metrics: Optional[Mapping[str, Any]] = None,
-    tuning_extra: Optional[Mapping[str, Any]] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if metrics is None:
-        metrics = {
-            "test": {
-                "auc": float(test_primary_curve)
-                if test_primary_curve == test_primary_curve
-                else None
-            },
-            "holdout": {
-                "auc": float(holdout_primary_curve)
-                if holdout_primary_curve == holdout_primary_curve
-                else None
-            },
-        }
-    tuning_block: Dict[str, Any] = {
-        "split": "validation",
-        "metric": str(tuning_metric),
-    }
-    if tuning_extra:
-        extra = dict(tuning_extra)
-        for key in (
-            "cancer_diagnosis_score",
-            "cancer_type_score",
-            "combined_score",
-        ):
-            if key in extra:
-                tuning_block[key] = extra[key]
-    tuning_block["best_epoch"] = int(best_epoch)
     payload = {
         "script": Path(__file__).name,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "config": dict(merged),
-        "data": {
-            "cache": dict(cache_info),
+        "data": {"cache": dict(cache_info)},
+        "tuning": {
+            "split": "validation",
+            "metric": str(tuning_metric),
+            "score": _float_or_none(float(best_tuning_score)),
+            "best_epoch": int(best_epoch),
         },
-        "tuning": tuning_block,
-        "metrics": dict(metrics),
+        "metrics": {
+            "test": {"auc": _float_or_none(test_auc)},
+            "holdout": {"auc": _float_or_none(holdout_auc)},
+        },
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -688,55 +996,75 @@ def _training_log_path_from_results(path: Path) -> Path:
     return path.with_name(f"{path.stem}_training.json")
 
 
-def _float_or_none(x: float) -> Optional[float]:
-    return float(x) if x == x else None
-
-
 def _write_training_log(
     path: Path,
     epoch_rows: Sequence[Mapping[str, object]],
-    *,
-    multitask: bool,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: List[Dict[str, object]] = []
     for row in epoch_rows:
-        entry: Dict[str, object] = {
-            "epoch": int(row["epoch"]),
-            "learning_rate": float(row["learning_rate"]),
-            "train_loss": float(row["train_loss"]),
-            "val_loss": _float_or_none(float(row["val_loss"])),
-        }
-        if multitask:
-            entry.update(
-                {
-                    "val_f1_cd": _float_or_none(float(row["val_f1_cd"])),
-                    "val_f1_ct": _float_or_none(float(row["val_f1_ct"])),
-                    "test_f1_cd": _float_or_none(float(row["test_f1_cd"])),
-                    "test_f1_ct": _float_or_none(float(row["test_f1_ct"])),
-                    "holdout_f1_cd": _float_or_none(float(row["holdout_f1_cd"])),
-                    "holdout_f1_ct": _float_or_none(float(row["holdout_f1_ct"])),
-                    "val_auc_cd": _float_or_none(float(row["val_auc_cd"])),
-                    "val_auc_ct": _float_or_none(float(row["val_auc_ct"])),
-                    "test_auc_cd": _float_or_none(float(row["test_auc_cd"])),
-                    "test_auc_ct": _float_or_none(float(row["test_auc_ct"])),
-                    "holdout_auc_cd": _float_or_none(float(row["holdout_auc_cd"])),
-                    "holdout_auc_ct": _float_or_none(float(row["holdout_auc_ct"])),
-                }
-            )
-        else:
-            entry.update(
-                {
-                    "val_f1": _float_or_none(float(row["val_f1"])),
-                    "test_f1": _float_or_none(float(row["test_f1"])),
-                    "holdout_f1": _float_or_none(float(row["holdout_f1"])),
-                    "val_auc": _float_or_none(float(row["val_auc"])),
-                    "test_auc": _float_or_none(float(row["test_auc"])),
-                    "holdout_auc": _float_or_none(float(row["holdout_auc"])),
-                }
-            )
-        payload.append(entry)
+        payload.append(
+            {
+                "epoch": int(row["epoch"]),
+                "learning_rate": float(row["learning_rate"]),
+                "train_loss": float(row["train_loss"]),
+                "val_loss": _float_or_none(float(row["val_loss"])),
+                "val_f1": _float_or_none(float(row["val_f1"])),
+                "test_f1": _float_or_none(float(row["test_f1"])),
+                "holdout_f1": _float_or_none(float(row["holdout_f1"])),
+                "val_auc": _float_or_none(float(row["val_auc"])),
+                "test_auc": _float_or_none(float(row["test_auc"])),
+                "holdout_auc": _float_or_none(float(row["holdout_auc"])),
+            }
+        )
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def write_run_artifacts(
+    results_path: Path,
+    *,
+    merged: Mapping[str, Any],
+    cache_info: Mapping[str, Any],
+    task_cfg: TaskConfig,
+    test_entries: Sequence[RunRecord],
+    holdout_entries: Sequence[RunRecord],
+    test_scores: HeadScores,
+    holdout_scores: HeadScores,
+    best_epoch: int,
+    tuning_metric: str,
+    best_tuning_score: float,
+) -> None:
+    """Write results JSON and split prediction CSVs."""
+    pred_rows_test = _prediction_rows(test_entries, test_scores, task_cfg)
+    pred_rows_hold = _prediction_rows(holdout_entries, holdout_scores, task_cfg)
+
+    test_pred_path = results_path.with_name(f"{results_path.stem}_test.csv")
+    holdout_pred_path = results_path.with_name(f"{results_path.stem}_holdout.csv")
+    _write_predictions_csv(test_pred_path, pred_rows_test)
+    _write_predictions_csv(holdout_pred_path, pred_rows_hold)
+
+    _write_results_json(
+        results_path,
+        merged=merged,
+        cache_info=cache_info,
+        test_auc=test_scores.auc,
+        holdout_auc=holdout_scores.auc,
+        best_epoch=best_epoch,
+        tuning_metric=tuning_metric,
+        best_tuning_score=best_tuning_score,
+    )
+
+    print(
+        f"Final eval (best epoch by {tuning_metric}): best_epoch={best_epoch} "
+        f"test_auc={test_scores.auc:.4f} "
+        f"holdout_auc={holdout_scores.auc:.4f}\n",
+        flush=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -885,10 +1213,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cache_min_seqs = selection["min_seqs"]
 
     task = str(merged["task"]).strip()
-    if task not in _HYENADNA_TASK_GRID_VALUES:
+    if task not in _HYENADNA_TASK_VALUES:
         raise SystemExit(
             f"Unknown train_hyenadna.task {task!r} "
-            "(use cancer_diagnosis, cancer_type, or multitask)."
+            "(use cancer_diagnosis or cancer_type)."
         )
     model_name = str(merged["model"]).strip()
     num_sets = int(merged["num_sets"])
@@ -912,39 +1240,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"Missing HyenaDNA run tensors directory: {run_tensors_root}. "
             "Run: python scripts/build_hyenadna_run_tensors.py"
         )
-    multitask = is_multitask(task)
-    ce_weight_ct: Optional[torch.Tensor] = None
-    enc_ct: Optional[LabelEncoder] = None
 
-    if multitask:
-        run_task_df, enc_cd, enc_ct, task_cfg = prepare_multitask_config(defaults_path)
-        task_cfg = apply_task_training_overrides(task_cfg, merged)
-    else:
-        run_task_df, enc_cd, task_cfg = prepare_single_task_config(task, defaults_path)
-        task_cfg = apply_task_training_overrides(task_cfg, merged)
+    run_task_df, label_encoder, task_cfg = prepare_task_config(task, defaults_path)
 
-    class_names = list(task_cfg.class_names)
-    primary_head = task_cfg.heads[0] if not multitask else task_cfg.heads[0]
-    neg_label = primary_head.neg_label
-    pos_label = primary_head.pos_label
-    pos_class_index = primary_head.pos_class_index
-
-    if multitask:
-        assert enc_ct is not None
-        all_records, n_skipped_missing_cache, missing_cache_examples = build_multitask_records(
-            run_task_df,
-            run_tensors_root,
-            cd_encoder=enc_cd,
-            ct_encoder=enc_ct,
-            requested_num_sets=num_sets,
-        )
-    else:
-        all_records, n_skipped_missing_cache, missing_cache_examples = build_single_task_records(
-            run_task_df,
-            run_tensors_root,
-            label_encoder=enc_cd,
-            requested_num_sets=num_sets,
-        )
+    all_records, n_skipped_missing_cache, missing_cache_examples = build_run_records(
+        run_task_df,
+        run_tensors_root,
+        label_encoder=label_encoder,
+        requested_num_sets=num_sets,
+    )
     if n_skipped_missing_cache:
         ex = ", ".join(missing_cache_examples)
         print(
@@ -1004,14 +1308,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"\nExperiment: EXPT={expt}", flush=True)
     else:
         print("\nExperiment: EXPT=0 (defaults.yaml config)", flush=True)
-    extra = (
-        f"loss_ratio={task_cfg.loss_ratio} tuning_ratio={task_cfg.tuning_ratio} | "
-        if multitask
-        else f"positive_class={pos_label!r} (index {pos_class_index}) | "
-    )
     print(
         f"\nHyenaDNA train | task={task} model={model_name} | "
-        f"{extra}"
+        f"positive_class={task_cfg.pos_label!r} (index {task_cfg.pos_class_index}) | "
         f"precision={'amp(' + amp_dtype_name + ')' if amp_enabled else 'fp32'}",
         flush=True,
     )
@@ -1026,18 +1325,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ce_weight = _compute_ce_weight_tensor(
         train_entries,
         mode=class_weight_mode,
-        n_classes=len(class_names),
+        n_classes=len(task_cfg.class_names),
         device=device,
     )
-    if multitask:
-        ct_train_entries = [e for e in train_entries if e.is_cancer]
-        ce_weight_ct = _compute_ce_weight_tensor(
-            ct_train_entries,
-            mode=class_weight_mode,
-            n_classes=len(task_cfg.ct_class_names),
-            device=device,
-            label_getter=lambda e: e.ct_label,
-        )
     transition_n = int(merged.get("freeze_backbone_epochs") or 0)
     if "head_hidden" not in merged:
         raise SystemExit("train_hyenadna.head_hidden is required in defaults.yaml.")
@@ -1057,7 +1347,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         requested_max_len=max_len,
         cache_num_sets=cache_num_sets,
         cache_max_len=cache_max_len,
-        multitask=multitask,
     )
     sampler: Optional[WeightedRandomSampler] = None
     shuffle = True
@@ -1089,7 +1378,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         requested_max_len=max_len,
         cache_num_sets=cache_num_sets,
         cache_max_len=cache_max_len,
-        multitask=multitask,
     )
     val_loader = DataLoader(
         val_ds,
@@ -1103,22 +1391,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ckpt_dir = resolve_repo_path(
         repo_root, str(paths_cfg["checkpoint_dir"]).strip()
     )
-    model_kw: Dict[str, object] = {
-        "config": None,
-        "device": str(device),
-        "use_head": True,
-        "head_pooling_mode": head_mode,
-        "head_hidden": head_hidden,
-        "head_dropout": head_dropout,
-    }
-    if multitask:
-        model_kw["multitask_class_counts"] = [2, 2]
-    else:
-        model_kw["n_classes"] = len(class_names)
     model = HyenaDNAPreTrainedModel.from_pretrained(
         str(ckpt_dir),
         model_name,
-        **model_kw,
+        config=None,
+        device=str(device),
+        use_head=True,
+        n_classes=len(task_cfg.class_names),
+        head_pooling_mode=head_mode,
+        head_hidden=head_hidden,
+        head_dropout=head_dropout,
     )
     model = model.to(device)
 
@@ -1130,7 +1412,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     epoch_log: List[Dict[str, object]] = []
     best_tuning_score = float("-inf")
     best_epoch = 0
-    best_val_scores: Optional[Dict[str, object]] = None
     best_state: Optional[Dict[str, torch.Tensor]] = None
     score_ctx = ScoreContext(
         requested_num_sets=num_sets,
@@ -1177,8 +1458,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_dtype=amp_dtype,
             scaler=scaler,
             ce_weight=ce_weight,
-            ce_weight_ct=ce_weight_ct,
-            loss_ratio=task_cfg.loss_ratio,
         )
 
         val_loss = _eval_mean_ce_loss(
@@ -1188,8 +1467,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             ce_weight=ce_weight,
-            ce_weight_ct=ce_weight_ct,
-            loss_ratio=task_cfg.loss_ratio,
         )
 
         split_eval = eval_splits(
@@ -1197,68 +1474,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             val_entries=val_entries,
             test_entries=test_entries,
             holdout_entries=holdout_entries,
-            heads=task_cfg.heads,
+            task_cfg=task_cfg,
             ctx=score_ctx,
             device=device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
         )
-        primary_val = split_eval.val[task_cfg.primary_head]
-        val_primary_curve = primary_val.auc
-        test_primary_curve = split_eval.test[task_cfg.primary_head].auc
-        hold_primary_curve = split_eval.holdout[task_cfg.primary_head].auc
 
         lr_log = float(opt.param_groups[0]["lr"])
-        if multitask:
-            ts = tuning_score_from_heads(
-                split_eval.val,
-                tuning_metric=tuning_metric,
-                tuning_ratio=task_cfg.tuning_ratio,
-            )
-            epoch_row: Dict[str, object] = {
-                "epoch": int(ep),
-                "learning_rate": lr_log,
-                "train_loss": float(last_loss),
-                "val_loss": float(val_loss),
-                "val_f1_cd": float(split_eval.val[HEAD_CD].f1),
-                "val_f1_ct": float(split_eval.val[HEAD_CT].f1),
-                "test_f1_cd": float(split_eval.test[HEAD_CD].f1),
-                "test_f1_ct": float(split_eval.test[HEAD_CT].f1),
-                "holdout_f1_cd": float(split_eval.holdout[HEAD_CD].f1),
-                "holdout_f1_ct": float(split_eval.holdout[HEAD_CT].f1),
-                "val_auc_cd": float(split_eval.val[HEAD_CD].auc),
-                "val_auc_ct": float(split_eval.val[HEAD_CT].auc),
-                "test_auc_cd": float(split_eval.test[HEAD_CD].auc),
-                "test_auc_ct": float(split_eval.test[HEAD_CT].auc),
-                "holdout_auc_cd": float(split_eval.holdout[HEAD_CD].auc),
-                "holdout_auc_ct": float(split_eval.holdout[HEAD_CT].auc),
-            }
-        else:
-            ts = tuning_score_single(primary_val.f1, val_primary_curve, tuning_metric)
-            epoch_row = {
-                "epoch": int(ep),
-                "learning_rate": lr_log,
-                "train_loss": float(last_loss),
-                "val_loss": float(val_loss),
-                "val_f1": float(split_eval.val["task"].f1),
-                "test_f1": float(split_eval.test["task"].f1),
-                "holdout_f1": float(split_eval.holdout["task"].f1),
-                "val_auc": float(val_primary_curve),
-                "test_auc": float(test_primary_curve),
-                "holdout_auc": float(hold_primary_curve),
-            }
+        ts = tuning_score(split_eval.val.f1, split_eval.val.auc, tuning_metric)
+        epoch_row: Dict[str, object] = {
+            "epoch": int(ep),
+            "learning_rate": lr_log,
+            "train_loss": float(last_loss),
+            "val_loss": float(val_loss),
+            "val_f1": float(split_eval.val.f1),
+            "test_f1": float(split_eval.test.f1),
+            "holdout_f1": float(split_eval.holdout.f1),
+            "val_auc": float(split_eval.val.auc),
+            "test_auc": float(split_eval.test.auc),
+            "holdout_auc": float(split_eval.holdout.auc),
+        }
         epoch_log.append(epoch_row)
         if training_log_path is not None:
-            _write_training_log(
-                training_log_path,
-                epoch_log,
-                multitask=multitask,
-            )
+            _write_training_log(training_log_path, epoch_log)
 
         if ts > best_tuning_score:
             best_tuning_score = float(ts)
             best_epoch = int(ep)
-            best_val_scores = split_eval.val
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
@@ -1266,7 +1509,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             "  ".join(
                 epoch_progress_fields(
-                    multitask=multitask,
                     split_eval=split_eval,
                     train_loss=last_loss,
                     val_loss=val_loss,
@@ -1280,13 +1522,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         model.load_state_dict(best_state)
 
     if results_path is not None:
-        if best_val_scores is None:
-            raise SystemExit("No best validation scores recorded; cannot write results.")
+        if best_epoch == 0:
+            raise SystemExit("No best validation epoch recorded; cannot write results.")
         final_test = score_entries(
             model,
             test_entries,
             device,
-            task_cfg.heads,
+            task_cfg,
             score_ctx,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
@@ -1295,7 +1537,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             model,
             holdout_entries,
             device,
-            task_cfg.heads,
+            task_cfg,
             score_ctx,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
@@ -1319,8 +1561,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             best_epoch=best_epoch,
             tuning_metric=tuning_metric,
             best_tuning_score=best_tuning_score,
-            best_val_scores=best_val_scores,
-            write_results_json=_write_results_json,
         )
 
     return 0

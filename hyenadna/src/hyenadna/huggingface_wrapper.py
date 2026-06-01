@@ -6,7 +6,7 @@
 #   - Remove genomic-benchmarks import
 #   - Relative import of HyenaDNAModel (model code not inlined in this file)
 #   - Use weights_only=False for torch.load() (PyTorch >= 2.6)
-#   - Pass head_hidden, head_dropout, multitask_class_counts to HyenaDNAModel
+#   - Pass head_hidden, head_dropout to HyenaDNAModel
 # Modified by: Jeffrey Dick
 
 #@title Huggingface Pretrained Wrapper
@@ -16,7 +16,6 @@ import re
 import os
 import json
 import subprocess
-from typing import Optional, Sequence
 
 import torch
 from transformers import PreTrainedModel
@@ -100,7 +99,6 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
         head_pooling_mode="pool",
         head_hidden=0,
         head_dropout=0.0,
-        multitask_class_counts: Optional[Sequence[int]] = None,
     ):
         """Load HyenaDNA weights from ``path`` / ``model_name``.
 
@@ -130,7 +128,6 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
             head_pooling_mode=head_pooling_mode,
             head_hidden=head_hidden,
             head_dropout=head_dropout,
-            multitask_class_counts=multitask_class_counts,
         )
         loaded_ckpt = torch.load(
             os.path.join(pretrained_model_name_or_path, 'weights.ckpt'),

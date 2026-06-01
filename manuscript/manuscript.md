@@ -190,14 +190,13 @@ We trained HyenaDNA on 16S RNA sequence data to test an end-to-end sequence mode
 The available context length for HyenaDNA was up to 16k in our experiments, which can fit many 16S sequences.
 To use this context, we built sets by packing sequences from each run into the context length, and repeated this to generate 5 sets per study.
 
-We initialized HyenaDNA from pretrained weights, using a multitask configuration (two MLP classification heads attached to the same backbone).
-In each forward pass, the cross-entropy loss for each task was computed separately and combined with equal weight.
-Because each run can produce multiple sequence sets, training loss was computed across all valid sets for each run.
+We initialized HyenaDNA from pretrained weights and fine-tuned one model per binary task, each with its own MLP classification head on top of the shared HyenaDNA backbone.
+Cross-entropy loss was computed per task, and because each run can produce multiple sequence sets, training loss was averaged across all valid sets for each run.
 At evaluation, we averaged set-level logits to obtain one prediction per run,
 then computed AUC on the same test and holdout splits used for the tetramer and UC/CAP analyses.
 
-Head pooling mode was set to mean pooling, the model was trained for 10 epochs, and batch size was adjusted to maximize GPU memory utilization.
-Other hyperparameters (maximum length of sequence sets, learning rate, MLP size and dropout, and backbone unfreezing) were used for ablations.
+Head pooling mode was set to mean pooling, the model was trained for 5 epochs, and batch size was adjusted to maximize GPU memory utilization.
+Other hyperparameters (maximum length of sequence sets, learning rate, MLP size and dropout, and backbone freezing) were used for ablations.
 
 ### Cluster abundance profiles for tetramer counts
 
@@ -290,26 +289,26 @@ Given available hardware (16 GB GPU memory), we are limited to smaller model siz
 
 We trained HyenaDNA with the ablations listed below; results are summarized in Table 4.
 
-1. Best recipe (baseline)
-2. High learning rate (5e-4 instead of 2e-4)
-3. Add dropout to MLP classification head (0.2)
+1. Best recipe (baseline: unfrozen backbone, learning rate 1e-4, backbone learning rate 1e-5, MLP head with hidden width 512 and no dropout)
+2. High learning rate (5e-4 instead of 1e-4)
+3. Add dropout to the MLP classification head (0.2)
 4. MLP hidden layer width 256 (instead of 512)
-5. Unfrozen backbone (learning rate: 2e-4)
-6. Unfrozen backbone (low learning rate: 1e-5)
+5. Frozen backbone (head-only training)
+6. Low learning rate (1e-5)
 
-[Table 4 data](table4_hyenadna.html "HyenaDNA fine-tuning results on the multitask 32k model for the best recipe and targeted ablations,
-reported as mean ± standard deviation across five random seeds. Epoch is the mean epoch number with the best mean validation AUC across both tasks.").
+[Table 4 data](table4_hyenadna.html "HyenaDNA fine-tuning results on the 32k model for the best recipe and targeted ablations,
+reported as mean ± standard deviation across five random seeds. Epoch is the median epoch number selected per seed by the best validation AUC.").
 
 Several trends are apparent in these ablations.
-Increasing learning rate, adding dropout, or decreasing the MLP hidden layer width have no discernible effect on test or baseline performance within error.
-The improvements on holdout associated with unfrozen backbone (most notably for cancer type) are tempered by higher variability.
-Lowering the learning rate in our experiments did not stabilize the predictions with full model fine-tuning.
+Increasing the learning rate, adding dropout, or decreasing the MLP hidden layer width have no discernible effect on test or holdout performance within error.
+Freezing the backbone reduces holdout AUC (most notably for cancer type), confirming that unfrozen full-model fine-tuning is the more effective default.
+Lowering the learning rate further does not improve or stabilize the predictions.
 
 We also verified that using float16 AMP, gradient clipping (norm 1.0), or tuning by validation F1 instead of AUC did not move holdout AUC beyond error.
 
 #### Effects of modeled sequence length
 
-For each task (cancer diagnosis and cancer type) we trained separate classification heads on the same backbone (multitask model).
+For each task (cancer diagnosis and cancer type) we fine-tuned a separate HyenaDNA model from the same pretrained backbone with its own classification head.
 We varied the length per set (1k, 2k, 4k, 8k, and 16k positions) to study how much sequence context per run matters.
 A single large cache (16k length for each sequence set) was built from randomly sampled FASTA sequences after skipping the first 1000 in each run.
 Shorter training configurations were obtained from that cache by truncating to the target length.

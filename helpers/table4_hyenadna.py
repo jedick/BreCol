@@ -3,19 +3,12 @@
 Build Table 4 (HyenaDNA ablations) as HTML under manuscript/table4_hyenadna.html.
 
 Reads ``experiments.yaml`` ``train_hyenadna.experiments`` (row order preserved)
-and aggregates tuning epoch plus ``metrics.test.auc`` /
+and aggregates the tuning epoch plus ``metrics.test.auc`` /
 ``metrics.holdout.auc`` from per-seed JSON under ``results/hyenadna/``.
 
-Single-task runs use ``cd_*`` / ``ct_*`` filename prefixes with flat
-``metrics`` objects. Multitask runs use the ``mt_*`` prefix; each file nests
-metrics under ``cancer_diagnosis`` and ``cancer_type``.
-
-Consecutive YAML rows dedicated to diagnosis-only and type-only tasks are
-paired into **one table row** (diagnosis metrics from the first available slot,
-type metrics from the other). Multitask rows occupy a full row. A YAML row with
-a YAML task list ``[cancer_diagnosis, cancer_type]`` (grid, not multitask)
-also fills both sides from ``cd_*`` and ``ct_*`` files sharing the experiment
-``name``.
+Each ablation row trains separate cancer-diagnosis and cancer-type heads
+(``cd_*.json`` and ``ct_*.json`` files sharing the experiment ``name``); both
+sides of a row read flat ``metrics`` objects from their respective files.
 
 YAML ``random_seed`` lists the intended seeds; partial result trees are aggregated
 (no hard exit for missing seeds). Diagnostics use a fixed two-section layout
@@ -49,23 +42,13 @@ ABLATION_DESCRIPTIONS: Dict[str, str] = {
     "high_lr": "2",
     "dropout_0.2": "3",
     "hidden_256": "4",
-    "unfrozen_backbone": "5",
-    "unfrozen_backbone_low_lr": "6",
-    #"no_dropout": "No dropout in classification heads",
-    #"hidden_64": "MLP with 64-width hidden layer",
-    #"low_lr": "Low learning rate (1e-5 instead of 2e-4)",
-    #"no_study_balanced": "Random training sampler (no study-balanced sampling)",
-    #"class_balanced": "Balanced class weighting",
-    #"head_linear": "Linear classification head instead of MLP",
+    "frozen_backbone": "5",
+    "low_lr": "6",
 }
 TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("cd", "Cancer diagnosis"),
     ("ct", "Cancer type"),
 )
-
-METRIC_KEY_CD = "cancer_diagnosis"
-METRIC_KEY_CT = "cancer_type"
-MULTITASK_TASK = "multitask"
 
 DECIMALS = 2
 OUTPUT_REL = Path("manuscript") / "table4_hyenadna.html"
@@ -200,56 +183,25 @@ def _parse_seed_spec(raw: object) -> Set[int]:
     )
 
 
-def _experiment_task_mode(merged_task: object) -> str:
-    """
-    Return layout for one YAML experiment row:
-
-    multitask_file   — mt_*.json, nested metrics keys
-    dual_file        — cd_*.json + ct_*.json (comma-separated diagnosis+type grid)
-    cancer_diagnosis — cd_* only
-    cancer_type      — ct_* only
-    """
-    if isinstance(merged_task, (list, tuple)):
-        tokens = [str(tok).strip().lower() for tok in merged_task if str(tok).strip()]
+def _parse_task_spec(raw: object) -> Tuple[str, ...]:
+    """Return the (sorted) set of task tokens this experiment row produces."""
+    if isinstance(raw, (list, tuple)):
+        tokens = [str(tok).strip().lower() for tok in raw if str(tok).strip()]
     else:
-        task = str(merged_task or "").strip()
-        if not task:
-            tokens = []
-        elif task.lower() == MULTITASK_TASK:
-            tokens = [MULTITASK_TASK]
-        else:
-            tokens = [task.lower()]
-
-    def _canonical_one(tok: str) -> Optional[str]:
-        if tok == "multitask":
-            return MULTITASK_TASK
-        if tok == "cancer_diagnosis":
-            return "cancer_diagnosis"
-        if tok == "cancer_type":
-            return "cancer_type"
-        return None
+        task = str(raw or "").strip().lower()
+        tokens = [task] if task else []
 
     seen: Set[str] = set()
     for t in tokens:
-        c = _canonical_one(t)
-        if c is None:
-            raise SystemExit(f"Unsupported train_hyenadna task token {t!r}.")
-        if c == MULTITASK_TASK:
-            if len(tokens) > 1:
-                raise SystemExit(
-                    "Multitask must not be combined with other tasks in one experiment row; "
-                    "use task: multitask alone."
-                )
-            return "multitask_file"
-        seen.add(c)
-    uniq = tuple(sorted(seen))
-    if not uniq:
-        return "cancer_diagnosis"
-    if len(uniq) == 1:
-        return str(uniq[0])
-    if uniq == ("cancer_diagnosis", "cancer_type"):
-        return "dual_file"
-    raise SystemExit(f"Unsupported combined task specification {tokens!r}.")
+        if t not in ("cancer_diagnosis", "cancer_type"):
+            raise SystemExit(
+                f"Unsupported train_hyenadna task token {t!r}; "
+                "expected cancer_diagnosis or cancer_type."
+            )
+        seen.add(t)
+    if not seen:
+        return ("cancer_diagnosis",)
+    return tuple(sorted(seen))
 
 
 def _experiment_rows(repo_root: Path) -> List[Dict[str, object]]:
@@ -284,12 +236,12 @@ def _experiment_rows(repo_root: Path) -> List[Dict[str, object]]:
                 f"{name}: cannot resolve max_length from defaults+overrides ({exc})."
             )
         expected_seeds = _parse_seed_spec(merged.get("random_seed"))
-        task_mode = _experiment_task_mode(merged.get("task"))
+        tasks = _parse_task_spec(merged.get("task"))
         out.append(
             {
                 "name": name,
                 "description": ABLATION_DESCRIPTIONS[name],
-                "task_mode": task_mode,
+                "tasks": tasks,
                 "max_length": max_length,
                 "expected_seeds": expected_seeds,
             }
@@ -360,41 +312,6 @@ def _read_flat_metrics(path: Path) -> Tuple[int, float, float]:
     return int(best_epoch), t, h
 
 
-def _read_multitask_metrics(path: Path) -> Tuple[int, Tuple[float, float], Tuple[float, float]]:
-    """Return (epoch, (cd_test, cd_hold), (ct_test, ct_hold)) from multitask JSON."""
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise SystemExit(f"{path}: expected a JSON object.")
-    tuning = data.get("tuning") or {}
-    best_epoch = tuning.get("best_epoch")
-    if not isinstance(best_epoch, int):
-        raise SystemExit(f"{path}: missing or non-integer tuning.best_epoch.")
-    metrics = data.get("metrics") or {}
-
-    def _pair(task_key: str) -> Tuple[float, float]:
-        blob = metrics.get(task_key)
-        if not isinstance(blob, dict):
-            raise SystemExit(
-                f"{path}: missing metrics subtree {task_key!r} "
-                "(expected multitask layout)."
-            )
-        for split in ("test", "holdout"):
-            if not isinstance(blob.get(split), dict):
-                raise SystemExit(f"{path}: metrics[{task_key!r}][{split!r}] not an object.")
-        test_v = blob["test"].get("auc")
-        hold_v = blob["holdout"].get("auc")
-        if test_v is None or hold_v is None:
-            raise SystemExit(f"{path}: missing auc for {task_key}.")
-        t, h = float(test_v), float(hold_v)
-        if not math.isfinite(t) or not math.isfinite(h):
-            raise SystemExit(f"{path}: non-finite AUC under {task_key}.")
-        return t, h
-
-    cd_pair = _pair(METRIC_KEY_CD)
-    ct_pair = _pair(METRIC_KEY_CT)
-    return int(best_epoch), cd_pair, ct_pair
-
-
 def _aggregate_seed_files_flat(
     label: str,
     files: List[Tuple[int, Path]],
@@ -420,76 +337,30 @@ def _aggregate_seed_files_flat(
     }
 
 
-def _aggregate_mt_files(
-    label: str,
-    files: List[Tuple[int, Path]],
-    expected_seeds: Set[int],
-    *,
-    recorder: GapRecorder,
-) -> TaskMetricsCols:
-    use_files = _select_seed_files(label, files, expected_seeds, recorder=recorder)
-    if not use_files:
-        raise RuntimeError(label)
-    cd_ep: List[int] = []
-    ct_ep: List[int] = []
-    cd_test: List[float] = []
-    cd_hold: List[float] = []
-    ct_test: List[float] = []
-    ct_hold: List[float] = []
-    for _seed, path in use_files:
-        ep, (t_cd, h_cd), (t_ct, h_ct) = _read_multitask_metrics(path)
-        cd_ep.append(ep)
-        ct_ep.append(ep)
-        cd_test.append(t_cd)
-        cd_hold.append(h_cd)
-        ct_test.append(t_ct)
-        ct_hold.append(h_ct)
-    # Same checkpoint picks one epoch column; duplication keeps median-of-epochs stable.
-    return {
-        "cd": {"best_epochs": cd_ep, "test_aucs": cd_test, "hold_aucs": cd_hold},
-        "ct": {"best_epochs": ct_ep, "test_aucs": ct_test, "hold_aucs": ct_hold},
-    }
-
-
 def _load_task_cols_for_spec(
     hyenadna_dir: Path,
     spec: Dict[str, object],
     *,
     recorder: GapRecorder,
-) -> Optional[TaskMetricsCols]:
+) -> TaskMetricsCols:
     name = str(spec["name"])
     max_length = int(spec["max_length"])
     seeds = spec["expected_seeds"]
-    mode = str(spec["task_mode"])
-
-    if mode == "multitask_file":
-        files_mt = _seed_files(hyenadna_dir, "mt", name, max_length)
-        if not files_mt:
-            return None
-        return _aggregate_mt_files(f"mt_{name}", files_mt, set(seeds), recorder=recorder)  # type: ignore[arg-type]
+    tasks = tuple(spec["tasks"])  # type: ignore[arg-type]
 
     cols: TaskMetricsCols = {}
-
-    need_cd = mode in ("cancer_diagnosis", "dual_file")
-    need_ct = mode in ("cancer_type", "dual_file")
-
-    if need_cd:
+    if "cancer_diagnosis" in tasks:
         files_cd = _seed_files(hyenadna_dir, "cd", name, max_length)
         if files_cd:
-            cols["cd"] = _aggregate_seed_files_flat(f"cd_{name}", files_cd, set(seeds), recorder=recorder)  # type: ignore[arg-type]
-    if need_ct:
+            cols["cd"] = _aggregate_seed_files_flat(
+                f"cd_{name}", files_cd, set(seeds), recorder=recorder  # type: ignore[arg-type]
+            )
+    if "cancer_type" in tasks:
         files_ct = _seed_files(hyenadna_dir, "ct", name, max_length)
         if files_ct:
-            cols["ct"] = _aggregate_seed_files_flat(f"ct_{name}", files_ct, set(seeds), recorder=recorder)  # type: ignore[arg-type]
-
-    if mode == "dual_file":
-        if "cd" not in cols or "ct" not in cols:
-            return None
-        return cols
-    if need_cd and "cd" not in cols:
-        return None
-    if need_ct and "ct" not in cols:
-        return None
+            cols["ct"] = _aggregate_seed_files_flat(
+                f"ct_{name}", files_ct, set(seeds), recorder=recorder  # type: ignore[arg-type]
+            )
     return cols
 
 
@@ -505,139 +376,30 @@ def collect_table_rows(
     rows_out: List[Dict[str, object]] = []
     missing: List[str] = []
 
-    pending_cd: Optional[Dict[str, object]] = None
-    pending_cd_metrics: Optional[Dict[str, List[float]]] = None
+    for spec in experiment_rows:
+        name = str(spec["name"])
+        tasks = tuple(spec["tasks"])  # type: ignore[arg-type]
+        max_length = int(spec["max_length"])
+        cols = _load_task_cols_for_spec(hyenadna_dir, cast(Dict[str, object], spec), recorder=recorder)
 
-    def flush_cd() -> None:
-        nonlocal pending_cd, pending_cd_metrics
-        if pending_cd is None:
-            return
-        name = str(pending_cd["name"])
-        tm_cd = pending_cd_metrics or _empty_task_metrics()
-        tm_ct = _empty_task_metrics()
+        need_cd = "cancer_diagnosis" in tasks
+        need_ct = "cancer_type" in tasks
+        if need_cd and "cd" not in cols:
+            missing.append(f"cd_{name} ({_len_token(max_length)})")
+            continue
+        if need_ct and "ct" not in cols:
+            missing.append(f"ct_{name} ({_len_token(max_length)})")
+            continue
+
+        tm_cd = cols.get("cd") or _empty_task_metrics()
+        tm_ct = cols.get("ct") or _empty_task_metrics()
         rows_out.append(
             {
                 "label_html": html.escape(name),
-                "description_html_pair": (
-                    pending_cd["description"],  # raw HTML fragment
-                    None,
-                ),
-                "task_metrics": {
-                    "cd": tm_cd,
-                    "ct": tm_ct,
-                },
+                "description_html": spec["description"],
+                "task_metrics": {"cd": tm_cd, "ct": tm_ct},
             }
         )
-        pending_cd = None
-        pending_cd_metrics = None
-
-    def flush_ct_alone(bundle: Dict[str, object], m_ct: Dict[str, List[float]]) -> None:
-        name = str(bundle["name"])
-        rows_out.append(
-            {
-                "label_html": html.escape(name),
-                "description_html_pair": (bundle["description"], None),
-                "task_metrics": {
-                    "cd": _empty_task_metrics(),
-                    "ct": m_ct,
-                },
-            }
-        )
-
-    i = 0
-    while i < len(experiment_rows):
-        spec = experiment_rows[i]
-        mode = str(spec["task_mode"])
-        label = html.escape(str(spec["name"]))
-
-        if mode == "multitask_file":
-            flush_cd()
-            cols = _load_task_cols_for_spec(hyenadna_dir, cast(Dict[str, object], spec), recorder=recorder)
-            if cols is None:
-                missing.append(f"mt_{spec['name']} ({_len_token(int(spec['max_length']))})")
-                i += 1
-                continue
-            rows_out.append(
-                {
-                    "label_html": label,
-                    "description_html_pair": (spec["description"], None),
-                    "task_metrics": cols,
-                }
-            )
-            i += 1
-            continue
-
-        if mode == "dual_file":
-            flush_cd()
-            cols = _load_task_cols_for_spec(hyenadna_dir, cast(Dict[str, object], spec), recorder=recorder)
-            if cols is None:
-                mn = spec["name"]
-                missing.append(
-                    f"cd_and_ct_{mn} ({_len_token(int(spec['max_length']))})"
-                )
-            else:
-                rows_out.append(
-                    {
-                        "label_html": label,
-                        "description_html_pair": (spec["description"], None),
-                        "task_metrics": cols,
-                    }
-                )
-            i += 1
-            continue
-
-        if mode == "cancer_diagnosis":
-            cols = _load_task_cols_for_spec(hyenadna_dir, cast(Dict[str, object], spec), recorder=recorder)
-            tm_cd_data = cols.get("cd") if cols else None
-            if tm_cd_data is None:
-                flush_cd()
-                missing.append(f"cd_{spec['name']} ({_len_token(int(spec['max_length']))})")
-                i += 1
-                continue
-            merged_cd = tm_cd_data
-            if pending_cd is not None:
-                flush_cd()
-            pending_cd = spec
-            pending_cd_metrics = merged_cd
-            i += 1
-            continue
-
-        if mode == "cancer_type":
-            cols = _load_task_cols_for_spec(hyenadna_dir, cast(Dict[str, object], spec), recorder=recorder)
-            tm_ct = cols.get("ct") if cols else None
-            if tm_ct is None:
-                flush_cd()
-                missing.append(f"ct_{spec['name']} ({_len_token(int(spec['max_length']))})")
-                i += 1
-                continue
-
-            if pending_cd is None:
-                flush_ct_alone(spec, tm_ct)
-            else:
-                cd_bundle = pending_cd
-                cd_desc_raw = cd_bundle["description"]
-                name_cd = cd_bundle["name"]
-                name_ct = spec["name"]
-                paired_label = (
-                    f"{html.escape(str(name_cd))} / {html.escape(str(name_ct))}"
-                )
-                tm_cd_eff = pending_cd_metrics or _empty_task_metrics()
-                tm_ct_eff = tm_ct
-                rows_out.append(
-                    {
-                        "paired_names_html": paired_label,
-                        "description_html_pair": (cd_desc_raw, None),
-                        "task_metrics": {"cd": tm_cd_eff, "ct": tm_ct_eff},
-                    }
-                )
-                pending_cd = None
-                pending_cd_metrics = None
-            i += 1
-            continue
-
-        raise SystemExit(f"Internal error: unknown task_mode {mode!r}.")
-
-    flush_cd()
 
     if missing:
         raise SystemExit(_format_problem_report(recorder, missing_ablations=missing))
@@ -673,7 +435,7 @@ def format_table_html(
     *,
     decimals: int,
 ) -> str:
-    """Render HTML. Rows carry prose (and optional pairing) plus ``task_metrics``."""
+    """Render HTML. Rows carry prose plus ``task_metrics``."""
 
     thead = (
         "<thead>\n"
@@ -700,19 +462,7 @@ def format_table_html(
         tm_cd_raw = dict(task_metrics.get("cd") or _empty_task_metrics())
         tm_ct_raw = dict(task_metrics.get("ct") or _empty_task_metrics())
 
-
-        paired_names_html = row.get("paired_names_html")
-        pair = row.get("description_html_pair")
-        if isinstance(paired_names_html, str):
-            first_cell = paired_names_html
-        elif isinstance(pair, tuple) and pair[1] is not None:
-            d0 = pair[0]
-            d1 = pair[1]
-            first_cell = f"{d0} / {d1}"
-        elif isinstance(pair, tuple):
-            first_cell = str(pair[0])
-        else:
-            first_cell = ""
+        desc_cell = str(row.get("description_html") or row.get("label_html") or "")
 
         cd_med_ep = html.escape(_fmt_median_epoch(tm_cd_raw["best_epochs"]))
         cd_test = html.escape(_fmt_mean_std(tm_cd_raw["test_aucs"], decimals=decimals))
@@ -721,7 +471,6 @@ def format_table_html(
         ct_test = html.escape(_fmt_mean_std(tm_ct_raw["test_aucs"], decimals=decimals))
         ct_hold = html.escape(_fmt_mean_std(tm_ct_raw["hold_aucs"], decimals=decimals))
 
-        desc_cell = first_cell.strip() if first_cell else str(row.get("label_html", ""))
         body_rows.append(
             f"<tr>\n<td>{desc_cell}</td>"
             f"<td>{cd_med_ep}</td>"

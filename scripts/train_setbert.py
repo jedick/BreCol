@@ -305,7 +305,7 @@ def _peek_cache_metadata(pt_path: Path) -> Dict[str, Any]:
 
 
 def _pos_neg_for_task(task: str) -> Tuple[str, str]:
-    """Return (pos_label, neg_label) using the same convention as hyenadna_multitask."""
+    """Return (pos_label, neg_label) using the same convention as train_hyenadna."""
     if task == "cancer_diagnosis":
         return ("cancer", "healthy")
     if task == "cancer_type":

@@ -7,13 +7,8 @@
 #   - Add head_pooling_mode parameter to SequenceDecoder / HyenaDNAModel
 #   - Optional MLP classification head: head_hidden, head_dropout on SequenceDecoder
 #     (0 = linear head; positive int = Linear -> GELU -> Dropout -> Linear)
-#   - Split SequenceDecoder pooling from logits: pooled_representation() then output_transform
 #   - Fix pool mode: use sliding-window mean restrict only (old file assigned a wrong
 #     cumsum/arange lambda before the correct restrict, so pool mode was broken)
-#   - Multitask classification: multitask_class_counts builds a shared pooler plus
-#     per-task heads (_build_classification_output); forward returns a list of logits
-#   - HyenaDNAModel._pooled_representation() for shared pooling; single-task forward
-#     applies head.output_transform(pooled) after pooling
 # Modified by: Jeffrey Dick with AI assistance
 
 # -*- coding: utf-8 -*-
@@ -809,13 +804,10 @@ class SequenceDecoder(nn.Module):
         if mode == 'ragged':
             assert not use_lengths
 
-    def pooled_representation(self, x, state=None, lengths=None, l_output=None):
+    def forward(self, x, state=None, lengths=None, l_output=None):
         """
-        Pool/slice sequence hidden states to the same tensor shape used by ``output_transform``
-        in ``forward`` (before the final linear / MLP).
-
         x: (n_batch, l_seq, d_model)
-        Returns: (n_batch, d_model) when squeeze is True, else (n_batch, l_output, d_model)
+        Returns: (n_batch, l_output, d_output)
         """
 
         if self.l_output is None:
@@ -877,16 +869,7 @@ class SequenceDecoder(nn.Module):
             assert x.size(-2) == 1
             x = x.squeeze(-2)
 
-        return x
-
-    def forward(self, x, state=None, lengths=None, l_output=None):
-        """
-        x: (n_batch, l_seq, d_model)
-        Returns: (n_batch, l_output, d_output)
-        """
-        x = self.pooled_representation(x, state=state, lengths=lengths, l_output=l_output)
-        x = self.output_transform(x)
-        return x
+        return self.output_transform(x)
 
     def step(self, x, state=None):
         # Ignore all length logic
@@ -907,24 +890,6 @@ feasible on colab.
 """
 
 
-def _build_classification_output(
-    d_model: int,
-    n_classes: int,
-    *,
-    head_hidden: int,
-    head_dropout: float,
-) -> nn.Module:
-    if int(head_hidden) <= 0:
-        return nn.Linear(d_model, int(n_classes))
-    hidden = int(head_hidden)
-    return nn.Sequential(
-        nn.Linear(d_model, hidden),
-        nn.GELU(),
-        nn.Dropout(float(head_dropout)),
-        nn.Linear(hidden, int(n_classes)),
-    )
-
-
 class HyenaDNAModel(nn.Module):
 
     def __init__(self, d_model: int, n_layer: int, d_inner: int, vocab_size: int,
@@ -935,7 +900,6 @@ class HyenaDNAModel(nn.Module):
                  head_pooling_mode: str = "pool",
                  head_hidden: int = 0,
                  head_dropout: float = 0.0,
-                 multitask_class_counts: Optional[Sequence[int]] = None,
                  device=None, dtype=None, **kwargs) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super().__init__()
@@ -943,8 +907,6 @@ class HyenaDNAModel(nn.Module):
             vocab_size += pad_vocab_size_multiple - (vocab_size % pad_vocab_size_multiple)
 
         self.use_head = use_head
-        mt_counts = list(multitask_class_counts) if multitask_class_counts is not None else []
-        self.multitask_mode = bool(use_head) and len(mt_counts) >= 2
 
         # check if layer (config) has d_model (HF code differs from main Safari code)
         if 'd_model' not in layer:
@@ -963,36 +925,15 @@ class HyenaDNAModel(nn.Module):
         # we only need a head if doing classification, otherwise we'll use the
         # hidden states as embeddings
         self.head: Optional[SequenceDecoder] = None
-        self.pooler: Optional[SequenceDecoder] = None
-        self.task_heads: Optional[nn.ModuleList] = None
         if self.use_head:
-            if self.multitask_mode:
-                self.pooler = SequenceDecoder(
-                    d_model=d_model,
-                    d_output=None,
-                    l_output=0,
-                    mode=head_pooling_mode,
-                )
-                self.task_heads = nn.ModuleList(
-                    [
-                        _build_classification_output(
-                            d_model,
-                            int(n_cls),
-                            head_hidden=head_hidden,
-                            head_dropout=head_dropout,
-                        )
-                        for n_cls in mt_counts
-                    ]
-                )
-            else:
-                self.head = SequenceDecoder(
-                    d_model=d_model,
-                    d_output=n_classes,
-                    l_output=0,
-                    mode=head_pooling_mode,
-                    head_hidden=head_hidden,
-                    head_dropout=float(head_dropout),
-                )
+            self.head = SequenceDecoder(
+                d_model=d_model,
+                d_output=n_classes,
+                l_output=0,
+                mode=head_pooling_mode,
+                head_hidden=head_hidden,
+                head_dropout=float(head_dropout),
+            )
 
         # Initialize weights and apply final processing
         self.apply(partial(_init_weights, n_layer=n_layer,
@@ -1004,15 +945,6 @@ class HyenaDNAModel(nn.Module):
     # def tie_weights(self):
     #     self.head.weight = self.backbone.embeddings.word_embeddings.weight
 
-    def _pooled_representation(self, hidden_states):
-        if self.multitask_mode:
-            if self.pooler is None:
-                raise RuntimeError("multitask_mode requires pooler.")
-            return self.pooler.pooled_representation(hidden_states)
-        if self.head is None:
-            raise RuntimeError("Single-task forward requires head.")
-        return self.head.pooled_representation(hidden_states)
-
     def forward(self, input_ids, position_ids=None, state=None):
         # state for the repo interface
         hidden_states = self.backbone(input_ids, position_ids=position_ids)
@@ -1020,14 +952,9 @@ class HyenaDNAModel(nn.Module):
         if not self.use_head:
             return hidden_states
 
-        pooled = self._pooled_representation(hidden_states)
-        if self.multitask_mode:
-            if self.task_heads is None:
-                raise RuntimeError("multitask_mode requires task_heads.")
-            return [head(pooled) for head in self.task_heads]
         if self.head is None:
             raise RuntimeError("Single-task forward requires head.")
-        return self.head.output_transform(pooled)
+        return self.head(hidden_states)
 
 """# Data pipeline
 

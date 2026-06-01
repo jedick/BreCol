@@ -5,7 +5,6 @@ Public API
 ----------
 build_run_table()             Run + sample_label + study_name + cancer_type + split
 build_run_task_table(task)    extends the above with a task_label column
-build_multitask_run_table()   full run table with cd_task_label and ct_task_label columns
 require_binary_classes()      validates a label array has exactly two classes
 binary_auc_from_scores()  AUC from positive-class probability scores
 
@@ -314,23 +313,6 @@ def build_run_task_table(task: str, *, config_path: Optional[Path] = None) -> pd
         train_df = df[df["split"] == "train"]
     """
     return _apply_task_labels(build_run_table(config_path=config_path), task)
-
-
-def build_multitask_run_table(*, config_path: Optional[Path] = None) -> pd.DataFrame:
-    """Return all runs with canonical splits and two binary label columns.
-
-    Columns: Run, sample_label, study_name, cancer_type, split, cd_task_label,
-    ct_task_label. ``cd_task_label`` is cancer vs healthy for every row.
-    ``ct_task_label`` is the cancer sample_label for cancer rows and empty for healthy.
-    """
-    out = build_run_table(config_path=config_path)
-    is_cancer = out["sample_label"].isin(CANCER_LABELS)
-    out = out.copy()
-    out["cd_task_label"] = np.where(is_cancer, "cancer", "healthy")
-    out["ct_task_label"] = np.where(
-        is_cancer, out["sample_label"].astype(str), ""
-    )
-    return out
 
 
 def require_binary_classes(y: np.ndarray, *, split_name: str, task: str) -> None:

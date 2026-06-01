@@ -132,20 +132,16 @@ train_hyenadna:
   ## Data
   # Non-overlapping sequence sets per Run (each set packed to max_length tokens)
   num_sets: 5
-  # Max sequence length; null = use bundled default for model (e.g. 1024 / 32768)
+  # Max sequence length; null = use bundled default for model
   max_length: 2048
-  batch_size: 80
+  batch_size: 20
 
   ## Task/tuning
-  # Task: cancer_diagnosis, cancer_type, or multitask (two heads, shared backbone)
-  task: multitask
+  # Task: cancer_diagnosis or cancer_type
+  task: cancer_diagnosis
   # Validation metric used to pick the best epoch: auc | f1
   tuning_metric: auc
-  # multitask: loss = loss_ratio * L_diagnosis + (1 - loss_ratio) * L_type (1 = diagnosis only)
-  loss_ratio: 0.5
-  # multitask: validation checkpoint blends diagnosis vs type scores (1 = diagnosis only, 0 = type only, 0.5 = equal weight)
-  tuning_ratio: 0.5
-  
+
   ## Sampling/weighting
   # train sampler: random | study_balanced (approximate uniform sampling over study_name)
   train_sampler: study_balanced
@@ -153,22 +149,22 @@ train_hyenadna:
   class_weight: none
 
   ## Optimization
-  epochs: 10
+  epochs: 5
   random_seed: 0
   num_workers: 0
-  learning_rate: 2.0e-4
-  weight_decay: 0.01
+  learning_rate: 1.0e-4
+  weight_decay: 0.1
   # Backbone freezing: 0 = train backbone from epoch 1; N > 0 freezes epochs 1..N then unfreezes
   # If N >= epochs, the entire run is head-only
-  freeze_backbone_epochs: 10
+  freeze_backbone_epochs: 0
   # lr_backbone = learning_rate * backbone_lr_mult; heads use learning_rate unchanged (1.0 = no scale)
-  backbone_lr_mult: 1.0
+  backbone_lr_mult: 0.1
 
-  ## Classification head / heads (for multitask)
+  ## Classification head
   # 0 = linear head; positive int = one MLP hidden layer width
-  head_hidden: 512
+  head_hidden: 256
   # Dropout after the MLP hidden GELU (ignored when head_hidden is 0)
-  head_dropout: 0.0
+  head_dropout: 0.1
   # SequenceDecoder head mode in standalone_hyenadna.py: last, first, pool, sum
   head_pooling_mode: pool
 
@@ -231,7 +227,7 @@ train_setbert:
   # Random init is seeded by train_setbert.random_seed for reproducibility.
   weight_init: pretrained
 
-  ## Task / tuning (single-task only; no multitask in this implementation)
+  ## Task / tuning
   # cancer_diagnosis or cancer_type
   task: cancer_type
   # Validation metric used to pick the best epoch: auc | f1

@@ -5,8 +5,8 @@ Build Figure 2: HyenaDNA AUC vs sequence length per set (test vs holdout).
 Layout:
 - 1 row, 2 columns (cancer diagnosis, cancer type)
 - x-axis = length per set (1k, 2k, 4k, 8k, 16k) from max_length train_hyenadna runs
-- y-axis = AUC from ``results/hyenadna/mt_max_length_<bp>_<token>_s*.json``
-  (mean and sample stdev across seeds)
+- y-axis = AUC from ``results/hyenadna/{cd,ct}_max_length_<bp>_<token>_s*.json``
+  (mean and sample stdev across seeds; one file per task per seed)
 
 Each subplot draws:
 - test split: thin dashed line with markers and ±1 stdev error bars
@@ -32,13 +32,12 @@ from typing import Dict, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 
-TASK_COLUMNS: Tuple[Tuple[str, str], ...] = (
-    ("cancer_diagnosis", "Cancer diagnosis"),
-    ("cancer_type", "Cancer type"),
+TASK_COLUMNS: Tuple[Tuple[str, str, str], ...] = (
+    ("cancer_diagnosis", "cd", "Cancer diagnosis"),
+    ("cancer_type", "ct", "Cancer type"),
 )
 LENGTHS_BP: Tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768)
-RESULTS_GLOB = "mt_max_length_*_*_s*.json"
-_RESULT_RE = re.compile(r"mt_max_length_(\d+)_(\d+k)_s\d+\.json$")
+_RESULT_RE = re.compile(r"^(cd|ct)_max_length_(\d+)_(\d+k)_s\d+\.json$")
 
 OUTPUT_PNG = Path("manuscript") / "figure2_hyenadna.png"
 OUTPUT_SVG = Path("manuscript") / "figure2_hyenadna.svg"
@@ -58,42 +57,41 @@ def _len_token(bp: int) -> str:
     return f"{bp // 1024}k"
 
 
-def _read_task_aucs(path: Path, task_key: str) -> Tuple[float, float]:
+def _read_flat_aucs(path: Path) -> Tuple[float, float]:
+    """Return (test_auc, holdout_auc) from one single-task JSON file."""
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit(f"{path}: expected a JSON object.")
     metrics = data.get("metrics") or {}
-    blob = metrics.get(task_key)
-    if not isinstance(blob, dict):
-        raise SystemExit(f"{path}: missing metrics[{task_key!r}] (expected multitask layout).")
     for split in ("test", "holdout"):
-        part = blob.get(split)
+        part = metrics.get(split)
         if not isinstance(part, dict):
-            raise SystemExit(f"{path}: metrics[{task_key!r}][{split!r}] must be an object.")
-    test_v = blob["test"].get("auc")
-    hold_v = blob["holdout"].get("auc")
+            raise SystemExit(f"{path}: metrics[{split!r}] must be an object.")
+    test_v = metrics["test"].get("auc")
+    hold_v = metrics["holdout"].get("auc")
     if test_v is None or hold_v is None:
-        raise SystemExit(f"{path}: missing test or holdout auc for {task_key}.")
+        raise SystemExit(f"{path}: missing test or holdout auc.")
     t, h = float(test_v), float(hold_v)
     if not math.isfinite(t) or not math.isfinite(h):
-        raise SystemExit(f"{path}: non-finite AUC for {task_key} ({t}, {h}).")
+        raise SystemExit(f"{path}: non-finite AUC ({t}, {h}).")
     return t, h
 
 
-def _discover_result_files(hyenadna_dir: Path) -> Dict[int, List[Path]]:
-    """Map max_length (bp) to multitask result JSON paths."""
-    by_bp: Dict[int, List[Path]] = {}
-    for path in sorted(hyenadna_dir.glob(RESULTS_GLOB)):
+def _discover_result_files(hyenadna_dir: Path) -> Dict[str, Dict[int, List[Path]]]:
+    """Map task abbrv ('cd' / 'ct') -> max_length (bp) -> list of result JSON paths."""
+    by_task_bp: Dict[str, Dict[int, List[Path]]] = {"cd": {}, "ct": {}}
+    for path in sorted(hyenadna_dir.glob("*_max_length_*_*_s*.json")):
         if path.name.endswith("_training.json"):
             continue
         m = _RESULT_RE.match(path.name)
         if m is None:
             continue
-        bp = int(m.group(1))
-        if m.group(2) != _len_token(bp):
+        abbrv = m.group(1)
+        bp = int(m.group(2))
+        if m.group(3) != _len_token(bp):
             continue
-        by_bp.setdefault(bp, []).append(path)
-    return by_bp
+        by_task_bp[abbrv].setdefault(bp, []).append(path)
+    return by_task_bp
 
 
 def _aggregate_seed_values(values: Sequence[float]) -> Tuple[float, float]:
@@ -107,17 +105,18 @@ def _aggregate_seed_values(values: Sequence[float]) -> Tuple[float, float]:
 
 def collect_series(hyenadna_dir: Path) -> Dict[str, List[LengthPoint]]:
     """Per task key, return length points that have on-disk seed results."""
-    by_bp = _discover_result_files(hyenadna_dir)
-    out: Dict[str, List[LengthPoint]] = {task_key: [] for task_key, _ in TASK_COLUMNS}
-    for bp in LENGTHS_BP:
-        paths = by_bp.get(bp) or []
-        if not paths:
-            continue
-        for task_key, _ in TASK_COLUMNS:
+    by_task_bp = _discover_result_files(hyenadna_dir)
+    out: Dict[str, List[LengthPoint]] = {task_key: [] for task_key, _, _ in TASK_COLUMNS}
+    for task_key, task_abbrv, _ in TASK_COLUMNS:
+        by_bp = by_task_bp.get(task_abbrv) or {}
+        for bp in LENGTHS_BP:
+            paths = by_bp.get(bp) or []
+            if not paths:
+                continue
             test_seed: List[float] = []
             hold_seed: List[float] = []
             for path in paths:
-                t, h = _read_task_aucs(path, task_key)
+                t, h = _read_flat_aucs(path)
                 test_seed.append(t)
                 hold_seed.append(h)
             test_mean, test_std = _aggregate_seed_values(test_seed)
@@ -135,7 +134,8 @@ def collect_series(hyenadna_dir: Path) -> Dict[str, List[LengthPoint]]:
     if not any(out.values()):
         raise SystemExit(
             "No max_length results found under "
-            f"{hyenadna_dir} (expected mt_max_length_<bp>_<token>_s*.json)."
+            f"{hyenadna_dir} (expected cd_max_length_<bp>_<token>_s*.json and "
+            "ct_max_length_<bp>_<token>_s*.json)."
         )
     return out
 
@@ -143,7 +143,7 @@ def collect_series(hyenadna_dir: Path) -> Dict[str, List[LengthPoint]]:
 def build_plot(series: Dict[str, List[LengthPoint]], output_path: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
 
-    for col, (task_key, task_label) in enumerate(TASK_COLUMNS):
+    for col, (task_key, _task_abbrv, task_label) in enumerate(TASK_COLUMNS):
         ax = axes[col]
         points = series[task_key]
         if not points:

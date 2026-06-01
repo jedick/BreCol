@@ -57,62 +57,64 @@ train_hyenadna:
   # Training script supports grids over task and random_seed
   # (e.g. task: [cancer_diagnosis,cancer_type], random_seed: [0,1,2])
   experiments:
-    # Timings (5 sets, max_length 2048, 10 epochs, 3 seeds):
-    # - Unfrozen backbone (batch_size=20 for 15GB GPU memory):
-    #   cancer_diagnosis (26 min), cancer_type (13 min), multitask (24 min)
-    # - Frozen backbone (batch_size=80 for 15GB GPU memory):
-    #   multitask (15 min)
-    # Estimated total time for 6 multitask experiments with 5 seeds:
-    #   5/3 * (4 * 15 + 2 * 24) = 180 min (3 hr)
     - name: best_recipe  # EXPT=1
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3,4]
     - name: high_lr  # EXPT=2
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3,4]
         learning_rate: 5.0e-4
     - name: dropout_0.2  # EXPT=3
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3,4]
         head_dropout: 0.2
     - name: hidden_256  # EXPT=4
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3,4]
         head_hidden: 256
-    - name: unfrozen_backbone  # EXPT=5
+    - name: frozen_backbone  # EXPT=5
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3,4]
-        freeze_backbone_epochs: 0
-        batch_size: 20
-    - name: unfrozen_backbone_low_lr  # EXPT=6
+        freeze_backbone_epochs: 10
+        batch_size: 80
+    - name: low_lr  # EXPT=6
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3,4]
-        freeze_backbone_epochs: 0
         learning_rate: 1.0e-5
-        batch_size: 20
-    # Increasing max_length experiment grid (ca. 9.5 hr)
-    - name: max_length_1024  # EXPT=7 (14 min)
+    # Increasing max_length experiment grid (per task, per seed)
+    - name: max_length_1024  # EXPT=7
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3]
         max_length: 1024
         batch_size: 160
-    - name: max_length_2048  # EXPT=8 (20 min)
+    - name: max_length_2048  # EXPT=8
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3]
         max_length: 2048
         batch_size: 80
-    - name: max_length_4096  # EXPT=9 (35 min)
+    - name: max_length_4096  # EXPT=9
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3]
         max_length: 4096
         batch_size: 40
-    - name: max_length_8192  # EXPT=10 (66 min)
+    - name: max_length_8192  # EXPT=10
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3]
         max_length: 8192
         batch_size: 20
-    - name: max_length_16384  # EXPT=11 (128 min)
+    - name: max_length_16384  # EXPT=11
       overrides:
+        task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2,3]
         max_length: 16384
         batch_size: 10
