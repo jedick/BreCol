@@ -151,8 +151,7 @@ and breast versus colorectal (cancer type) restricted to cancer-positive samples
 
 For all classification pipelines we dropped the first 1000 sequences in each run as a QC measure.
 We then randomly sampled 5000 sequences from the remaining sequences in each run (or used sequence sets packed to a maximum length for HyenaDNA training).
-These sequences were used to create caches of sequence-level tetramer counts and HyenaDNA run tensors
-that were sliced into for rapid experimentation with different sample sizes used for training.
+These sequences were used for both tetramer counts and HyenaDNA training.
 
 ### Run-level tetramer frequencies and classification pipeline
 
@@ -188,8 +187,8 @@ we fit each final pipeline on the training split.
 ### HyenaDNA sequence modeling and classification
 
 We trained HyenaDNA on 16S RNA sequence data to test an end-to-end sequence model.
-For each run, we read the FASTA file and split its sequences into a fixed number of non-overlapping sets.
-Each set was packed to the model length limit and tokenized at the DNA character level.
+The available context length for HyenaDNA was up to 16k in our experiments, which can fit many 16S sequences.
+To use this context, we built sets by packing sequences from each run into the context length, and repeated this to generate 5 sets per study.
 
 We initialized HyenaDNA from pretrained weights, using a multitask configuration (two MLP classification heads attached to the same backbone).
 In each forward pass, the cross-entropy loss for each task was computed separately and combined with equal weight.
@@ -311,9 +310,10 @@ We also verified that using float16 AMP, gradient clipping (norm 1.0), or tuning
 #### Effects of modeled sequence length
 
 For each task (cancer diagnosis and cancer type) we trained separate classification heads on the same backbone (multitask model).
-We varied the length per set (up to 1k, 2k, 4k, 8k, 16k, and 32k positions) to study how much sequence context per run matters.
-A single large cache (32k length for each sequence set) was built from randomly sampled FASTA sequences after skipping the first 1000 in each run.
+We varied the length per set (1k, 2k, 4k, 8k, and 16k positions) to study how much sequence context per run matters.
+A single large cache (16k length for each sequence set) was built from randomly sampled FASTA sequences after skipping the first 1000 in each run.
 Shorter training configurations were obtained from that cache by truncating to the target length.
+Taking 5 sets each at the 16k per-set context length, the mean number of sequences used per sample is {hyenadna_sequences_per_sample_text}.
 
 Figure 2 shows AUC on the test and holdout splits as a function of length per set, within each task (columns).
 Holdout performance is generally weaker than test performance.

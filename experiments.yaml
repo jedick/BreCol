@@ -116,11 +116,6 @@ train_hyenadna:
         random_seed: [0,1,2,3]
         max_length: 16384
         batch_size: 10
-    - name: max_length_32768  # EXPT=12 (307 min)
-      overrides:
-        random_seed: [0,1,2,3]
-        max_length: 32768
-        batch_size: 5
 
 train_setbert:
   results_json_template: results/setbert/{task_abbrv}_{name}_s{seed}.json

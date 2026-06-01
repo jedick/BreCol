@@ -110,6 +110,8 @@ help:
 	@echo "  make manuscript_pdf | manuscript_jekyll"
 	@echo "      Render manuscript/manuscript.md via Pandoc + BibTeX (references.bib, csl/nature.csl)."
 	@echo "      Outputs under manuscript/build/: manuscript.pdf, manuscript.jekyll.md."
+	@echo "      {key} placeholders in the body are substituted from manuscript/values.yaml,"
+	@echo "      which is (re)built from helpers/manuscript_values.py."
 	@echo ""
 	@echo "  make publish_blog BLOG_REPO=<path> [PUSH=1]"
 	@echo "      Render manuscript.jekyll.md and copy it (with figures and table HTML) into"
@@ -312,15 +314,31 @@ MANUSCRIPT_FILTER_INLINE := $(ROOT)/manuscript/filters/inline_html_tables.lua
 MANUSCRIPT_FILTER_NUMFIG := $(ROOT)/manuscript/filters/number_figures.lua
 MANUSCRIPT_FILTER_NUMTAB := $(ROOT)/manuscript/filters/number_tables.lua
 MANUSCRIPT_FILTER_TABCAP := $(ROOT)/manuscript/filters/gfm_table_captions.lua
+MANUSCRIPT_FILTER_VALUES := $(ROOT)/manuscript/filters/substitute_values.lua
+MANUSCRIPT_VALUES_YAML := $(ROOT)/manuscript/values.yaml
+MANUSCRIPT_VALUES_SCRIPT := $(ROOT)/helpers/manuscript_values.py
+HYENADNA_SEQUENCE_COUNTS := $(HYENADNA_RUN_TENSORS_DIR)/sequence_counts.csv
 MANUSCRIPT_LATEX_HEADER := $(ROOT)/manuscript/latex/figure_placement.tex
-MANUSCRIPT_DEPS := $(MANUSCRIPT_SRC) $(MANUSCRIPT_BIB) $(MANUSCRIPT_CSL) $(MANUSCRIPT_FILTER_INLINE)
+MANUSCRIPT_DEPS := $(MANUSCRIPT_SRC) $(MANUSCRIPT_BIB) $(MANUSCRIPT_CSL) \
+	$(MANUSCRIPT_FILTER_INLINE) $(MANUSCRIPT_FILTER_VALUES) $(MANUSCRIPT_VALUES_YAML)
 MANUSCRIPT_TABLE_HTML := $(wildcard $(ROOT)/manuscript/table*.html)
 
 $(MANUSCRIPT_BUILD_DIR):
 	@mkdir -p "$(MANUSCRIPT_BUILD_DIR)"
 
+# Manuscript text-substitution values (e.g. {mean_sequences_per_study_hyenadna_16k}).
+# Depends on the helper script and datasets.csv; sequence_counts.csv must already
+# exist (run `make hyenadna_run_tensors` to regenerate it). We don't list
+# sequence_counts.csv as a Make prerequisite because Make has no rule that
+# produces it directly -- the HyenaDNA tensor cache build writes it as a side
+# effect, and we don't want `make manuscript_pdf` to trigger that heavy job.
+$(MANUSCRIPT_VALUES_YAML): $(MANUSCRIPT_VALUES_SCRIPT) $(DATASETS_CSV)
+	cd "$(ROOT)" && $(PYTHON) helpers/manuscript_values.py
+
 $(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) $(MANUSCRIPT_LATEX_HEADER) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--metadata-file="$(MANUSCRIPT_VALUES_YAML)" \
+		--lua-filter "$(MANUSCRIPT_FILTER_VALUES)" \
 		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
 		--include-in-header="$(MANUSCRIPT_LATEX_HEADER)" \
 		--citeproc --pdf-engine=$(PDF_ENGINE) \
@@ -328,6 +346,8 @@ $(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) $(MANUSCRIPT_LATE
 
 $(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_FILTER_NUMFIG) $(MANUSCRIPT_FILTER_NUMTAB) $(MANUSCRIPT_FILTER_TABCAP) $(MANUSCRIPT_TABLE_HTML) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
+		--metadata-file="$(MANUSCRIPT_VALUES_YAML)" \
+		--lua-filter "$(MANUSCRIPT_FILTER_VALUES)" \
 		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
 		--lua-filter "$(MANUSCRIPT_FILTER_NUMTAB)" \
 		--citeproc \
