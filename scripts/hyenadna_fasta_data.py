@@ -25,6 +25,17 @@ SEP_TOKEN_ID = 1
 PAD_TOKEN_ID = 4
 
 
+def load_genome_models_section(defaults_path: Path) -> Dict[str, object]:
+    """Return the shared ``genome_models`` block as a plain dict."""
+    cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
+    if not isinstance(cfg, dict):
+        raise SystemExit(f"{defaults_path} must contain a YAML mapping.")
+    sec = cfg.get("genome_models")
+    if not isinstance(sec, dict):
+        raise SystemExit(f"{defaults_path} must define a genome_models mapping.")
+    return dict(sec)
+
+
 def load_train_hyenadna_section(defaults_path: Path) -> Dict[str, object]:
     cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
     sec = cfg.get("train_hyenadna")
@@ -39,13 +50,24 @@ def merge_train_hyenadna_config(
     *,
     expt: int,
 ) -> Tuple[Dict[str, object], Optional[str], Optional[str]]:
-    """Return merged train_hyenadna config, optional experiment name, results_json template.
+    """Return ``(merged config, optional experiment name, optional results_json template)``.
 
-    experiments.yaml ``train_hyenadna`` may set ``results_json_template`` and
-    ``sigsegv_retries`` (same level as the template); those merge into the baseline before
+    Merged baseline = ``genome_models`` block + ``train_hyenadna`` block. The two
+    blocks must not share keys (the merge enforces no overlap). experiments.yaml
+    ``train_hyenadna`` may set ``results_json_template`` and ``sigsegv_retries``
+    (same level as the template); those merge into the baseline before
     per-experiment ``overrides``.
     """
-    defaults = load_train_hyenadna_section(defaults_path)
+    shared = load_genome_models_section(defaults_path)
+    specific = load_train_hyenadna_section(defaults_path)
+    overlap = set(shared) & set(specific)
+    if overlap:
+        raise SystemExit(
+            "genome_models and train_hyenadna must not share keys; conflict: "
+            f"{sorted(overlap)!r}."
+        )
+    defaults: Dict[str, object] = {**shared, **specific}
+
     experiment_name: Optional[str] = None
     template: Optional[str] = None
     experiments_cfg: Dict[str, object] = {}
@@ -61,7 +83,7 @@ def merge_train_hyenadna_config(
         if not isinstance(experiments, list):
             raise SystemExit("train_hyenadna.experiments must be a list when present.")
         if expt == 0:
-            selected = {}
+            selected: Dict[str, object] = {}
         else:
             if not experiments:
                 raise SystemExit("No train_hyenadna.experiments in experiments.yaml.")

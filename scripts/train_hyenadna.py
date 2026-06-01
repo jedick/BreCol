@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-Fine-tune HyenaDNA with a single-task binary classification head.
+Fine-tune HyenaDNA with a single-task binary classification head (BCEWithLogits on a
+single positive-class logit; matches scripts/train_setbert.py).
 
 Uses a pre-built feature-only per-run tensor cache under paths.hyenadna_run_tensors_dir/ from
 scripts/build_hyenadna_run_tensors.py, joins labels/splits from shared metadata at runtime, and
-reports run-level AUC on the test and holdout splits (one score per Run).
+reports run-level AUC and F1 on the val/test/holdout splits (one score per Run).
 
 Training logs (`*_training.json`) record per-epoch loss, binary F1, and AUC metrics aligned
-with console output. Checkpoints are selected by ``train_hyenadna.tuning_metric`` (default
+with console output. Checkpoints are selected by ``genome_models.tuning_metric`` (default
 ``auc``).
 
-Config: defaults.yaml (train_hyenadna + hyenadna_run_tensors + paths) with optional
-experiments.yaml train_hyenadna overrides (--expt).
+Config: defaults.yaml (``genome_models`` + ``train_hyenadna`` + ``hyenadna_run_tensors`` +
+``paths``) with optional experiments.yaml ``train_hyenadna`` overrides (--expt). The shared
+``genome_models`` block holds settings common to HyenaDNA and SetBERT (checkpoint identity,
+device/AMP, head, task/optimization); ``train_hyenadna`` holds HyenaDNA-specific knobs
+(``num_sets``, ``max_length``, ``batch_size``, ``freeze_backbone_epochs``,
+``head_pooling_mode``).
 
 Intermittent ``Signals.SIGSEGV`` during grid runs usually indicates a GPU driver or
 PyTorch CUDA native crash rather than bad Python tensor logic. We use
@@ -21,45 +26,54 @@ PyTorch CUDA native crash rather than bad Python tensor logic. We use
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import os
-import signal
-import subprocess
 import sys
-import time
 from collections import defaultdict
-from contextlib import nullcontext
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ContextManager, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import yaml
 from hyenadna import HyenaDNAPreTrainedModel
-from sklearn.metrics import f1_score
-from sklearn.preprocessing import LabelEncoder
-from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
+from cache_operations import load_sequence_row_selection
 from hyenadna_fasta_data import (
     merge_train_hyenadna_config,
     model_max_length,
 )
 from shared_utilities import (
-    binary_auc_from_scores,
     build_run_task_table,
     resolve_repo_path,
 )
-from cache_operations import load_sequence_row_selection
+from train_genome_common import (
+    VALID_TASKS,
+    BinaryClassificationHead,
+    add_common_train_args,
+    amp_autocast,
+    apply_cli_overrides,
+    binary_auc_and_f1,
+    compute_pos_weight,
+    parse_seed_grid,
+    parse_task_grid,
+    pos_neg_for_task,
+    resolve_amp_config,
+    results_json_out_path,
+    run_grid_child,
+    study_sampler_weights,
+    task_abbrv,
+    training_log_path_from_results,
+    validate_head_config,
+    write_predictions_csv,
+    write_results_json,
+    write_training_log,
+)
 
 HEAD_MODES = ("last", "first", "pool", "sum")
-
-_HYENADNA_TASK_VALUES = frozenset({"cancer_diagnosis", "cancer_type"})
 
 
 # ---------------------------------------------------------------------------
@@ -88,15 +102,17 @@ class ScoreContext:
 
 @dataclass(frozen=True)
 class HeadScores:
-    """Metrics use ``entries``/``y_true``/``y_score``; CSV uses ``all_*`` (one row per input run)."""
+    """Per-split scoring result.
+
+    ``entries`` and ``y_score`` cover *every* input run (one row per Run, NaN
+    for missing-cache runs); the prediction CSV iterates this list. ``auc`` and
+    ``f1`` are computed over the NaN-filtered subset.
+    """
 
     entries: Tuple[RunRecord, ...]
-    y_true: np.ndarray
     y_score: np.ndarray
     auc: float
     f1: float
-    all_entries: Tuple[RunRecord, ...] = ()
-    all_scores: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.float64))
 
 
 @dataclass(frozen=True)
@@ -108,110 +124,8 @@ class SplitScores:
 
 @dataclass(frozen=True)
 class TaskConfig:
-    pos_class_index: int
-    neg_label: str
     pos_label: str
-    class_names: Tuple[str, ...]
-
-
-# ---------------------------------------------------------------------------
-# Grid-mode subprocess helpers
-# ---------------------------------------------------------------------------
-
-
-def _grid_child_subprocess_env() -> Dict[str, str]:
-    """Copy of the environment for ``--child-run`` workers; enables faulthandler (see module doc)."""
-    env = dict(os.environ)
-    env["PYTHONFAULTHANDLER"] = "1"
-    return env
-
-
-def _clamp_sigsegv_retries(raw: object) -> int:
-    """Clamp train_hyenadna.sigsegv_retries for grid-mode subprocesses only (0..8 extra runs after SIGSEGV)."""
-    try:
-        n = int(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(int(n), 8))
-
-
-def _run_grid_child_check(
-    cmd: Sequence[str],
-    repo_root: Path,
-    *,
-    sigsegv_retries: object,
-) -> None:
-    """Run one grid child process; retry on SIGSEGV up to train_hyenadna.sigsegv_retries extra times."""
-    retries = _clamp_sigsegv_retries(sigsegv_retries)
-    max_attempts = 1 + retries
-    env = _grid_child_subprocess_env()
-    for attempt in range(1, max_attempts + 1):
-        try:
-            subprocess.run(list(cmd), check=True, cwd=str(repo_root), env=env)
-            return
-        except subprocess.CalledProcessError as exc:
-            sigsegv = getattr(signal, "SIGSEGV", None)
-            is_sigsegv = sigsegv is not None and exc.returncode == -int(sigsegv)
-            if is_sigsegv and attempt < max_attempts:
-                print(
-                    "train_hyenadna: grid child died with SIGSEGV "
-                    f"(attempt {attempt}/{max_attempts}); retrying after short delay.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                time.sleep(min(float(attempt), 5.0))
-                continue
-            if is_sigsegv:
-                raise SystemExit(
-                    "HyenaDNA training subprocess crashed with SIGSEGV (signal 11). "
-                    "This normally comes from the CUDA stack or GPU driver, not from "
-                    "Python exceptions—reruns often succeed. Next steps: run once with "
-                    "CUDA_LAUNCH_BLOCKING=1; confirm train_hyenadna.num_workers is 0; "
-                    "upgrade driver/PyTorch; or raise "
-                    "train_hyenadna.sigsegv_retries in experiments.yaml (already retried)."
-                ) from exc
-            raise
-
-
-# ---------------------------------------------------------------------------
-# Results path helpers
-# ---------------------------------------------------------------------------
-
-
-def _task_abbrv(task: str) -> str:
-    t = str(task).strip()
-    if t == "cancer_diagnosis":
-        return "cd"
-    if t == "cancer_type":
-        return "ct"
-    raise SystemExit(
-        f"Unknown task {task!r} for results path "
-        "(expected cancer_diagnosis or cancer_type)."
-    )
-
-
-def _results_json_out_path(
-    repo_root: Path,
-    raw: Optional[object],
-    *,
-    task: str,
-) -> Optional[Path]:
-    if raw is None:
-        return None
-    if raw in ("", "null"):
-        defaults_path = repo_root / "defaults.yaml"
-        try:
-            paths_cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))["paths"]
-            scratch_key = paths_cfg["results_scratch_dir"]
-        except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
-            raise SystemExit(
-                f"Cannot read paths.results_scratch_dir from {defaults_path}: {exc}"
-            ) from exc
-        scratch_base = resolve_repo_path(repo_root, scratch_key)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        return scratch_base / f"train_hyenadna_{task}_{ts}.json"
-    p = Path(str(raw).strip()).expanduser()
-    return p if p.is_absolute() else repo_root / p
+    neg_label: str
 
 
 # ---------------------------------------------------------------------------
@@ -222,32 +136,21 @@ def _results_json_out_path(
 def prepare_task_config(
     task: str,
     defaults_path: Path,
-) -> Tuple[Any, LabelEncoder, TaskConfig]:
-    """Build the run metadata frame, fit a LabelEncoder on the training rows, and return the task config."""
+) -> Tuple[Any, TaskConfig]:
+    """Build the run metadata frame and resolve the (pos/neg) task labels."""
     run_df = build_run_task_table(task, config_path=defaults_path)
-    enc = LabelEncoder()
     y_train = run_df.loc[run_df["split"] == "train", "task_label"].to_numpy(dtype=object)
     if y_train.size == 0:
         raise SystemExit("No training runs found after shared split assignment.")
-    enc.fit(y_train)
-    class_names = [str(x) for x in enc.classes_.tolist()]
-    if len(class_names) < 2:
-        raise SystemExit("HyenaDNA training expects at least 2 task classes.")
-    # Lexicographic LabelEncoder convention: index 0 is the negative class, index 1 the positive class.
-    cfg = TaskConfig(
-        pos_class_index=1,
-        neg_label=class_names[0],
-        pos_label=class_names[1],
-        class_names=tuple(class_names),
-    )
-    return run_df, enc, cfg
+    pos_label, neg_label = pos_neg_for_task(task)
+    return run_df, TaskConfig(pos_label=pos_label, neg_label=neg_label)
 
 
 def build_run_records(
     run_task_df,
     cache_root: Path,
     *,
-    label_encoder: LabelEncoder,
+    task_cfg: TaskConfig,
     requested_num_sets: int,
 ) -> Tuple[List[RunRecord], int, Tuple[str, ...]]:
     """Build RunRecords from a per-task metadata frame and the per-run tensor cache."""
@@ -270,11 +173,20 @@ def build_run_records(
         if n_sets <= 0:
             continue
         primary_label = str(row["task_label"]).strip()
+        if primary_label == task_cfg.pos_label:
+            label = 1
+        elif primary_label == task_cfg.neg_label:
+            label = 0
+        else:
+            raise SystemExit(
+                f"Unexpected task_label {primary_label!r} for run {run!r}; "
+                f"expected {task_cfg.pos_label!r} or {task_cfg.neg_label!r}."
+            )
         out.append(
             RunRecord(
                 run=run,
                 split=str(row["split"]),
-                label=int(label_encoder.transform([primary_label])[0]),
+                label=int(label),
                 task_label=primary_label,
                 study_name=str(row["study_name"]).strip(),
                 n_sets=min(n_sets, requested_num_sets),
@@ -361,76 +273,54 @@ def _resolve_train_batch_size(raw: object) -> int:
     return int(value)
 
 
-def _resolve_amp_config(
-    merged: Mapping[str, object],
-    device: torch.device,
-) -> Tuple[bool, torch.dtype, str, bool]:
-    amp_requested = bool(merged.get("amp", False))
-    amp_dtype_raw = str(merged.get("amp_dtype", "float16")).strip().lower()
-    if amp_dtype_raw == "float16":
-        amp_dtype = torch.float16
-        use_grad_scaler = True
-    elif amp_dtype_raw == "bfloat16":
-        amp_dtype = torch.bfloat16
-        use_grad_scaler = False
-    else:
-        raise SystemExit("train_hyenadna.amp_dtype must be 'float16' or 'bfloat16'.")
-
-    if not amp_requested:
-        return False, amp_dtype, amp_dtype_raw, use_grad_scaler
-    if device.type != "cuda":
-        print("AMP requested but CUDA is unavailable; running in float32.", flush=True)
-        return False, amp_dtype, amp_dtype_raw, use_grad_scaler
-    return True, amp_dtype, amp_dtype_raw, use_grad_scaler
+# ---------------------------------------------------------------------------
+# Model wrapper: HyenaDNA backbone + shared binary classification head
+# ---------------------------------------------------------------------------
 
 
-def _amp_autocast(
-    device: torch.device,
-    *,
-    amp_enabled: bool,
-    amp_dtype: torch.dtype,
-) -> ContextManager[object]:
-    if amp_enabled and device.type == "cuda":
-        return torch.autocast(device_type="cuda", dtype=amp_dtype)
-    return nullcontext()
+class HyenaDNABinaryClassifier(nn.Module):
+    """Wrap a pooled-feature HyenaDNA backbone with a ``BinaryClassificationHead``.
 
+    The backbone (``HyenaDNAPreTrainedModel.from_pretrained(use_head=True, ...)``)
+    returns ``[B, d_model]`` after the configured ``head_pooling_mode``; this
+    wrapper applies the shared head and returns a single positive-class logit
+    per sample. Mirrors ``SetBertBinaryClassifier`` in train_setbert.py.
 
-def _study_sampler_weights(entries: Sequence[RunRecord]) -> torch.Tensor:
-    counts: Dict[str, int] = defaultdict(int)
-    for e in entries:
-        counts[e.study_name] += 1
-    w = [1.0 / counts[e.study_name] for e in entries]
-    return torch.tensor(w, dtype=torch.double)
+    The head's Linear layers are re-initialized with ``normal_(std=0.02)`` /
+    ``zeros_`` to match the upstream HyenaDNA ``_init_weights`` scheme that
+    used to apply when the head lived inside ``HyenaDNAModel``. The cosine
+    head's raw ``nn.Parameter`` is unaffected (matches old behaviour, where
+    ``_init_weights`` also skipped non-Linear parameters).
+    """
 
+    def __init__(
+        self,
+        base_model: nn.Module,
+        *,
+        embed_dim: int,
+        head_type: str,
+        head_dropout: float = 0.0,
+        head_hidden: int = 0,
+        init_normal_std: float = 0.02,
+    ):
+        super().__init__()
+        self.base_model = base_model
+        self.head = BinaryClassificationHead(
+            int(embed_dim),
+            kind=head_type,
+            head_dropout=float(head_dropout),
+            head_hidden=int(head_hidden),
+        )
+        if init_normal_std is not None:
+            std = float(init_normal_std)
+            for module in self.head.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.normal_(module.weight, std=std)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
 
-def _compute_ce_weight_tensor(
-    train_entries: Sequence[RunRecord],
-    *,
-    mode: str,
-    n_classes: int,
-    device: torch.device,
-) -> Optional[torch.Tensor]:
-    m = str(mode or "none").strip().lower()
-    if m in ("none", "null", ""):
-        return None
-    if m in ("balanced", "balanced_sqrt"):
-        y = np.array([int(e.label) for e in train_entries], dtype=np.int64)
-        if y.size == 0:
-            return None
-        present = np.unique(y)
-        if present.size < 2:
-            return None
-        cw = compute_class_weight(class_weight="balanced", classes=present, y=y)
-        if m == "balanced_sqrt":
-            cw = np.sqrt(cw)
-            cw = cw / np.mean(cw)
-        t = torch.ones(n_classes, dtype=torch.float32, device=device)
-        for cls, w in zip(present, cw):
-            t[int(cls)] = float(w)
-        return t
-    raise SystemExit(
-        f"Unknown class_weight {mode!r} (use none, balanced, or balanced_sqrt)."
-    )
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.head(self.base_model(input_ids))
 
 
 def training_loss_sum_and_count(
@@ -440,7 +330,7 @@ def training_loss_sum_and_count(
     *,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
-    ce_weight: Optional[torch.Tensor] = None,
+    pos_weight: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, int]:
     input_ids = batch["input_ids"].to(device)
     bsz, n_set, seq_len = input_ids.shape
@@ -449,32 +339,33 @@ def training_loss_sum_and_count(
     labels = batch["label"].to(device)
     mask = torch.arange(n_set, device=device).unsqueeze(0) < nv.to(device).unsqueeze(1)
 
-    with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+    with amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
         logits = model(flat_in)
-        logits = logits.view(bsz, n_set, -1)
+        # Wrapper head emits [B*N]; reshape to (B, N) per-set positive-class logits.
+        logits = logits.view(bsz, n_set, -1).squeeze(-1)
         flat_logits = logits[mask]
-        flat_y = labels.unsqueeze(1).expand(bsz, n_set)[mask]
+        flat_y = labels.unsqueeze(1).expand(bsz, n_set)[mask].float()
     if flat_logits.numel() == 0:
         return torch.zeros((), device=device), 0
-    ce_kw: Dict[str, object] = {"reduction": "sum"}
-    if ce_weight is not None:
-        # AMP can produce bf16/fp16 logits; class-weight tensor must match.
-        ce_kw["weight"] = ce_weight.to(
+    bce_kw: Dict[str, object] = {"reduction": "sum"}
+    if pos_weight is not None:
+        # AMP can produce bf16/fp16 logits; pos_weight tensor must match.
+        bce_kw["pos_weight"] = pos_weight.to(
             device=flat_logits.device,
             dtype=flat_logits.dtype,
         )
-    task_ce = F.cross_entropy(flat_logits, flat_y, **ce_kw)
-    return task_ce, int(flat_y.shape[0])
+    bce = F.binary_cross_entropy_with_logits(flat_logits, flat_y, **bce_kw)
+    return bce, int(flat_y.shape[0])
 
 
-def _eval_mean_ce_loss(
+def _eval_mean_bce_loss(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     *,
     amp_enabled: bool,
     amp_dtype: torch.dtype,
-    ce_weight: Optional[torch.Tensor],
+    pos_weight: Optional[torch.Tensor],
 ) -> float:
     model.eval()
     total = 0.0
@@ -487,28 +378,22 @@ def _eval_mean_ce_loss(
                 device,
                 amp_enabled=amp_enabled,
                 amp_dtype=amp_dtype,
-                ce_weight=ce_weight,
+                pos_weight=pos_weight,
             )
             total += float(loss_sum.item())
             count += int(n)
     return total / max(count, 1)
 
 
-def _classification_head_params(model: torch.nn.Module) -> List[torch.nn.Parameter]:
-    if model.head is None:
-        return []
-    return [p for p in model.head.parameters() if p.requires_grad]
-
-
 def _make_optimizer(
-    model: torch.nn.Module,
+    model: HyenaDNABinaryClassifier,
     *,
     lr: float,
     weight_decay: float,
     backbone_lr_mult: float,
 ) -> torch.optim.Optimizer:
-    backbone_params = [p for p in model.backbone.parameters() if p.requires_grad]
-    head_params = _classification_head_params(model)
+    backbone_params = [p for p in model.base_model.parameters() if p.requires_grad]
+    head_params = [p for p in model.head.parameters() if p.requires_grad]
     groups: List[Dict[str, object]] = []
     if backbone_params:
         blr = lr * float(backbone_lr_mult)
@@ -520,10 +405,10 @@ def _make_optimizer(
     return torch.optim.AdamW(groups, weight_decay=float(weight_decay))
 
 
-def _set_backbone_requires_grad(model: torch.nn.Module, trainable: bool) -> None:
-    for p in model.backbone.parameters():
+def _set_backbone_requires_grad(model: HyenaDNABinaryClassifier, trainable: bool) -> None:
+    for p in model.base_model.parameters():
         p.requires_grad = trainable
-    for p in _classification_head_params(model):
+    for p in model.head.parameters():
         p.requires_grad = True
 
 
@@ -547,7 +432,7 @@ def train_epoch(
     amp_enabled: bool,
     amp_dtype: torch.dtype,
     scaler: Optional[torch.amp.GradScaler],
-    ce_weight: Optional[torch.Tensor],
+    pos_weight: Optional[torch.Tensor],
 ) -> float:
     model.train()
     total = 0.0
@@ -559,7 +444,7 @@ def train_epoch(
             device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
-            ce_weight=ce_weight,
+            pos_weight=pos_weight,
         )
         if denom <= 0:
             raise SystemExit("Training batch has zero valid sets after masking.")
@@ -606,32 +491,10 @@ def _load_run_tensor(
     return x, nv
 
 
-def _positive_class_score(logits: torch.Tensor, pos_class_index: int) -> float:
-    """Run-level score: mean logits over sequence sets, then softmax positive class."""
-    agg = logits.mean(dim=0)
-    return float(torch.softmax(agg, dim=-1)[pos_class_index].item())
-
-
-def _binary_f1(
-    y_true: np.ndarray,
-    y_score: np.ndarray,
-    *,
-    pos_label: str,
-    neg_label: str,
-) -> float:
-    """Positive-class F1 at threshold 0.5 on the positive-class score."""
-    if y_true.size == 0:
-        return float("nan")
-    y_pred = np.where(y_score >= 0.5, pos_label, neg_label)
-    return float(
-        f1_score(
-            y_true,
-            y_pred,
-            pos_label=pos_label,
-            average="binary",
-            zero_division=0,
-        )
-    )
+def _positive_class_score(logits: torch.Tensor) -> float:
+    """Run-level score: mean positive-class logit over sequence sets, then sigmoid."""
+    agg = logits.view(-1).mean(dim=0)
+    return float(torch.sigmoid(agg).item())
 
 
 def _head_metrics(
@@ -639,42 +502,29 @@ def _head_metrics(
     scores: np.ndarray,
     task_cfg: TaskConfig,
 ) -> HeadScores:
+    """Build a HeadScores from entries + scores (NaN-tolerant).
+
+    Metric computation filters NaN scores; the stored ``entries`` and
+    ``y_score`` retain every input row so prediction CSVs cover all of them.
+    """
     scores = np.asarray(scores, dtype=np.float64)
+    if scores.size == 0:
+        return HeadScores(tuple(entries), scores, float("nan"), float("nan"))
     valid = scores == scores
-    pairs = [(e, float(s)) for e, s, ok in zip(entries, scores, valid) if ok]
-    all_entries = tuple(entries)
-    all_scores = np.asarray(scores, dtype=np.float64)
-    if not pairs:
-        return HeadScores(
-            (),
-            np.asarray([], dtype=object),
-            np.asarray([], dtype=np.float64),
-            float("nan"),
-            float("nan"),
-            all_entries=all_entries,
-            all_scores=all_scores,
-        )
-    sub_entries, sub_scores = zip(*pairs)
-    sub_entries_t = tuple(sub_entries)
-    y_true = np.array([e.task_label for e in sub_entries_t], dtype=object)
-    y_score = np.asarray(sub_scores, dtype=np.float64)
-    auc = binary_auc_from_scores(y_true, y_score, positive_label=task_cfg.pos_label)
-    f1 = _binary_f1(y_true, y_score, pos_label=task_cfg.pos_label, neg_label=task_cfg.neg_label)
-    return HeadScores(
-        sub_entries_t,
-        y_true,
-        y_score,
-        float(auc),
-        f1,
-        all_entries=all_entries,
-        all_scores=all_scores,
+    if not valid.any():
+        return HeadScores(tuple(entries), scores, float("nan"), float("nan"))
+    sub_entries = [e for e, ok in zip(entries, valid) if ok]
+    y_true = np.array([e.task_label for e in sub_entries], dtype=object)
+    sub_scores = scores[valid]
+    auc, f1 = binary_auc_and_f1(
+        y_true, sub_scores, pos_label=task_cfg.pos_label, neg_label=task_cfg.neg_label
     )
+    return HeadScores(tuple(entries), scores, auc, f1)
 
 
 def _forward_entry_score(
     model: torch.nn.Module,
     entry: RunRecord,
-    pos_class_index: int,
     ctx: ScoreContext,
     device: torch.device,
     *,
@@ -691,9 +541,9 @@ def _forward_entry_score(
     if x is None or nv <= 0:
         return float("nan")
     x = x.to(device)
-    with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+    with amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
         logits = model(x[:nv])
-    return _positive_class_score(logits, pos_class_index)
+    return _positive_class_score(logits)
 
 
 def score_entries(
@@ -708,15 +558,7 @@ def score_entries(
 ) -> HeadScores:
     """Score all entries with one backbone forward per run."""
     if not entries:
-        return HeadScores(
-            (),
-            np.asarray([], dtype=object),
-            np.asarray([], dtype=np.float64),
-            float("nan"),
-            float("nan"),
-            all_entries=(),
-            all_scores=np.asarray([], dtype=np.float64),
-        )
+        return HeadScores((), np.asarray([], dtype=np.float64), float("nan"), float("nan"))
     model.eval()
     raw: List[float] = []
     with torch.no_grad():
@@ -725,7 +567,6 @@ def score_entries(
                 _forward_entry_score(
                     model,
                     e,
-                    task_cfg.pos_class_index,
                     ctx,
                     device,
                     amp_enabled=amp_enabled,
@@ -776,23 +617,22 @@ def tuning_score(f1: float, auc: float, metric: str) -> float:
     return v if v == v else float("-inf")
 
 
-def epoch_progress_fields(
+def epoch_progress_line(
     *,
     split_eval: SplitScores,
     train_loss: float,
     val_loss: float,
     best_epoch: int,
-) -> List[str]:
-    fields = [f"train_loss={train_loss:.4f}", f"val_loss={val_loss:.4f}"]
-    fields.extend(
-        [
-            f"val_auc={split_eval.val.auc:.4f}",
-            f"test_auc={split_eval.test.auc:.4f}",
-            f"holdout_auc={split_eval.holdout.auc:.4f}",
-        ]
+) -> str:
+    """One-line console log; mirrors SetBERT (3 decimals, paired AUC/F1 per split)."""
+    return (
+        f"train_loss={train_loss:.3f} val_loss={val_loss:.3f}  "
+        f"val_auc={split_eval.val.auc:.3f} val_f1={split_eval.val.f1:.3f}  "
+        f"test_auc={split_eval.test.auc:.3f} test_f1={split_eval.test.f1:.3f}  "
+        f"holdout_auc={split_eval.holdout.auc:.3f} "
+        f"holdout_f1={split_eval.holdout.f1:.3f}  "
+        f"best_epoch={int(best_epoch)}"
     )
-    fields.append(f"best_epoch={int(best_epoch)}")
-    return fields
 
 
 # ---------------------------------------------------------------------------
@@ -802,93 +642,11 @@ def epoch_progress_fields(
 
 def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--expt",
-        type=int,
-        default=None,
-        help="Optional train_hyenadna experiment index from experiments.yaml (1-based). "
-        "Omit or use 0 for defaults.yaml only.",
-    )
-    parser.add_argument(
-        "--results-json",
-        type=str,
-        nargs="?",
-        const="",
-        default=argparse.SUPPRESS,
-        help=(
-            "Override results JSON path. With no path, writes under results/scratch/ "
-            "as train_hyenadna_<task>_<utc>.json. Omit entirely to use YAML only."
-        ),
-    )
-    parser.add_argument(
-        "--override-random-seed",
-        type=int,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--override-task",
-        type=str,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--child-run",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
+    add_common_train_args(parser, model_label="train_hyenadna")
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.expt is not None and args.expt < 0:
         raise SystemExit("--expt must be >= 0.")
     return args
-
-
-def _parse_seed_grid(raw: object) -> Optional[List[int]]:
-    if raw is None:
-        return None
-    if isinstance(raw, int):
-        return [int(raw)]
-    if isinstance(raw, (list, tuple)):
-        if not raw:
-            raise SystemExit("random_seed grid must not be empty.")
-        try:
-            return [int(x) for x in raw]
-        except (TypeError, ValueError) as exc:
-            raise SystemExit(
-                f"random_seed grid must be a list of integers; got {raw!r}."
-            ) from exc
-    raise SystemExit(
-        f"random_seed must be an integer or a YAML list of integers; got {type(raw).__name__}."
-    )
-
-
-def _parse_task_grid(raw: object) -> Optional[List[str]]:
-    if raw is None:
-        return None
-    if isinstance(raw, str):
-        task = raw.strip()
-        if not task:
-            return None
-        if task not in _HYENADNA_TASK_VALUES:
-            raise SystemExit(
-                f"Unknown train_hyenadna.task {task!r} "
-                "(use cancer_diagnosis or cancer_type)."
-            )
-        return [task]
-    if isinstance(raw, (list, tuple)):
-        if not raw:
-            raise SystemExit("task grid must not be empty.")
-        tasks = [str(t).strip() for t in raw]
-        bad = [p for p in tasks if p not in _HYENADNA_TASK_VALUES]
-        if bad:
-            raise SystemExit(
-                "train_hyenadna task grid must list only cancer_diagnosis and/or "
-                f"cancer_type; unknown value(s): {bad!r}."
-            )
-        return tasks
-    raise SystemExit(
-        f"task must be a string or a YAML list of task names; got {type(raw).__name__}."
-    )
 
 
 def _format_hyenadna_results_template(
@@ -903,7 +661,7 @@ def _format_hyenadna_results_template(
     text = str(template).replace("{max_length/1024}", "{max_length_k}")
     return text.format(
         task=str(task).strip(),
-        task_abbrv=_task_abbrv(task),
+        task_abbrv=task_abbrv(task),
         name=name,
         seed=int(seed),
         max_length=int(max_length),
@@ -916,116 +674,13 @@ def _format_hyenadna_results_template(
 # ---------------------------------------------------------------------------
 
 
-_PREDICTION_CSV_FIELDS = ("Run", "task_label", "predicted_label", "positive_score")
-
-
-def _prediction_rows(
-    entries: Sequence[RunRecord],
-    scores: HeadScores,
-    task_cfg: TaskConfig,
-) -> List[Dict[str, object]]:
-    use_entries = scores.all_entries if scores.all_entries else tuple(entries)
-    use_scores = scores.all_scores if scores.all_scores.size else scores.y_score
-    if len(use_entries) != len(use_scores):
-        raise SystemExit("Prediction row count mismatch.")
-    rows: List[Dict[str, object]] = []
-    for e, score in zip(use_entries, use_scores):
-        pred = task_cfg.pos_label if float(score) >= 0.5 else task_cfg.neg_label
-        rows.append(
-            {
-                "Run": str(e.run),
-                "task_label": str(e.task_label),
-                "predicted_label": str(pred),
-                "positive_score": float(score),
-            }
-        )
-    return rows
-
-
-def _write_predictions_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_PREDICTION_CSV_FIELDS, lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            out_row: Dict[str, str] = {}
-            for key in _PREDICTION_CSV_FIELDS:
-                if key == "positive_score":
-                    out_row[key] = f"{float(row[key]):.10f}"
-                else:
-                    out_row[key] = str(row[key])
-            writer.writerow(out_row)
-
-
-def _float_or_none(x: float) -> Optional[float]:
-    return float(x) if x == x else None
-
-
-def _write_results_json(
-    path: Path,
-    *,
-    merged: Mapping[str, Any],
-    cache_info: Mapping[str, Any],
-    test_auc: float,
-    holdout_auc: float,
-    best_epoch: int,
-    tuning_metric: str,
-    best_tuning_score: float,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "script": Path(__file__).name,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "config": dict(merged),
-        "data": {"cache": dict(cache_info)},
-        "tuning": {
-            "split": "validation",
-            "metric": str(tuning_metric),
-            "score": _float_or_none(float(best_tuning_score)),
-            "best_epoch": int(best_epoch),
-        },
-        "metrics": {
-            "test": {"auc": _float_or_none(test_auc)},
-            "holdout": {"auc": _float_or_none(holdout_auc)},
-        },
-    }
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
-def _training_log_path_from_results(path: Path) -> Path:
-    return path.with_name(f"{path.stem}_training.json")
-
-
-def _write_training_log(
-    path: Path,
-    epoch_rows: Sequence[Mapping[str, object]],
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload: List[Dict[str, object]] = []
-    for row in epoch_rows:
-        payload.append(
-            {
-                "epoch": int(row["epoch"]),
-                "learning_rate": float(row["learning_rate"]),
-                "train_loss": float(row["train_loss"]),
-                "val_loss": _float_or_none(float(row["val_loss"])),
-                "val_f1": _float_or_none(float(row["val_f1"])),
-                "test_f1": _float_or_none(float(row["test_f1"])),
-                "holdout_f1": _float_or_none(float(row["holdout_f1"])),
-                "val_auc": _float_or_none(float(row["val_auc"])),
-                "test_auc": _float_or_none(float(row["test_auc"])),
-                "holdout_auc": _float_or_none(float(row["holdout_auc"])),
-            }
-        )
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
 def write_run_artifacts(
     results_path: Path,
     *,
     merged: Mapping[str, Any],
     cache_info: Mapping[str, Any],
     task_cfg: TaskConfig,
+    task: str,
     test_entries: Sequence[RunRecord],
     holdout_entries: Sequence[RunRecord],
     test_scores: HeadScores,
@@ -1033,31 +688,50 @@ def write_run_artifacts(
     best_epoch: int,
     tuning_metric: str,
     best_tuning_score: float,
+    best_val_auc: float,
+    best_val_f1: float,
 ) -> None:
     """Write results JSON and split prediction CSVs."""
-    pred_rows_test = _prediction_rows(test_entries, test_scores, task_cfg)
-    pred_rows_hold = _prediction_rows(holdout_entries, holdout_scores, task_cfg)
-
     test_pred_path = results_path.with_name(f"{results_path.stem}_test.csv")
     holdout_pred_path = results_path.with_name(f"{results_path.stem}_holdout.csv")
-    _write_predictions_csv(test_pred_path, pred_rows_test)
-    _write_predictions_csv(holdout_pred_path, pred_rows_hold)
+    write_predictions_csv(
+        test_pred_path,
+        test_scores.entries if test_scores.entries else test_entries,
+        test_scores.y_score,
+        pos_label=task_cfg.pos_label,
+        neg_label=task_cfg.neg_label,
+    )
+    write_predictions_csv(
+        holdout_pred_path,
+        holdout_scores.entries if holdout_scores.entries else holdout_entries,
+        holdout_scores.y_score,
+        pos_label=task_cfg.pos_label,
+        neg_label=task_cfg.neg_label,
+    )
 
-    _write_results_json(
+    write_results_json(
         results_path,
+        script_filename=Path(__file__).name,
         merged=merged,
         cache_info=cache_info,
-        test_auc=test_scores.auc,
-        holdout_auc=holdout_scores.auc,
+        task=task,
+        pos_label=task_cfg.pos_label,
+        neg_label=task_cfg.neg_label,
         best_epoch=best_epoch,
         tuning_metric=tuning_metric,
         best_tuning_score=best_tuning_score,
+        best_val_auc=best_val_auc,
+        best_val_f1=best_val_f1,
+        test_auc=test_scores.auc,
+        test_f1=test_scores.f1,
+        holdout_auc=holdout_scores.auc,
+        holdout_f1=holdout_scores.f1,
     )
 
     print(
-        f"Final eval (best epoch by {tuning_metric}): best_epoch={best_epoch} "
-        f"test_auc={test_scores.auc:.4f} "
-        f"holdout_auc={holdout_scores.auc:.4f}\n",
+        f"Final eval (best epoch by {tuning_metric}): best_epoch={best_epoch}  "
+        f"test_auc={test_scores.auc:.3f} test_f1={test_scores.f1:.3f}  "
+        f"holdout_auc={holdout_scores.auc:.3f} holdout_f1={holdout_scores.f1:.3f}\n",
         flush=True,
     )
 
@@ -1082,20 +756,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         expt=expt,
     )
 
-    if hasattr(cli, "results_json"):
-        rj = cli.results_json
-        if rj == "" and expt > 0 and not cli.child_run:
-            # Makefile passes --results-json for the default no-EXPT workflow.
-            # For experiment runs, leave output path selection to experiment/template logic.
-            pass
-        elif rj == "":
-            merged = {**merged, "results_json": ""}
-        else:
-            merged = {**merged, "results_json": rj}
-    if cli.override_task is not None:
-        merged = {**merged, "task": str(cli.override_task).strip()}
-    if cli.override_random_seed is not None:
-        merged = {**merged, "random_seed": int(cli.override_random_seed)}
+    merged = apply_cli_overrides(cli, merged, expt=expt, child_run=cli.child_run)
 
     if expt > 0 and not cli.child_run:
         experiments_cfg = yaml.safe_load(experiments_path.read_text(encoding="utf-8")) or {}
@@ -1114,10 +775,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not isinstance(overrides, dict):
             raise SystemExit("train_hyenadna experiment overrides must be a mapping.")
 
-        task_grid = _parse_task_grid(overrides.get("task")) or [str(merged["task"]).strip()]
-        seed_grid = _parse_seed_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
+        task_grid = parse_task_grid(overrides.get("task")) or [str(merged["task"]).strip()]
+        seed_grid = parse_seed_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
         grid_max_length = int(
-            model_max_length(str(merged["model"]).strip(), merged.get("max_length"))
+            model_max_length(str(merged["hyenadna_model"]).strip(), merged.get("max_length"))
         )
 
         if len(task_grid) > 1 or len(seed_grid) > 1:
@@ -1176,10 +837,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         f"Launching EXPT={expt} task={task_v} seed={seed} -> {out_path}",
                         flush=True,
                     )
-                    _run_grid_child_check(
+                    run_grid_child(
                         cmd,
                         repo_root,
                         sigsegv_retries=merged.get("sigsegv_retries"),
+                        model_label="HyenaDNA",
                     )
                     completed += 1
             print(
@@ -1213,18 +875,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cache_min_seqs = selection["min_seqs"]
 
     task = str(merged["task"]).strip()
-    if task not in _HYENADNA_TASK_VALUES:
+    if task not in VALID_TASKS:
         raise SystemExit(
             f"Unknown train_hyenadna.task {task!r} "
             "(use cancer_diagnosis or cancer_type)."
         )
-    model_name = str(merged["model"]).strip()
+    model_name = str(merged["hyenadna_model"]).strip()
     num_sets = int(merged["num_sets"])
     loader_batch_size = _resolve_train_batch_size(merged["batch_size"])
     max_len = model_max_length(model_name, merged.get("max_length"))
     head_mode = str(merged["head_pooling_mode"]).strip()
     if head_mode not in HEAD_MODES:
         raise SystemExit(f"head_pooling_mode must be one of {HEAD_MODES}; got {head_mode!r}.")
+    head_type, head_hidden = validate_head_config(
+        head_type=merged.get("head_type"),
+        head_hidden=merged.get("head_hidden"),
+    )
+    head_dropout = float(merged.get("head_dropout") or 0.0)
     if num_sets > cache_num_sets:
         raise SystemExit(
             f"train_hyenadna.num_sets ({num_sets}) exceeds hyenadna_run_tensors.num_sets "
@@ -1241,12 +908,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Run: python scripts/build_hyenadna_run_tensors.py"
         )
 
-    run_task_df, label_encoder, task_cfg = prepare_task_config(task, defaults_path)
+    run_task_df, task_cfg = prepare_task_config(task, defaults_path)
 
     all_records, n_skipped_missing_cache, missing_cache_examples = build_run_records(
         run_task_df,
         run_tensors_root,
-        label_encoder=label_encoder,
+        task_cfg=task_cfg,
         requested_num_sets=num_sets,
     )
     if n_skipped_missing_cache:
@@ -1298,7 +965,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         device = torch.device(device_s)
-    amp_enabled, amp_dtype, amp_dtype_name, amp_use_grad_scaler = _resolve_amp_config(
+    amp_enabled, amp_dtype, amp_dtype_name, amp_use_grad_scaler = resolve_amp_config(
         merged, device
     )
     exp_label = str(exp_name).strip() if exp_name is not None else ""
@@ -1310,7 +977,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("\nExperiment: EXPT=0 (defaults.yaml config)", flush=True)
     print(
         f"\nHyenaDNA train | task={task} model={model_name} | "
-        f"positive_class={task_cfg.pos_label!r} (index {task_cfg.pos_class_index}) | "
+        f"pos={task_cfg.pos_label!r} neg={task_cfg.neg_label!r} | "
+        f"head_type={head_type} head_pooling_mode={head_mode} | "
         f"precision={'amp(' + amp_dtype_name + ')' if amp_enabled else 'fp32'}",
         flush=True,
     )
@@ -1322,24 +990,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     train_sampler = str(merged.get("train_sampler") or "random").strip().lower()
     tuning_metric = str(merged.get("tuning_metric") or "auc").strip()
     class_weight_mode = str(merged.get("class_weight") or "none")
-    ce_weight = _compute_ce_weight_tensor(
+    pos_weight = compute_pos_weight(
         train_entries,
         mode=class_weight_mode,
-        n_classes=len(task_cfg.class_names),
         device=device,
     )
+    if pos_weight is not None:
+        print(
+            f"  pos_weight={float(pos_weight.item()):.3f} (mode={class_weight_mode})",
+            flush=True,
+        )
     transition_n = int(merged.get("freeze_backbone_epochs") or 0)
-    if "head_hidden" not in merged:
-        raise SystemExit("train_hyenadna.head_hidden is required in defaults.yaml.")
-    try:
-        head_hidden = int(merged["head_hidden"])
-    except (TypeError, ValueError) as exc:
-        raise SystemExit(
-            "train_hyenadna.head_hidden must be an integer (0 = linear, >0 = one-layer MLP)."
-        ) from exc
-    if head_hidden < 0:
-        raise SystemExit("train_hyenadna.head_hidden must be >= 0.")
-    head_dropout = float(merged.get("head_dropout") or 0.0)
 
     train_ds = RunTensorDataset(
         train_entries,
@@ -1352,7 +1013,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     shuffle = True
     if train_sampler == "study_balanced":
         sampler = WeightedRandomSampler(
-            _study_sampler_weights(train_entries),
+            study_sampler_weights(train_entries),
             num_samples=len(train_entries),
             replacement=True,
         )
@@ -1391,16 +1052,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ckpt_dir = resolve_repo_path(
         repo_root, str(paths_cfg["checkpoint_dir"]).strip()
     )
-    model = HyenaDNAPreTrainedModel.from_pretrained(
+    base_model = HyenaDNAPreTrainedModel.from_pretrained(
         str(ckpt_dir),
         model_name,
         config=None,
         device=str(device),
         use_head=True,
-        n_classes=len(task_cfg.class_names),
         head_pooling_mode=head_mode,
-        head_hidden=head_hidden,
+    )
+    embed_dim = int(base_model.d_model)
+    model = HyenaDNABinaryClassifier(
+        base_model,
+        embed_dim=embed_dim,
+        head_type=head_type,
         head_dropout=head_dropout,
+        head_hidden=head_hidden,
     )
     model = model.to(device)
 
@@ -1412,6 +1078,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     epoch_log: List[Dict[str, object]] = []
     best_tuning_score = float("-inf")
     best_epoch = 0
+    best_val_auc = float("nan")
+    best_val_f1 = float("nan")
     best_state: Optional[Dict[str, torch.Tensor]] = None
     score_ctx = ScoreContext(
         requested_num_sets=num_sets,
@@ -1422,14 +1090,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     opt: Optional[torch.optim.Optimizer] = None
 
-    results_path = _results_json_out_path(
+    results_path = results_json_out_path(
         repo_root,
         merged.get("results_json"),
         task=task,
+        script_stem="train_hyenadna",
     )
     training_log_path: Optional[Path] = None
     if results_path is not None:
-        training_log_path = _training_log_path_from_results(results_path)
+        training_log_path = training_log_path_from_results(results_path)
 
     for ep in range(1, epochs + 1):
         print(f"\n--- Epoch {ep}/{epochs} ---", flush=True)
@@ -1457,16 +1126,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             scaler=scaler,
-            ce_weight=ce_weight,
+            pos_weight=pos_weight,
         )
 
-        val_loss = _eval_mean_ce_loss(
+        val_loss = _eval_mean_bce_loss(
             model,
             val_loader,
             device,
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
-            ce_weight=ce_weight,
+            pos_weight=pos_weight,
         )
 
         split_eval = eval_splits(
@@ -1497,23 +1166,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         }
         epoch_log.append(epoch_row)
         if training_log_path is not None:
-            _write_training_log(training_log_path, epoch_log)
+            write_training_log(training_log_path, epoch_log)
 
         if ts > best_tuning_score:
             best_tuning_score = float(ts)
             best_epoch = int(ep)
+            best_val_auc = float(split_eval.val.auc)
+            best_val_f1 = float(split_eval.val.f1)
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
 
         print(
-            "  ".join(
-                epoch_progress_fields(
-                    split_eval=split_eval,
-                    train_loss=last_loss,
-                    val_loss=val_loss,
-                    best_epoch=best_epoch,
-                )
+            epoch_progress_line(
+                split_eval=split_eval,
+                train_loss=last_loss,
+                val_loss=val_loss,
+                best_epoch=best_epoch,
             ),
             flush=True,
         )
@@ -1554,6 +1223,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "n_cached_runs": len(all_records),
             },
             task_cfg=task_cfg,
+            task=task,
             test_entries=test_entries,
             holdout_entries=holdout_entries,
             test_scores=final_test,
@@ -1561,6 +1231,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             best_epoch=best_epoch,
             tuning_metric=tuning_metric,
             best_tuning_score=best_tuning_score,
+            best_val_auc=best_val_auc,
+            best_val_f1=best_val_f1,
         )
 
     return 0

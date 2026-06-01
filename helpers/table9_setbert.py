@@ -39,8 +39,8 @@ import yaml
 # of each unique name across the cancer_type and cancer_diagnosis sections.
 ABLATION_DESCRIPTIONS: Dict[str, str] = {
     "head_linear": "Linear classification head (default)",
+    "head_mlp": "One-hidden-layer MLP classification head",
     "head_cosine": "Cosine-similarity classification head",
-    "cosine_random": "Cosine head with random weight initialization",
 }
 
 TASK_ABBRV: Dict[str, str] = {

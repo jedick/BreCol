@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Fine-tune SetBERT with a single linear binary classification head on the transformed
-``[CLS]`` token (per the SetBERT paper, Suppl. §3.5).
+Fine-tune SetBERT with a binary classification head on the transformed ``[CLS]``
+token (per the SetBERT paper, Suppl. §3.5). Loss is ``BCEWithLogits`` on a single
+positive-class logit (matches scripts/train_hyenadna.py).
 
 Reads a feature-only per-Run token tensor cache from paths.setbert_run_tensors_dir/
 (scripts/build_setbert_run_tensors.py), joins labels/splits from shared metadata via
 shared_utilities.build_run_task_table(task), and reports run-level AUC and F1 on the
 val/test/holdout splits.
 
-Single-task only: ``train_setbert.task`` is ``cancer_diagnosis`` or ``cancer_type``.
-Loss = ``BCEWithLogits`` on a single output neuron predicting the positive class.
+Single-task per run: ``genome_models.task`` is ``cancer_diagnosis`` or ``cancer_type``.
 
-Two-knob backbone freezing (the linear classifier is always trainable):
+Two-knob backbone freezing (the classification head is always trainable):
   - ``train_setbert.freeze_sequence_encoder_epochs``  (DNABERT sequence encoder)
   - ``train_setbert.freeze_sab_epochs``               (SAB transformer + class_token)
 
@@ -29,67 +29,66 @@ on every subsequent scoring pass. The cache is dropped as soon as the encoder un
 and is never used for the train split. Scoring loops also show per-batch ``tqdm``
 progress bars (Val / Test / Holdout) alongside the existing Train bar.
 
-Config: defaults.yaml (``setbert_model`` + ``train_setbert`` + ``paths``) with optional
+Config: defaults.yaml (``genome_models`` + ``train_setbert`` + ``paths``) with optional
 experiments.yaml ``train_setbert.experiments`` overrides selected by ``--expt N``
-(1-based). The baseline merge combines ``setbert_model`` (pretrained checkpoint + device,
-shared with build_setbert_run_tensors.py) with ``train_setbert`` (precision, weight_init,
-task / optimization / head / output knobs); an experiment row may override keys from
-either block (e.g. ``weight_init: random``, ``device: cpu``). When the selected
-experiment row sets ``random_seed`` to a YAML list, the parent process forks one
-``--child-run`` subprocess per seed (results JSON path templated by
-``train_setbert.results_json_template``); each subprocess runs a single training.
+(1-based). The baseline merge combines ``genome_models`` (checkpoint identity, device,
+AMP, head, task / optimization knobs - shared with HyenaDNA training) with
+``train_setbert`` (set construction, batch sizes, backbone freezing); the two blocks
+must not share keys. An experiment row may override any of those keys (e.g. ``head_type:
+cosine``, ``device: cpu``). When the selected experiment row sets ``random_seed`` and/or
+``task`` to a YAML list, the parent process forks one ``--child-run`` subprocess per
+combination (results JSON path templated by ``train_setbert.results_json_template``);
+each subprocess runs a single training.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import os
-import signal
-import subprocess
 import sys
-import time
 from collections import defaultdict
-from contextlib import nullcontext
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml
-from sklearn.metrics import f1_score
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
-from setbert_data import load_setbert_model, load_setbert_model_section
+from setbert_data import load_genome_models_section, load_setbert_model
 from shared_utilities import (
-    binary_auc_from_scores,
     build_run_task_table,
     resolve_repo_path,
 )
+from train_genome_common import (
+    VALID_TASKS,
+    BinaryClassificationHead,
+    add_common_train_args,
+    amp_autocast,
+    apply_cli_overrides,
+    binary_auc_and_f1,
+    compute_pos_weight,
+    parse_seed_grid,
+    parse_task_grid,
+    pos_neg_for_task,
+    resolve_amp_config,
+    results_json_out_path,
+    run_grid_child,
+    study_sampler_weights,
+    task_abbrv,
+    training_log_path_from_results,
+    validate_head_config,
+    write_predictions_csv,
+    write_results_json,
+    write_training_log,
+)
 
-VALID_TASKS = frozenset(("cancer_diagnosis", "cancer_type"))
 VALID_TUNING = frozenset(("auc", "f1"))
-VALID_AMP_DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16}
 VALID_CLASS_WEIGHTS = frozenset(("none", "null", "", "balanced", "balanced_sqrt"))
 VALID_TRAIN_SAMPLERS = frozenset(("random", "study_balanced"))
-VALID_HEAD_TYPES = frozenset(
-    (
-        "linear",
-        "mlp",
-        "cosine",
-        "spectral",
-        "prototype",
-        "pooled",
-    )
-)
-VALID_PROTOTYPE_INITS = frozenset(("random", "class_means"))
-VALID_WEIGHT_INITS = frozenset(("pretrained", "random"))
 
 
 # ---------------------------------------------------------------------------
@@ -98,31 +97,32 @@ VALID_WEIGHT_INITS = frozenset(("pretrained", "random"))
 
 
 def _load_train_setbert_section(defaults_path: Path) -> Dict[str, Any]:
-    """Merged baseline = ``setbert_model`` block + ``train_setbert`` block.
+    """Merged baseline = ``genome_models`` block + ``train_setbert`` block.
 
-    Shared model identity (``pretrained_repo``, ``pretrained_revision``,
-    ``device``) lives in ``setbert_model``; everything training-specific
-    (``amp``, ``amp_dtype``, ``weight_init``, task / optimization / head /
-    output knobs) lives in ``train_setbert``. Experiment overrides in
-    experiments.yaml may target keys from either block (e.g.
-    ``weight_init: random``, ``device: cpu``).
+    Shared settings (checkpoint identity ``setbert_repo`` / ``setbert_revision``,
+    ``device``, ``amp`` / ``amp_dtype``, ``task``, ``head_type`` and the
+    task / optimization knobs common to both HyenaDNA and SetBERT training)
+    live in ``genome_models``; everything SetBERT-specific (set construction,
+    batch sizes, backbone freezing) lives in ``train_setbert``. Experiment
+    overrides in experiments.yaml may target keys from either block (e.g.
+    ``head_type: cosine``, ``device: cpu``).
     """
     cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
     if not isinstance(cfg, dict):
         raise SystemExit(f"{defaults_path} must contain a YAML mapping.")
-    model_sec = cfg.get("setbert_model")
-    if not isinstance(model_sec, dict):
-        raise SystemExit(f"{defaults_path} must define a setbert_model mapping.")
+    shared = cfg.get("genome_models")
+    if not isinstance(shared, dict):
+        raise SystemExit(f"{defaults_path} must define a genome_models mapping.")
     train_sec = cfg.get("train_setbert")
     if not isinstance(train_sec, dict):
         raise SystemExit(f"{defaults_path} must define a train_setbert mapping.")
-    overlap = set(model_sec) & set(train_sec)
+    overlap = set(shared) & set(train_sec)
     if overlap:
         raise SystemExit(
-            "setbert_model and train_setbert must not share keys; conflict: "
+            "genome_models and train_setbert must not share keys; conflict: "
             f"{sorted(overlap)!r}."
         )
-    return {**model_sec, **train_sec}
+    return {**shared, **train_sec}
 
 
 def merge_train_setbert_config(
@@ -180,97 +180,15 @@ def merge_train_setbert_config(
     return defaults, experiment_name, template
 
 
-def _parse_seed_grid(raw: object) -> Optional[List[int]]:
-    if raw is None:
-        return None
-    if isinstance(raw, int):
-        return [int(raw)]
-    if isinstance(raw, (list, tuple)):
-        if not raw:
-            raise SystemExit("random_seed grid must not be empty.")
-        try:
-            return [int(x) for x in raw]
-        except (TypeError, ValueError) as exc:
-            raise SystemExit(
-                f"random_seed grid must be a list of integers; got {raw!r}."
-            ) from exc
-    raise SystemExit(
-        f"random_seed must be an integer or a YAML list of integers; got {type(raw).__name__}."
-    )
-
-
-def _task_abbrv(task: str) -> str:
-    if task == "cancer_diagnosis":
-        return "cd"
-    if task == "cancer_type":
-        return "ct"
-    raise SystemExit(f"Unknown task {task!r} (expected cancer_diagnosis or cancer_type).")
-
-
 def _format_results_template(
     template: str, *, task: str, name: str, seed: int
 ) -> str:
     return str(template).format(
         task=str(task).strip(),
-        task_abbrv=_task_abbrv(task),
+        task_abbrv=task_abbrv(task),
         name=str(name),
         seed=int(seed),
     )
-
-
-# ---------------------------------------------------------------------------
-# Grid orchestration (parent forks one child per seed)
-# ---------------------------------------------------------------------------
-
-
-def _clamp_sigsegv_retries(raw: object) -> int:
-    try:
-        n = int(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
-    return max(0, min(int(n), 8))
-
-
-def _grid_child_subprocess_env() -> Dict[str, str]:
-    env = dict(os.environ)
-    env["PYTHONFAULTHANDLER"] = "1"
-    return env
-
-
-def _run_grid_child(
-    cmd: Sequence[str],
-    repo_root: Path,
-    *,
-    sigsegv_retries: object,
-) -> None:
-    """Run one grid child process; retry on SIGSEGV up to ``sigsegv_retries`` extra times."""
-    retries = _clamp_sigsegv_retries(sigsegv_retries)
-    max_attempts = 1 + retries
-    env = _grid_child_subprocess_env()
-    for attempt in range(1, max_attempts + 1):
-        try:
-            subprocess.run(list(cmd), check=True, cwd=str(repo_root), env=env)
-            return
-        except subprocess.CalledProcessError as exc:
-            sigsegv = getattr(signal, "SIGSEGV", None)
-            is_sigsegv = sigsegv is not None and exc.returncode == -int(sigsegv)
-            if is_sigsegv and attempt < max_attempts:
-                print(
-                    "train_setbert: grid child died with SIGSEGV "
-                    f"(attempt {attempt}/{max_attempts}); retrying after short delay.",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                time.sleep(min(float(attempt), 5.0))
-                continue
-            if is_sigsegv:
-                raise SystemExit(
-                    "SetBERT training subprocess crashed with SIGSEGV (signal 11). "
-                    "This normally comes from the CUDA stack or GPU driver, not from "
-                    "Python logic. Reruns often succeed; raise "
-                    "train_setbert.sigsegv_retries in experiments.yaml to retry more."
-                ) from exc
-            raise
 
 
 # ---------------------------------------------------------------------------
@@ -302,15 +220,6 @@ def _peek_cache_metadata(pt_path: Path) -> Dict[str, Any]:
         "pretrained_revision",
     )
     return {k: blob[k] for k in keys if k in blob}
-
-
-def _pos_neg_for_task(task: str) -> Tuple[str, str]:
-    """Return (pos_label, neg_label) using the same convention as train_hyenadna."""
-    if task == "cancer_diagnosis":
-        return ("cancer", "healthy")
-    if task == "cancer_type":
-        return ("breast_cancer", "colorectal_cancer")
-    raise SystemExit(f"Unknown task {task!r}.")
 
 
 def _build_run_records(
@@ -406,168 +315,13 @@ def _make_collate(pad_token_id: int) -> Callable[[List[Dict[str, object]]], Dict
     return collate
 
 
-def _study_sampler_weights(entries: Sequence[RunRecord]) -> torch.Tensor:
-    counts: Dict[str, int] = defaultdict(int)
-    for e in entries:
-        counts[e.study_name] += 1
-    w = [1.0 / counts[e.study_name] for e in entries]
-    return torch.tensor(w, dtype=torch.double)
-
-
 # ---------------------------------------------------------------------------
-# Model wrapper: SetBERT + configurable binary classification head (BCE)
+# Model wrapper: SetBERT + shared binary classification head (BCE)
 # ---------------------------------------------------------------------------
-
-
-class SetBertHead(nn.Module):
-    """Binary classification head over a transformed SetBERT batch.
-
-    Selected via ``head_type`` (see :data:`VALID_HEAD_TYPES`). All variants
-    accept the three tensors emitted by ``SetBert`` for a batch:
-
-    - ``cls``: transformed ``[CLS]`` token, shape ``[B, embed_dim]``
-    - ``set_tokens``: transformed per-sequence tokens, shape ``[B, set_size, embed_dim]``
-    - ``pad_mask``: boolean padding mask for ``set_tokens``, shape ``[B, set_size]``
-      (``True`` at padded positions)
-
-    Non-pooled heads consume only ``cls``; the ``pooled`` head additionally uses
-    masked mean and max over ``set_tokens``. ``LayerNorm`` is used **only** by
-    the ``spectral`` and ``pooled`` heads, where it has a non-trivial role:
-    ``spectral`` needs a bounded input scale for its Lipschitz bound to be
-    meaningful, and ``pooled`` needs to equalize the heterogeneous scales of
-    its concatenated ``[CLS] || mean || max`` feature blocks. Other heads rely
-    on the LayerNorm already present at the end of the SetBERT backbone.
-
-    ``dropout`` is applied to the head input only for ``linear``, ``spectral``,
-    and ``pooled``; for ``mlp`` it is applied between the GELU and the final
-    ``Linear`` instead (standard MLP regularization). The ``cosine`` and
-    ``prototype`` heads do **not** use ``dropout``: their immediate
-    ``F.normalize`` discards the standard ``1/(1-p)`` magnitude rescaling, so
-    dropout would degrade into coordinate-dropping direction noise on the unit
-    sphere - a different regularizer than the one users expect from the
-    ``head_dropout`` knob. ``head_hidden`` selects the MLP hidden width.
-    """
-
-    def __init__(
-        self,
-        embed_dim: int,
-        *,
-        kind: str,
-        dropout: float = 0.0,
-        head_hidden: int = 0,
-    ):
-        super().__init__()
-        kind = str(kind).strip().lower()
-        if kind not in VALID_HEAD_TYPES:
-            raise SystemExit(
-                f"Unknown head_type {kind!r} "
-                f"(use one of {sorted(VALID_HEAD_TYPES)})."
-            )
-        self.kind = kind
-        d = int(embed_dim)
-        if kind == "linear":
-            self.dropout = nn.Dropout(float(dropout))
-            self.classifier = nn.Linear(d, 1)
-        elif kind == "mlp":
-            h = int(head_hidden)
-            if h <= 0:
-                raise SystemExit(
-                    f"head_type='mlp' requires head_hidden > 0; got {h}."
-                )
-            self.classifier = nn.Sequential(
-                nn.Linear(d, h),
-                nn.GELU(),
-                nn.Dropout(float(dropout)),
-                nn.Linear(h, 1),
-            )
-        elif kind == "cosine":
-            self.weight = nn.Parameter(torch.randn(d) * (d ** -0.5))
-            self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
-        elif kind == "spectral":
-            self.dropout = nn.Dropout(float(dropout))
-            self.norm = nn.LayerNorm(d)
-            self.classifier = nn.utils.parametrizations.spectral_norm(
-                nn.Linear(d, 1)
-            )
-        elif kind == "prototype":
-            self.prototypes = nn.Parameter(torch.randn(2, d) * (d ** -0.5))
-            self.log_temperature = nn.Parameter(torch.log(torch.tensor(10.0)))
-        elif kind == "pooled":
-            self.dropout = nn.Dropout(float(dropout))
-            self.norm = nn.LayerNorm(3 * d)
-            self.classifier = nn.Linear(3 * d, 1)
-        else:  # pragma: no cover - guarded above
-            raise SystemExit(f"Unknown head_type {kind!r}.")
-
-    @torch.no_grad()
-    def init_prototypes_from_means(
-        self, pos_mean: torch.Tensor, neg_mean: torch.Tensor
-    ) -> None:
-        """Overwrite prototype rows from per-class mean raw ``cls`` vectors.
-
-        Row 0 holds the positive class because :meth:`forward` returns
-        ``sims[:, 0] - sims[:, 1]``. Centralizing the row ordering here keeps the
-        caller from getting the sign wrong. Because the prototype head has no
-        LayerNorm, the prototype-as-class-mean interpretation survives across
-        training (the prototypes only move by the SGD updates applied to them).
-        Only valid for ``kind='prototype'``.
-        """
-        if self.kind != "prototype":
-            raise SystemExit(
-                "init_prototypes_from_means is only valid for kind='prototype'; "
-                f"head kind is {self.kind!r}."
-            )
-        stacked = torch.stack(
-            [pos_mean.detach(), neg_mean.detach()], dim=0
-        ).to(self.prototypes.dtype)
-        if stacked.shape != self.prototypes.shape:
-            raise SystemExit(
-                f"Prototype init shape mismatch: got {tuple(stacked.shape)}, "
-                f"expected {tuple(self.prototypes.shape)}."
-            )
-        self.prototypes.data.copy_(stacked)
-
-    def _pool_set(
-        self, set_tokens: torch.Tensor, pad_mask: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        valid = (~pad_mask).unsqueeze(-1).to(set_tokens.dtype)
-        denom = valid.sum(dim=1).clamp_min(1.0)
-        mean_pool = (set_tokens * valid).sum(dim=1) / denom
-        neg_inf = torch.finfo(set_tokens.dtype).min
-        masked = set_tokens.masked_fill(pad_mask.unsqueeze(-1), neg_inf)
-        max_pool = masked.max(dim=1).values
-        return mean_pool, max_pool
-
-    def forward(
-        self,
-        cls: torch.Tensor,
-        set_tokens: torch.Tensor,
-        pad_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        if self.kind == "linear":
-            return self.classifier(self.dropout(cls)).squeeze(-1)
-        if self.kind == "mlp":
-            return self.classifier(cls).squeeze(-1)
-        if self.kind == "spectral":
-            return self.classifier(self.dropout(self.norm(cls))).squeeze(-1)
-        if self.kind == "cosine":
-            x = F.normalize(cls, dim=-1)
-            w = F.normalize(self.weight, dim=-1)
-            return self.log_temperature.exp() * (x @ w)
-        if self.kind == "prototype":
-            x = F.normalize(cls, dim=-1)
-            p = F.normalize(self.prototypes, dim=-1)
-            sims = self.log_temperature.exp() * (x @ p.T)
-            return sims[:, 0] - sims[:, 1]
-        if self.kind == "pooled":
-            mean_pool, max_pool = self._pool_set(set_tokens, pad_mask)
-            feat = torch.cat([cls, mean_pool, max_pool], dim=-1)
-            return self.classifier(self.dropout(self.norm(feat))).squeeze(-1)
-        raise SystemExit(f"Unknown head_type {self.kind!r}.")
 
 
 class SetBertBinaryClassifier(nn.Module):
-    """Wrap ``SetBert`` and predict via a configurable :class:`SetBertHead`.
+    """Wrap ``SetBert`` and predict via a shared :class:`BinaryClassificationHead`.
 
     When the DNABERT sequence encoder is frozen during training, the forward pass
     computes per-sequence embeddings under ``torch.no_grad()`` (skipping the
@@ -588,10 +342,10 @@ class SetBertBinaryClassifier(nn.Module):
     ):
         super().__init__()
         self.base_model = base_model
-        self.head = SetBertHead(
+        self.head = BinaryClassificationHead(
             int(embed_dim),
             kind=str(head_type),
-            dropout=float(head_dropout),
+            head_dropout=float(head_dropout),
             head_hidden=int(head_hidden),
         )
 
@@ -643,7 +397,7 @@ class SetBertBinaryClassifier(nn.Module):
             out = self.base_model(
                 sequence_tokens=sequence_tokens, padding_mask=pad_mask
             )
-        return self.head(out["class"], out["sequences"], pad_mask)
+        return self.head(out["class"])
 
 
 def _set_backbone_requires_grad(
@@ -689,55 +443,8 @@ def _make_optimizer(
 
 
 # ---------------------------------------------------------------------------
-# AMP, loss, scoring
+# Loss, scoring
 # ---------------------------------------------------------------------------
-
-
-def _resolve_amp_config(
-    merged: Mapping[str, object], device: torch.device
-) -> Tuple[bool, torch.dtype, str, bool]:
-    amp_requested = bool(merged.get("amp", False))
-    amp_dtype_raw = str(merged.get("amp_dtype", "bfloat16")).strip().lower()
-    if amp_dtype_raw not in VALID_AMP_DTYPES:
-        raise SystemExit("train_setbert.amp_dtype must be 'float16' or 'bfloat16'.")
-    amp_dtype = VALID_AMP_DTYPES[amp_dtype_raw]
-    use_grad_scaler = amp_dtype is torch.float16
-    if not amp_requested:
-        return False, amp_dtype, amp_dtype_raw, use_grad_scaler
-    if device.type != "cuda":
-        print("AMP requested but CUDA is unavailable; running in float32.", flush=True)
-        return False, amp_dtype, amp_dtype_raw, use_grad_scaler
-    return True, amp_dtype, amp_dtype_raw, use_grad_scaler
-
-
-def _amp_autocast(
-    device: torch.device, *, amp_enabled: bool, amp_dtype: torch.dtype
-) -> ContextManager[object]:
-    if amp_enabled and device.type == "cuda":
-        return torch.autocast(device_type="cuda", dtype=amp_dtype)
-    return nullcontext()
-
-
-def _compute_pos_weight(
-    train_entries: Sequence[RunRecord], mode: str, device: torch.device
-) -> Optional[torch.Tensor]:
-    m = (mode or "none").strip().lower()
-    if m in ("none", "null", ""):
-        return None
-    n_pos = sum(1 for e in train_entries if e.label == 1)
-    n_neg = sum(1 for e in train_entries if e.label == 0)
-    if n_pos == 0 or n_neg == 0:
-        return None
-    bal = float(n_neg) / float(n_pos)
-    if m == "balanced":
-        val = bal
-    elif m == "balanced_sqrt":
-        val = bal ** 0.5
-    else:
-        raise SystemExit(
-            f"Unknown class_weight {mode!r} (use none, balanced, or balanced_sqrt)."
-        )
-    return torch.tensor([val], dtype=torch.float32, device=device)
 
 
 def _train_one_epoch(
@@ -757,7 +464,7 @@ def _train_one_epoch(
     for batch in tqdm(loader, desc="Train", leave=False):
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         labels = batch["label"].to(device, non_blocking=True)
-        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+        with amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
             logits = model(input_ids)
             loss = F.binary_cross_entropy_with_logits(
                 logits, labels, pos_weight=pos_weight
@@ -799,84 +506,11 @@ def _populate_encoder_cache(
     for batch in tqdm(loader, desc=desc, leave=False):
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         runs = list(batch["run"])
-        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+        with amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
             embeddings, _ = model._embed_under_no_grad(input_ids)
         for i, run in enumerate(runs):
             cache[str(run)] = embeddings[i].detach().to("cpu").clone()
     return cache
-
-
-@torch.no_grad()
-def _compute_train_class_mean_cls(
-    model: SetBertBinaryClassifier,
-    train_entries: Sequence[RunRecord],
-    pad_token_id: int,
-    device: torch.device,
-    *,
-    embed_dim: int,
-    requested_set_size: int,
-    inference_batch_size: int,
-    num_workers: int,
-    amp_enabled: bool,
-    amp_dtype: torch.dtype,
-) -> Tuple[torch.Tensor, torch.Tensor, int, int]:
-    """Forward all train Runs once; return per-class mean of raw ``cls`` vectors.
-
-    Used by the prototype head's data-anchored initialization (see
-    :meth:`SetBertHead.init_prototypes_from_means`). One deterministic pass
-    over the train split (no oversampling, no shuffle) so each Run contributes
-    exactly once. The means are computed on the raw ``[CLS]`` outputs of the
-    SetBERT backbone (the prototype head has no LayerNorm), which matches the
-    inputs the head's forward pass consumes at runtime. Returns
-    ``(pos_mean, neg_mean, n_pos, n_neg)`` with the means in fp32 on CPU; the
-    caller moves them to the model's device. Raises :class:`SystemExit` if
-    either class has zero training Runs.
-    """
-    ds = SetBertRunDataset(train_entries, requested_set_size=requested_set_size)
-    pin_memory = device.type == "cuda"
-    persistent_workers = num_workers > 0
-    loader = DataLoader(
-        ds,
-        batch_size=inference_batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        collate_fn=_make_collate(pad_token_id),
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-    )
-    model.eval()
-    sum_pos = torch.zeros(int(embed_dim), dtype=torch.float64)
-    sum_neg = torch.zeros(int(embed_dim), dtype=torch.float64)
-    n_pos = 0
-    n_neg = 0
-    for batch in tqdm(loader, desc="Cache(train cls)", leave=False):
-        input_ids = batch["input_ids"].to(device, non_blocking=True)
-        labels = batch["label"]
-        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
-            pad_mask = model.base_model.compute_padding_mask(
-                sequence_tokens=input_ids
-            )
-            out = model.base_model(
-                sequence_tokens=input_ids, padding_mask=pad_mask
-            )
-            cls = out["class"]
-        cls_cpu = cls.float().detach().cpu()
-        pos_mask = labels > 0.5
-        if bool(pos_mask.any()):
-            sum_pos += cls_cpu[pos_mask].sum(dim=0).to(torch.float64)
-            n_pos += int(pos_mask.sum().item())
-        neg_mask = ~pos_mask
-        if bool(neg_mask.any()):
-            sum_neg += cls_cpu[neg_mask].sum(dim=0).to(torch.float64)
-            n_neg += int(neg_mask.sum().item())
-    if n_pos == 0 or n_neg == 0:
-        raise SystemExit(
-            "Prototype class-means init requires both positive and negative "
-            f"training Runs; got n_pos={n_pos}, n_neg={n_neg}."
-        )
-    pos_mean = (sum_pos / float(n_pos)).to(torch.float32)
-    neg_mean = (sum_neg / float(n_neg)).to(torch.float32)
-    return pos_mean, neg_mean, n_pos, n_neg
 
 
 def _forward_from_cache(
@@ -891,7 +525,7 @@ def _forward_from_cache(
     )
     pad_mask = torch.zeros(stack.shape[:2], dtype=torch.bool, device=device)
     out = model.base_model(sequence_embeddings=stack, padding_mask=pad_mask)
-    return model.head(out["class"], out["sequences"], pad_mask)
+    return model.head(out["class"])
 
 
 @torch.no_grad()
@@ -917,7 +551,7 @@ def _score_loader(
     model.eval()
     scores: List[float] = []
     for batch in tqdm(loader, desc=desc, leave=False):
-        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+        with amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
             if encoder_cache is not None:
                 logits = _forward_from_cache(
                     model, list(batch["run"]), encoder_cache, device
@@ -937,19 +571,9 @@ def _binary_metrics(
     pos_label: str,
     neg_label: str,
 ) -> Tuple[float, float]:
-    if len(entries) == 0:
-        return float("nan"), float("nan")
+    """Per-Run binary AUC + F1; thin SetBERT-side wrapper around the shared metric."""
     y_true = np.array([e.task_label for e in entries], dtype=object)
-    auc = binary_auc_from_scores(y_true, scores, positive_label=pos_label)
-    y_pred = np.where(scores >= 0.5, pos_label, neg_label)
-    f1 = f1_score(
-        y_true,
-        y_pred,
-        pos_label=pos_label,
-        average="binary",
-        zero_division=0,
-    )
-    return float(auc), float(f1)
+    return binary_auc_and_f1(y_true, scores, pos_label=pos_label, neg_label=neg_label)
 
 
 @torch.no_grad()
@@ -978,7 +602,7 @@ def _eval_val_full(
     scores: List[float] = []
     for batch in tqdm(loader, desc=desc, leave=False):
         labels = batch["label"].to(device, non_blocking=True)
-        with _amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
+        with amp_autocast(device, amp_enabled=amp_enabled, amp_dtype=amp_dtype):
             if encoder_cache is not None:
                 logits = _forward_from_cache(
                     model, list(batch["run"]), encoder_cache, device
@@ -1001,131 +625,6 @@ def _eval_val_full(
 # ---------------------------------------------------------------------------
 
 
-def _float_or_none(x: float) -> Optional[float]:
-    return float(x) if x == x else None
-
-
-def _results_json_out_path(
-    repo_root: Path, raw: Optional[object], *, task: str
-) -> Optional[Path]:
-    if raw is None:
-        return None
-    if raw in ("", "null"):
-        defaults_path = repo_root / "defaults.yaml"
-        try:
-            paths_cfg = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))["paths"]
-            scratch_key = paths_cfg["results_scratch_dir"]
-        except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
-            raise SystemExit(
-                f"Cannot read paths.results_scratch_dir from {defaults_path}: {exc}"
-            ) from exc
-        scratch_base = resolve_repo_path(repo_root, scratch_key)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        return scratch_base / f"train_setbert_{task}_{ts}.json"
-    p = Path(str(raw).strip()).expanduser()
-    return p if p.is_absolute() else repo_root / p
-
-
-def _training_log_path_from_results(path: Path) -> Path:
-    return path.with_name(f"{path.stem}_training.json")
-
-
-def _write_training_log(path: Path, epoch_rows: Sequence[Mapping[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload: List[Dict[str, object]] = []
-    for row in epoch_rows:
-        payload.append(
-            {
-                "epoch": int(row["epoch"]),
-                "learning_rate": float(row["learning_rate"]),
-                "train_loss": float(row["train_loss"]),
-                "val_loss": _float_or_none(float(row["val_loss"])),
-                "val_f1": _float_or_none(float(row["val_f1"])),
-                "test_f1": _float_or_none(float(row["test_f1"])),
-                "holdout_f1": _float_or_none(float(row["holdout_f1"])),
-                "val_auc": _float_or_none(float(row["val_auc"])),
-                "test_auc": _float_or_none(float(row["test_auc"])),
-                "holdout_auc": _float_or_none(float(row["holdout_auc"])),
-            }
-        )
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
-def _write_predictions_csv(
-    path: Path,
-    entries: Sequence[RunRecord],
-    scores: np.ndarray,
-    *,
-    pos_label: str,
-    neg_label: str,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["Run", "task_label", "predicted_label", "positive_score"],
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        for e, s in zip(entries, scores):
-            pred = pos_label if float(s) >= 0.5 else neg_label
-            writer.writerow(
-                {
-                    "Run": str(e.run),
-                    "task_label": str(e.task_label),
-                    "predicted_label": str(pred),
-                    "positive_score": f"{float(s):.10f}",
-                }
-            )
-
-
-def _write_results_json(
-    path: Path,
-    *,
-    merged: Mapping[str, Any],
-    cache_info: Mapping[str, Any],
-    task: str,
-    pos_label: str,
-    neg_label: str,
-    best_epoch: int,
-    tuning_metric: str,
-    best_tuning_score: float,
-    best_val_auc: float,
-    best_val_f1: float,
-    test_auc: float,
-    test_f1: float,
-    holdout_auc: float,
-    holdout_f1: float,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "script": Path(__file__).name,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "config": dict(merged),
-        "data": {"cache": dict(cache_info)},
-        "task": {
-            "task": str(task),
-            "pos_label": str(pos_label),
-            "neg_label": str(neg_label),
-        },
-        "tuning": {
-            "split": "validation",
-            "metric": str(tuning_metric),
-            "best_epoch": int(best_epoch),
-            "best_score": _float_or_none(best_tuning_score),
-            "val_auc": _float_or_none(best_val_auc),
-            "val_f1": _float_or_none(best_val_f1),
-        },
-        "metrics": {
-            "test_auc": _float_or_none(test_auc),
-            "test_f1": _float_or_none(test_f1),
-            "holdout_auc": _float_or_none(holdout_auc),
-            "holdout_f1": _float_or_none(holdout_f1),
-        },
-    }
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
-
 # ---------------------------------------------------------------------------
 # CLI / main
 # ---------------------------------------------------------------------------
@@ -1133,35 +632,7 @@ def _write_results_json(
 
 def _parse_argv(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--expt",
-        type=int,
-        default=None,
-        help="Optional train_setbert experiment index from experiments.yaml (1-based). "
-        "Omit or use 0 for defaults.yaml only.",
-    )
-    parser.add_argument(
-        "--results-json",
-        type=str,
-        nargs="?",
-        const="",
-        default=argparse.SUPPRESS,
-        help=(
-            "Override results JSON path. With no path, writes under results/scratch/ "
-            "as train_setbert_<task>_<utc>.json. Omit entirely to use YAML only."
-        ),
-    )
-    parser.add_argument(
-        "--override-random-seed",
-        type=int,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--child-run",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
+    add_common_train_args(parser, model_label="train_setbert")
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.expt is not None and args.expt < 0:
         raise SystemExit("--expt must be >= 0.")
@@ -1178,17 +649,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     merged, exp_name, template = merge_train_setbert_config(
         defaults_path, experiments_path, expt=expt
     )
-    if hasattr(cli, "results_json"):
-        rj = cli.results_json
-        if rj == "" and expt > 0 and not cli.child_run:
-            # Parent of a grid; let the template/expansion logic decide per child.
-            pass
-        elif rj == "":
-            merged = {**merged, "results_json": ""}
-        else:
-            merged = {**merged, "results_json": rj}
-    if cli.override_random_seed is not None:
-        merged = {**merged, "random_seed": int(cli.override_random_seed)}
+    merged = apply_cli_overrides(cli, merged, expt=expt, child_run=cli.child_run)
 
     # ----- Grid orchestration (parent only) ---------------------------------
     if expt > 0 and not cli.child_run:
@@ -1206,15 +667,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         overrides = row.get("overrides") or {}
         if not isinstance(overrides, dict):
             raise SystemExit("train_setbert experiment overrides must be a mapping.")
-        seed_grid = _parse_seed_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
-        task_v = str(merged["task"]).strip()
-        if task_v not in VALID_TASKS:
-            raise SystemExit(
-                f"Unknown train_setbert.task {task_v!r} "
-                "(use cancer_diagnosis or cancer_type)."
-            )
+        task_grid = parse_task_grid(overrides.get("task")) or [str(merged["task"]).strip()]
+        seed_grid = parse_seed_grid(overrides.get("random_seed")) or [int(merged["random_seed"])]
 
-        if len(seed_grid) > 1:
+        if len(task_grid) > 1 or len(seed_grid) > 1:
             if not (isinstance(template, str) and template.strip()):
                 raise SystemExit(
                     "Grid experiment requires train_setbert.results_json_template in experiments.yaml."
@@ -1225,47 +681,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 raise SystemExit(
                     "--results-json cannot be used with multi-run train_setbert grid experiments."
                 )
-            total = len(seed_grid)
+            total = int(len(task_grid) * len(seed_grid))
             completed = 0
             skipped = 0
             print(
-                f"Running EXPT={expt} grid: {total} seed(s) for task={task_v}.",
+                f"Running EXPT={expt} grid: {len(task_grid)} task(s) x {len(seed_grid)} seed(s) "
+                f"= {total} run(s) (outer: task, inner: seed).",
                 flush=True,
             )
-            for seed in seed_grid:
-                out_rel = _format_results_template(
-                    template, task=task_v, name=str(exp_name), seed=int(seed)
-                )
-                out_path = resolve_repo_path(repo_root, out_rel)
-                if out_path.is_file():
-                    skipped += 1
+            for task_v in task_grid:
+                for seed in seed_grid:
+                    out_rel = _format_results_template(
+                        template, task=str(task_v), name=str(exp_name), seed=int(seed)
+                    )
+                    out_path = resolve_repo_path(repo_root, out_rel)
+                    if out_path.is_file():
+                        skipped += 1
+                        print(
+                            f"Skipping EXPT={expt} task={task_v} seed={seed}: "
+                            f"{out_path} already exists.",
+                            flush=True,
+                        )
+                        continue
+                    cmd = [
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "--expt",
+                        str(expt),
+                        "--child-run",
+                        "--override-task",
+                        str(task_v),
+                        "--override-random-seed",
+                        str(seed),
+                        "--results-json",
+                        str(out_path),
+                    ]
                     print(
-                        f"Skipping EXPT={expt} seed={seed}: "
-                        f"{out_path} already exists.",
+                        f"Launching EXPT={expt} task={task_v} seed={seed} -> {out_path}",
                         flush=True,
                     )
-                    continue
-                cmd = [
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "--expt",
-                    str(expt),
-                    "--child-run",
-                    "--override-random-seed",
-                    str(seed),
-                    "--results-json",
-                    str(out_path),
-                ]
-                print(
-                    f"Launching EXPT={expt} seed={seed} -> {out_path}",
-                    flush=True,
-                )
-                _run_grid_child(
-                    cmd,
-                    repo_root,
-                    sigsegv_retries=merged.get("sigsegv_retries"),
-                )
-                completed += 1
+                    run_grid_child(
+                        cmd,
+                        repo_root,
+                        sigsegv_retries=merged.get("sigsegv_retries"),
+                        model_label="SetBERT",
+                    )
+                    completed += 1
             print(
                 f"Finished EXPT={expt} grid: launched={completed}, "
                 f"skipped_existing={skipped}, total={total}.",
@@ -1273,7 +734,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             return 0
 
-        # Single-seed expt: maybe still apply template to choose the output path.
+        # Single-cell expt: maybe still apply template to choose the output path.
         if (
             isinstance(template, str)
             and template.strip()
@@ -1281,7 +742,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             and merged.get("results_json") in (None, "null")
         ):
             out_rel = _format_results_template(
-                template, task=task_v, name=str(exp_name), seed=int(merged["random_seed"])
+                template,
+                task=str(merged["task"]).strip(),
+                name=str(exp_name),
+                seed=int(merged["random_seed"]),
             )
             merged = {**merged, "results_json": out_rel}
 
@@ -1316,12 +780,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     paths_cfg = defaults_cfg.get("paths")
     if not isinstance(paths_cfg, dict):
         raise SystemExit(f"{defaults_path} must define paths as a mapping.")
-    # Validate that file-level ``setbert_model`` defaults exist and are well-typed; the
+    # Validate that file-level ``genome_models`` defaults exist and are well-typed; the
     # actual values used come from ``merged`` so experiments.yaml overrides (e.g.
     # ``device: cpu``) still take effect.
-    load_setbert_model_section(defaults_cfg)
-    pretrained_repo = str(merged["pretrained_repo"]).strip()
-    pretrained_revision = str(merged["pretrained_revision"]).strip()
+    load_genome_models_section(defaults_cfg)
+    pretrained_repo = str(merged["setbert_repo"]).strip()
+    pretrained_revision = str(merged["setbert_revision"]).strip()
     run_tensors_root = resolve_repo_path(
         repo_root, str(paths_cfg["setbert_run_tensors_dir"]).strip()
     )
@@ -1335,7 +799,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if requested_set_size <= 0:
         raise SystemExit("train_setbert.set_size must be > 0.")
 
-    pos_label, neg_label = _pos_neg_for_task(task)
+    pos_label, neg_label = pos_neg_for_task(task)
     all_records, n_missing_cache, missing_cache_examples = _build_run_records(
         task,
         run_tensors_root,
@@ -1376,12 +840,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if sample_repo and sample_repo != pretrained_repo:
         raise SystemExit(
             f"Cache pretrained_repo {sample_repo!r} does not match "
-            f"setbert_model.pretrained_repo {pretrained_repo!r}."
+            f"genome_models.setbert_repo {pretrained_repo!r}."
         )
     if sample_rev and sample_rev != pretrained_revision:
         raise SystemExit(
             f"Cache pretrained_revision {sample_rev!r} does not match "
-            f"setbert_model.pretrained_revision {pretrained_revision!r}."
+            f"genome_models.setbert_revision {pretrained_revision!r}."
         )
 
     seed = int(merged["random_seed"])
@@ -1399,7 +863,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
 
-    amp_enabled, amp_dtype, amp_dtype_name, amp_use_scaler = _resolve_amp_config(
+    amp_enabled, amp_dtype, amp_dtype_name, amp_use_scaler = resolve_amp_config(
         merged, device
     )
 
@@ -1419,25 +883,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     chunk_size = int(merged["sequence_encoder_chunk_size"])
-    weight_init = str(merged.get("weight_init") or "pretrained").strip().lower()
-    if weight_init not in VALID_WEIGHT_INITS:
-        raise SystemExit(
-            f"train_setbert.weight_init must be one of {sorted(VALID_WEIGHT_INITS)}; "
-            f"got {weight_init!r}."
-        )
-    merged = {**merged, "weight_init": weight_init}
-    if weight_init == "pretrained":
-        load_desc = (
-            f"Loading SetBERT {pretrained_repo}@{pretrained_revision} "
-            "(pretrained weights)"
-        )
-    else:
-        load_desc = (
-            f"Loading SetBERT {pretrained_repo}@{pretrained_revision} "
-            f"(random weights; architecture only, seeded by random_seed={seed})"
-        )
     print(
-        f"{load_desc} on {device} (sequence_encoder_chunk_size={chunk_size})",
+        f"Loading SetBERT {pretrained_repo}@{pretrained_revision} on {device} "
+        f"(sequence_encoder_chunk_size={chunk_size})",
         flush=True,
     )
     try:
@@ -1447,7 +895,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             sequence_encoder_chunk_size=chunk_size,
             device=device,
             eval_mode=False,
-            weight_init=weight_init,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Failed to load SetBERT model: {exc}", file=sys.stderr)
@@ -1459,36 +906,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     head_dropout = float(merged.get("head_dropout") or 0.0)
     if head_dropout < 0.0:
-        raise SystemExit("train_setbert.head_dropout must be >= 0.")
-    head_type = str(merged.get("head_type") or "linear").strip().lower()
-    if head_type not in VALID_HEAD_TYPES:
-        raise SystemExit(
-            f"train_setbert.head_type must be one of {sorted(VALID_HEAD_TYPES)}; "
-            f"got {head_type!r}."
-        )
-    prototype_init = str(merged.get("prototype_init") or "class_means").strip().lower()
-    if prototype_init not in VALID_PROTOTYPE_INITS:
-        raise SystemExit(
-            f"train_setbert.prototype_init must be one of {sorted(VALID_PROTOTYPE_INITS)}; "
-            f"got {prototype_init!r}."
-        )
-    raw_head_hidden = merged.get("head_hidden", 0)
-    try:
-        head_hidden = int(raw_head_hidden) if raw_head_hidden is not None else 0
-    except (TypeError, ValueError) as exc:
-        raise SystemExit(
-            f"train_setbert.head_hidden must be an integer; got {raw_head_hidden!r}."
-        ) from exc
-    if head_type == "mlp" and head_hidden <= 0:
-        raise SystemExit(
-            "train_setbert.head_type='mlp' requires head_hidden > 0; "
-            f"got {head_hidden}."
-        )
+        raise SystemExit("head_dropout must be >= 0.")
+    head_type, head_hidden = validate_head_config(
+        head_type=merged.get("head_type"),
+        head_hidden=merged.get("head_hidden"),
+    )
     merged = {
         **merged,
         "head_type": head_type,
         "head_hidden": head_hidden,
-        "prototype_init": prototype_init,
     }
     model = SetBertBinaryClassifier(
         base_model,
@@ -1498,10 +924,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         head_hidden=head_hidden,
     ).to(device)
 
-    pos_weight = _compute_pos_weight(train_entries, class_weight_mode, device)
+    pos_weight = compute_pos_weight(
+        train_entries, mode=class_weight_mode, device=device
+    )
     if pos_weight is not None:
         print(
-            f"  pos_weight={float(pos_weight.item()):.4f} (mode={class_weight_mode})",
+            f"  pos_weight={float(pos_weight.item()):.3f} (mode={class_weight_mode})",
             flush=True,
         )
 
@@ -1532,7 +960,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     shuffle = True
     if train_sampler == "study_balanced":
         sampler = WeightedRandomSampler(
-            _study_sampler_weights(train_entries),
+            study_sampler_weights(train_entries),
             num_samples=len(train_entries),
             replacement=True,
         )
@@ -1583,39 +1011,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             persistent_workers=persistent_workers,
         )
 
-    # ----- Prototype head: data-anchored initialization ---------------------
-    if head_type == "prototype" and prototype_init == "class_means":
-        print(
-            "  initializing prototype head from train class means "
-            "(one forward pass over train split)...",
-            flush=True,
-        )
-        pos_mean, neg_mean, n_pos_init, n_neg_init = _compute_train_class_mean_cls(
-            model,
-            train_entries,
-            pad_token_id,
-            device,
-            embed_dim=embed_dim,
-            requested_set_size=requested_set_size,
-            inference_batch_size=inference_batch_size,
-            num_workers=num_workers,
-            amp_enabled=amp_enabled,
-            amp_dtype=amp_dtype,
-        )
-        cos_sim = float(
-            F.cosine_similarity(pos_mean.unsqueeze(0), neg_mean.unsqueeze(0), dim=1)
-            .squeeze(0)
-            .item()
-        )
-        print(
-            f"  prototype init: class means from {n_pos_init} pos / {n_neg_init} neg "
-            f"train Runs, cos(pos_mean, neg_mean)={cos_sim:.4f}",
-            flush=True,
-        )
-        model.head.init_prototypes_from_means(
-            pos_mean.to(device), neg_mean.to(device)
-        )
-
     # ----- Optimization knobs ----------------------------------------------
     lr = float(merged["learning_rate"])
     wd = float(merged["weight_decay"])
@@ -1648,12 +1043,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     best_test_scores: Optional[np.ndarray] = None
     best_holdout_scores: Optional[np.ndarray] = None
 
-    results_path = _results_json_out_path(
-        repo_root, merged.get("results_json"), task=task
+    results_path = results_json_out_path(
+        repo_root,
+        merged.get("results_json"),
+        task=task,
+        script_stem="train_setbert",
     )
     training_log_path: Optional[Path] = None
     if results_path is not None:
-        training_log_path = _training_log_path_from_results(results_path)
+        training_log_path = training_log_path_from_results(results_path)
 
     opt: Optional[torch.optim.Optimizer] = None
     # Per-Run DNABERT outputs for val/test/holdout while the sequence encoder is
@@ -1790,13 +1188,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             }
         )
         if training_log_path is not None:
-            _write_training_log(training_log_path, epoch_log)
+            write_training_log(training_log_path, epoch_log)
 
         print(
-            f"  train_loss={train_loss:.4f} val_loss={val_loss:.4f}  "
-            f"val_auc={val_auc:.4f} val_f1={val_f1:.4f}  "
-            f"test_auc={test_auc:.4f} test_f1={test_f1:.4f}  "
-            f"holdout_auc={holdout_auc:.4f} holdout_f1={holdout_f1:.4f}  "
+            f"  train_loss={train_loss:.3f} val_loss={val_loss:.3f}  "
+            f"val_auc={val_auc:.3f} val_f1={val_f1:.3f}  "
+            f"test_auc={test_auc:.3f} test_f1={test_f1:.3f}  "
+            f"holdout_auc={holdout_auc:.3f} holdout_f1={holdout_f1:.3f}  "
             f"best_epoch={best_epoch}",
             flush=True,
         )
@@ -1837,8 +1235,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         final_holdout_auc, final_holdout_f1 = _binary_metrics(
             holdout_entries, final_holdout_scores, pos_label=pos_label, neg_label=neg_label
         )
-        _write_results_json(
+        write_results_json(
             results_path,
+            script_filename=Path(__file__).name,
             merged=merged,
             cache_info={
                 "dir": str(run_tensors_root),
@@ -1860,14 +1259,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             holdout_auc=final_holdout_auc,
             holdout_f1=final_holdout_f1,
         )
-        _write_predictions_csv(
+        write_predictions_csv(
             results_path.with_name(f"{results_path.stem}_test_predictions.csv"),
             test_entries,
             final_test_scores,
             pos_label=pos_label,
             neg_label=neg_label,
         )
-        _write_predictions_csv(
+        write_predictions_csv(
             results_path.with_name(f"{results_path.stem}_holdout_predictions.csv"),
             holdout_entries,
             final_holdout_scores,

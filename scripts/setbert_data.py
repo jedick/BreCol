@@ -48,32 +48,32 @@ warnings.filterwarnings(
 # ----- Config -----
 
 
-def load_setbert_model_section(cfg: Mapping[str, Any]) -> Dict[str, Any]:
-    """Validate the shared ``setbert_model`` block; return a typed dict.
+def load_genome_models_section(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate the shared ``genome_models`` block; return the SetBERT-relevant keys.
 
-    Holds only the pretrained checkpoint identity and the device default - the two
-    things both ``build_setbert_run_tensors.py`` and ``train_setbert.py`` need.
-    Training-only knobs (``amp``, ``amp_dtype``, ``weight_init``, etc.) live under
-    ``train_setbert``.
+    The ``genome_models`` block in defaults.yaml holds settings shared between
+    HyenaDNA and SetBERT (pretrained checkpoint identities, device, AMP, head, task,
+    optimization). This helper extracts the keys both ``build_setbert_run_tensors.py``
+    and ``train_setbert.py`` need: SetBERT checkpoint identity and the device default.
     """
-    section = cfg.get("setbert_model")
+    section = cfg.get("genome_models")
     if not isinstance(section, dict):
-        raise SystemExit("defaults.yaml must define a `setbert_model` mapping.")
+        raise SystemExit("defaults.yaml must define a `genome_models` mapping.")
     try:
-        pretrained_repo = str(section["pretrained_repo"]).strip()
-        pretrained_revision = str(section["pretrained_revision"]).strip()
+        setbert_repo = str(section["setbert_repo"]).strip()
+        setbert_revision = str(section["setbert_revision"]).strip()
     except KeyError as exc:
         raise SystemExit(
-            f"setbert_model missing required key: {exc.args[0]!r}"
+            f"genome_models missing required key: {exc.args[0]!r}"
         ) from exc
-    if not pretrained_repo or not pretrained_revision:
+    if not setbert_repo or not setbert_revision:
         raise SystemExit(
-            "setbert_model.pretrained_repo and pretrained_revision must be non-empty."
+            "genome_models.setbert_repo and setbert_revision must be non-empty."
         )
     device_raw = str(section.get("device") or "").strip().lower()
     return {
-        "pretrained_repo": pretrained_repo,
-        "pretrained_revision": pretrained_revision,
+        "setbert_repo": setbert_repo,
+        "setbert_revision": setbert_revision,
         "device_raw": device_raw,
     }
 
@@ -122,9 +122,10 @@ def load_setbert_model(
     device: torch.device,
     sequence_encoder_chunk_size: Optional[int] = None,
     eval_mode: bool = True,
-    weight_init: str = "pretrained",
 ) -> Tuple[torch.nn.Module, Any, int, int, int]:
-    """Load SetBERT from HF Hub. Return (model, tokenizer, embed_dim, pad_token_id, kmer).
+    """Load SetBERT pretrained weights from HF Hub.
+
+    Returns ``(model, tokenizer, embed_dim, pad_token_id, kmer)``.
 
     ``sequence_encoder_chunk_size`` controls how many sequences are pushed through
     the DNABERT encoder per forward chunk inside ``SetBert.embed_sequences`` (also
@@ -133,33 +134,10 @@ def load_setbert_model(
     callers that only need the tokenizer (e.g. ``build_setbert_run_tensors.py``)
     can skip this argument. Pass an explicit int from training callers to control
     memory.
-
-    ``weight_init`` controls backbone weights:
-
-    - ``"pretrained"`` (default): load both the architecture and weights from
-      ``pretrained_repo @ pretrained_revision`` via ``SetBert.from_pretrained``.
-    - ``"random"``: load only the architecture (``SetBertConfig.from_pretrained``)
-      and construct ``SetBert(config)``, which leaves both the DNABERT sequence
-      encoder and the SAB transformer (including ``class_token``) with freshly
-      randomized weights. Tokenizer / k-mer / padding metadata still come from
-      the released config. Callers that need reproducibility should seed
-      ``torch.manual_seed`` before calling this function.
     """
-    from setbert import SetBert, SetBertConfig
+    from setbert import SetBert
 
-    init_mode = (weight_init or "pretrained").strip().lower()
-    if init_mode == "pretrained":
-        model = SetBert.from_pretrained(pretrained_repo, revision=pretrained_revision)
-    elif init_mode == "random":
-        config = SetBertConfig.from_pretrained(
-            pretrained_repo, revision=pretrained_revision
-        )
-        model = SetBert(config)
-    else:
-        raise ValueError(
-            f"load_setbert_model: weight_init must be 'pretrained' or 'random'; "
-            f"got {weight_init!r}."
-        )
+    model = SetBert.from_pretrained(pretrained_repo, revision=pretrained_revision)
     if sequence_encoder_chunk_size is not None:
         model.config.sequence_encoder_chunk_size = int(sequence_encoder_chunk_size)
     model = model.to(device)

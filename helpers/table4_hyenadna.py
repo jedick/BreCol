@@ -284,7 +284,7 @@ TaskMetricsCols = Dict[str, Dict[str, List[float]]]
 
 
 def _read_flat_metrics(path: Path) -> Tuple[int, float, float]:
-    """Return (best_epoch, test_auc, holdout_auc) from one single-task JSON file."""
+    """Return ``(best_epoch, test_auc, holdout_auc)`` from one single-task JSON file (flat ``metrics`` block)."""
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit(f"{path}: expected a JSON object.")
@@ -295,16 +295,12 @@ def _read_flat_metrics(path: Path) -> Tuple[int, float, float]:
         raise SystemExit(f"{path}: missing or non-integer tuning.best_epoch.")
 
     metrics = data.get("metrics") or {}
-    for split in ("test", "holdout"):
-        blob = metrics.get(split)
-        if not isinstance(blob, dict):
-            raise SystemExit(
-                f"{path}: expected metrics['{split}'] to be an object with 'auc'."
-            )
-    test_v = metrics["test"].get("auc")
-    hold_v = metrics["holdout"].get("auc")
+    if not isinstance(metrics, dict):
+        raise SystemExit(f"{path}: metrics must be an object.")
+    test_v = metrics.get("test_auc")
+    hold_v = metrics.get("holdout_auc")
     if test_v is None or hold_v is None:
-        raise SystemExit(f"{path}: missing test or holdout auc.")
+        raise SystemExit(f"{path}: missing metrics.test_auc or metrics.holdout_auc.")
     t = float(test_v)
     h = float(hold_v)
     if not math.isfinite(t) or not math.isfinite(h):

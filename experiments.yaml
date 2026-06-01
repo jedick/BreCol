@@ -54,118 +54,127 @@ train_hyenadna:
   results_json_template: results/hyenadna/{task_abbrv}_{name}_{max_length/1024}k_s{seed}.json
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
   sigsegv_retries: 2
-  # Training script supports grids over task and random_seed
-  # (e.g. task: [cancer_diagnosis,cancer_type], random_seed: [0,1,2])
+  # Timing for max_length 2048, batch_size 20, 5 epochs, 3 seeds:
+  # - ca. 13 min for cancer_diagnosis, 7 min for cancer_type
   experiments:
-    - name: best_recipe  # EXPT=1
+    - name: head_linear
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3,4]
-    - name: high_lr  # EXPT=2
+        random_seed: [0,1,2]
+        head_type: linear
+    - name: head_mlp
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3,4]
-        learning_rate: 5.0e-4
-    - name: dropout_0.2  # EXPT=3
+        random_seed: [0,1,2]
+        head_type: mlp
+    - name: head_cosine
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3,4]
-        head_dropout: 0.2
-    - name: hidden_256  # EXPT=4
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3,4]
-        head_hidden: 256
-    - name: frozen_backbone  # EXPT=5
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3,4]
-        freeze_backbone_epochs: 10
-        batch_size: 80
-    - name: low_lr  # EXPT=6
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3,4]
-        learning_rate: 1.0e-5
+        random_seed: [0,1,2]
+        head_type: cosine
     # Increasing max_length experiment grid (per task, per seed)
-    - name: max_length_1024  # EXPT=7
+    - name: max_length_1024  # EXPT=4
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3]
+        random_seed: [0,1,2]
         max_length: 1024
-        batch_size: 160
-    - name: max_length_2048  # EXPT=8
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3]
-        max_length: 2048
-        batch_size: 80
-    - name: max_length_4096  # EXPT=9
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3]
-        max_length: 4096
         batch_size: 40
-    - name: max_length_8192  # EXPT=10
+    - name: max_length_2048  # EXPT=5
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3]
-        max_length: 8192
+        random_seed: [0,1,2]
+        max_length: 2048
         batch_size: 20
-    - name: max_length_16384  # EXPT=11
+    - name: max_length_4096  # EXPT=6
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1,2,3]
-        max_length: 16384
+        random_seed: [0,1,2]
+        max_length: 4096
         batch_size: 10
+    - name: max_length_8192  # EXPT=7
+      overrides:
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: [0,1,2]
+        max_length: 8192
+        batch_size: 5
+    - name: max_length_16384  # EXPT=8
+      overrides:
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: [0,1,2]
+        max_length: 16384
+        batch_size: 2
+
+    # Refactor verification: byte-identical pre/post comparison of the shared
+    # head + train_genome_common refactor. 3 head types x 2 tasks x seed 0 x
+    # 2 epochs (~18 min total). Linear variant also sets class_weight=balanced
+    # to exercise the consolidated compute_pos_weight path.
+    - name: verify_linear  # EXPT=9
+      overrides:
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: 0
+        head_type: linear
+        epochs: 2
+        class_weight: balanced
+    - name: verify_mlp  # EXPT=10
+      overrides:
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: 0
+        head_type: mlp
+        epochs: 2
+    - name: verify_cosine  # EXPT=11
+      overrides:
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: 0
+        head_type: cosine
+        epochs: 2
 
 train_setbert:
   results_json_template: results/setbert/{task_abbrv}_{name}_s{seed}.json
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
   sigsegv_retries: 2
+  # Timing for 5 epochs (set_size 350, batch_size 1):
+  #   39 minutes for cancer_type
+  #   77 minutes for cancer_diagnosis
   experiments:
-    # Timing for 3 epochs (set_size 100, batch_size 2):
-    #   7 minutes for cancer_type
-    #   14 minutes for cancer_type
-    # Timing for 10 epochs (set_size 350, batch_size 1):
-    #   78 minutes for cancer_type
-    # Timing for 5 epochs (set_size 350, batch_size 1):
-    #   39 minutes for cancer_type
-    #   77 minutes for cancer_diagnosis
-
-    # Cancer_type
     - name: head_linear
       overrides:
-        random_seed: [0,1]
-        task: cancer_type
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: [0, 1]
         head_type: linear
+    - name: head_mlp
+      overrides:
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: [0, 1]
+        head_type: mlp
     - name: head_cosine
       overrides:
-        random_seed: [0,1]
-        task: cancer_type
+        task: [cancer_diagnosis, cancer_type]
+        random_seed: [0, 1]
         head_type: cosine
-    - name: cosine_random
-      overrides:
-        random_seed: [0,1,2]
-        task: cancer_type
-        head_type: cosine
-        weight_init: random
-        epochs: 10
 
-    # Cancer_diagnosis
-    - name: head_linear
+    # Refactor verification: byte-identical pre/post comparison of the shared
+    # head + train_genome_common refactor. 3 head types x cancer_type x seed 0
+    # x 1 epochs (~5 min total for set_size: 50). Linear variant also sets class_weight=balanced
+    # to exercise the consolidated compute_pos_weight path.
+    - name: verify_linear  # EXPT=4
       overrides:
-        random_seed: [0,1]
-        task: cancer_diagnosis
+        task: cancer_type
+        random_seed: 0
         head_type: linear
-    - name: head_cosine
+        epochs: 1
+        class_weight: balanced
+        set_size: 50
+    - name: verify_mlp  # EXPT=5
       overrides:
-        random_seed: [0,1]
-        task: cancer_diagnosis
-        head_type: cosine
-    - name: cosine_random
+        task: cancer_type
+        random_seed: 0
+        head_type: mlp
+        epochs: 1
+        set_size: 50
+    - name: verify_cosine  # EXPT=6
       overrides:
-        random_seed: [0,1]
-        task: cancer_diagnosis
+        task: cancer_type
+        random_seed: 0
         head_type: cosine
-        weight_init: random
+        epochs: 1
+        set_size: 50

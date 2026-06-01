@@ -4,9 +4,11 @@
 # Local modifications:
 #   - Create vocabulary dictionaries before super().__init__()
 #   - Add get_vocab() method - fixes NotImplementedError for inference_single()
-#   - Add head_pooling_mode parameter to SequenceDecoder / HyenaDNAModel
-#   - Optional MLP classification head: head_hidden, head_dropout on SequenceDecoder
-#     (0 = linear head; positive int = Linear -> GELU -> Dropout -> Linear)
+#   - Add head_pooling_mode parameter to SequenceDecoder / HyenaDNAModel so the
+#     pooling strategy ("last", "first", "pool", "sum") is configurable
+#   - When use_head=True, SequenceDecoder is constructed with d_output=None so
+#     output_transform is nn.Identity(); the model returns pooled [B, d_model]
+#     features and callers attach their own task head externally
 #   - Fix pool mode: use sliding-window mean restrict only (old file assigned a wrong
 #     cumsum/arange lambda before the correct restrict, so pool mode was broken)
 # Modified by: Jeffrey Dick with AI assistance
@@ -761,6 +763,20 @@ states of the backbone as embeddings.
 
 
 class SequenceDecoder(nn.Module):
+    """Sequence-to-vector pooler with an optional linear projection.
+
+    The decoder reduces a token-level hidden state ``[B, L, d_model]`` to a
+    sequence-level vector via the configured ``mode`` ("last", "first",
+    "pool", "sum") and then applies ``output_transform``:
+
+    - ``d_output is None``: ``output_transform = nn.Identity()``; the decoder
+      returns the pooled ``[B, d_model]`` feature unchanged. Callers attach
+      their own task head (classification, regression, ...) externally.
+    - ``d_output is int``: ``output_transform = nn.Linear(d_model, d_output)``;
+      a built-in linear head emits ``[B, d_output]`` for simple multi-class /
+      regression usage.
+    """
+
     def __init__(
         self,
         d_model,
@@ -768,23 +784,13 @@ class SequenceDecoder(nn.Module):
         l_output=None,
         use_lengths=False,
         mode="last",
-        head_hidden: int = 0,
-        head_dropout: float = 0.0,
     ):
         super().__init__()
 
         if d_output is None:
             self.output_transform = nn.Identity()
-        elif int(head_hidden) <= 0:
-            self.output_transform = nn.Linear(d_model, d_output)
         else:
-            hidden = int(head_hidden)
-            self.output_transform = nn.Sequential(
-                nn.Linear(d_model, hidden),
-                nn.GELU(),
-                nn.Dropout(float(head_dropout)),
-                nn.Linear(hidden, d_output),
-            )
+            self.output_transform = nn.Linear(int(d_model), int(d_output))
 
         if l_output is None:
             self.l_output = None
@@ -896,16 +902,15 @@ class HyenaDNAModel(nn.Module):
                  layer=None, attn_layer_idx=None, attn_cfg=None, max_position_embeddings=0,
                  resid_dropout: float = 0.0, embed_dropout: float = 0.1,
                  layer_norm_epsilon: float = 1e-5, initializer_cfg=None,residual_in_fp32=False,
-                 pad_vocab_size_multiple: int = 1, use_head=False, n_classes: int = 2,
+                 pad_vocab_size_multiple: int = 1, use_head=False,
                  head_pooling_mode: str = "pool",
-                 head_hidden: int = 0,
-                 head_dropout: float = 0.0,
                  device=None, dtype=None, **kwargs) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super().__init__()
         if vocab_size % pad_vocab_size_multiple != 0:
             vocab_size += pad_vocab_size_multiple - (vocab_size % pad_vocab_size_multiple)
 
+        self.d_model = int(d_model)
         self.use_head = use_head
 
         # check if layer (config) has d_model (HF code differs from main Safari code)
@@ -922,17 +927,17 @@ class HyenaDNAModel(nn.Module):
             **factory_kwargs, **kwargs
         )
 
-        # we only need a head if doing classification, otherwise we'll use the
-        # hidden states as embeddings
+        # When use_head=True the decoder is a pure pooler (d_output=None) that
+        # returns [B, d_model] features; the caller attaches a task-specific
+        # head externally. When use_head=False the model returns the raw
+        # token-level hidden states from the backbone.
         self.head: Optional[SequenceDecoder] = None
         if self.use_head:
             self.head = SequenceDecoder(
                 d_model=d_model,
-                d_output=n_classes,
+                d_output=None,
                 l_output=0,
                 mode=head_pooling_mode,
-                head_hidden=head_hidden,
-                head_dropout=float(head_dropout),
             )
 
         # Initialize weights and apply final processing

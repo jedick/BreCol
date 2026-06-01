@@ -6,7 +6,10 @@
 #   - Remove genomic-benchmarks import
 #   - Relative import of HyenaDNAModel (model code not inlined in this file)
 #   - Use weights_only=False for torch.load() (PyTorch >= 2.6)
-#   - Pass head_hidden, head_dropout to HyenaDNAModel
+#   - With use_head=True, the model is a sequence-to-vector pooler that
+#     returns [B, d_model] features. Callers attach their own task head
+#     (e.g. classification, regression) externally; this keeps the wrapper
+#     task-agnostic and lets the backbone be reused as a feature extractor.
 # Modified by: Jeffrey Dick
 
 #@title Huggingface Pretrained Wrapper
@@ -95,16 +98,16 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
         config=None,
         device='cpu',
         use_head=False,
-        n_classes=2,
         head_pooling_mode="pool",
-        head_hidden=0,
-        head_dropout=0.0,
     ):
         """Load HyenaDNA weights from ``path`` / ``model_name``.
 
         ``download=False`` (default): use the local directory when present; git-clone
         from Hugging Face when missing. ``download=True``: remove an existing directory
-        and re-clone from Hugging Face.
+        and re-clone from Hugging Face. When ``use_head=True`` the model attaches a
+        sequence-to-vector pooler (``head_pooling_mode``) and ``forward(input_ids)``
+        returns pooled ``[B, d_model]`` features; the caller is expected to attach
+        a task-specific head (classification, regression, ...) on top.
         """
         # first check if it is a local path
         pretrained_model_name_or_path = os.path.join(path, model_name)
@@ -124,10 +127,7 @@ class HyenaDNAPreTrainedModel(PreTrainedModel):
         scratch_model = HyenaDNAModel(
             **config,
             use_head=use_head,
-            n_classes=n_classes,
             head_pooling_mode=head_pooling_mode,
-            head_hidden=head_hidden,
-            head_dropout=head_dropout,
         )
         loaded_ckpt = torch.load(
             os.path.join(pretrained_model_name_or_path, 'weights.ckpt'),

@@ -26,8 +26,8 @@ shared_splits:
   ## Canonical Run -> train/val/test/holdout assignment
   random_state: 0
   train_fraction: 0.70
-  val_fraction: 0.15
-  test_fraction: 0.15
+  val_fraction: 0.10
+  test_fraction: 0.20
 
 sequence_cache:
   ## Sequence selection (tetramer cache and HyenaDNA/SetBERT run tensors)
@@ -102,6 +102,74 @@ run_uc_cap_pipeline:
     # MiniBatchKMeans max iterations
     max_iter: 200
 
+# Shared HyenaDNA and SetBERT training settings.
+# scripts/train_hyenadna.py merges this block with train_hyenadna below;
+# scripts/train_setbert.py merges it with train_setbert below. The model-specific
+# blocks must not duplicate any key defined here (the merge enforces no overlap).
+# experiments.yaml overrides may target keys from either block.
+genome_models:
+
+  ## Pre-trained checkpoints
+  # SetBERT paper: pre-trained on ~280k Qiita 16S amplicon samples.
+  # Note on dimensions: the released `qiita-16s` checkpoint is the "large" variant
+  # (embed_dim=768, 6 SAB layers, 12 heads, DNABERT base "768d-silva16s-250bp", kmer=3).
+  # The SetBERT paper describes a 64-dim model (8 SAB layers, 8 heads, DNABERT base
+  # "64d-silva16s-250bp") which is not available on HF.
+  setbert_repo: sirdavidludwig/setbert
+  setbert_revision: qiita-16s
+  # HyenaDNA pre-trained checkpoint name under paths.checkpoint_dir
+  hyenadna_model: hyenadna-small-32k-seqlen
+
+  ## Device / precision
+  # Device: cuda, cpu, or null / auto for torch.cuda.is_available()
+  device: null
+  # Mixed precision on CUDA. When false, training runs in float32
+  amp: true
+  # Low-precision dtype for AMP autocast: float16 or bfloat16
+  amp_dtype: bfloat16
+
+  ## Task / tuning
+  # Task: cancer_diagnosis or cancer_type
+  task: cancer_diagnosis
+  # Validation metric used to pick the best epoch: auc | f1
+  tuning_metric: auc
+
+  ## Sampling / weighting
+  # train sampler: random | study_balanced (approximate uniform sampling over study_name)
+  train_sampler: study_balanced
+  # Class weights: none | balanced | balanced_sqrt (tempered inverse frequency).
+  # Applied as pos_weight on BCEWithLogits (single positive-class logit).
+  class_weight: none
+
+  ## Optimization
+  epochs: 5
+  random_seed: 0
+  num_workers: 0
+  learning_rate: 1.0e-4
+  weight_decay: 0.1
+  # lr_backbone = learning_rate * backbone_lr_mult; heads use learning_rate unchanged (1.0 = no scale)
+  backbone_lr_mult: 0.1
+
+  ## Classification head (applied to the pooled per-Run feature vector of shape [B, embed_dim])
+  # For HyenaDNA the pooled vector comes from train_hyenadna.head_pooling_mode over the
+  # backbone's per-position hidden states; for SetBERT it is the SAB-transformed [CLS] token.
+  #   linear     - Linear(d, 1)                                                  (BCE baseline)
+  #   mlp        - Linear(d, h) -> GELU -> Dropout -> Linear(h, 1)               (one-hidden-layer MLP)
+  #   cosine     - learnable_temperature * cosine(x, w)                          (one normalized direction)
+  head_type: linear
+  # linear / cosine: dropout applied to the head input (cosine is unaffected by dropout
+  # after F.normalize, so the knob is a no-op there in practice).
+  # mlp: dropout applied between GELU and the final Linear (standard MLP regularization).
+  head_dropout: 0.1
+  # Hidden width for the one-hidden-layer MLP head (must be > 0 when head_type=mlp).
+  head_hidden: 256
+
+  ## Output
+  # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
+  # results/scratch/train_[hyenadna|setbert]_<task>_<utc>.json. Experiments may set via template.
+  results_json: null
+
+
 # Feature-only HyenaDNA run tensor cache (scripts/build_hyenadna_run_tensors.py)
 # One .pt file per run under paths.hyenadna_run_tensors_dir/. Per-run tensors pack
 # all post-offset sequences (sequence_cache.seq_offset/min_seqs) into num_sets rows;
@@ -117,81 +185,28 @@ hyenadna_run_tensors:
   max_workers: 8
 
 # HyenaDNA fine-tuning (scripts/train_hyenadna.py)
-# Optional --expt overlays train_hyenadna.experiments in experiments.yaml (1-based index)
+# Reads genome_models above + this block. Optional --expt overlays
+# experiments.yaml train_hyenadna.experiments (1-based index).
 train_hyenadna:
-  ## Model/device
-  # Pretrained checkpoint name under paths.checkpoint_dir
-  model: hyenadna-small-32k-seqlen
-  # Device: cuda, cpu, or null / auto for torch.cuda.is_available()
-  device: null
-  # Optional mixed precision on CUDA. When false, training runs in float32
-  amp: true
-  # Low-precision dtype for AMP autocast: float16 or bfloat16
-  amp_dtype: bfloat16
-
-  ## Data
   # Non-overlapping sequence sets per Run (each set packed to max_length tokens)
   num_sets: 5
-  # Max sequence length; null = use bundled default for model
+  # Max sequence length per set (must be <= hyenadna_run_tensors.max_length)
   max_length: 2048
+  # GPU memory dictates batch size; HyenaDNA is more memory-efficient than SetBERT
   batch_size: 20
-
-  ## Task/tuning
-  # Task: cancer_diagnosis or cancer_type
-  task: cancer_diagnosis
-  # Validation metric used to pick the best epoch: auc | f1
-  tuning_metric: auc
-
-  ## Sampling/weighting
-  # train sampler: random | study_balanced (approximate uniform sampling over study_name)
-  train_sampler: study_balanced
-  # Class weights: none | balanced | balanced_sqrt (tempered inverse frequency)
-  class_weight: none
-
-  ## Optimization
-  epochs: 5
-  random_seed: 0
-  num_workers: 0
-  learning_rate: 1.0e-4
-  weight_decay: 0.1
-  # Backbone freezing: 0 = train backbone from epoch 1; N > 0 freezes epochs 1..N then unfreezes
-  # If N >= epochs, the entire run is head-only
+  # Backbone freezing: 0 = train backbone from epoch 1; N > 0 freezes epochs 1..N then unfreezes.
+  # If N >= epochs the entire run is head-only.
   freeze_backbone_epochs: 0
-  # lr_backbone = learning_rate * backbone_lr_mult; heads use learning_rate unchanged (1.0 = no scale)
-  backbone_lr_mult: 0.1
-
-  ## Classification head
-  # 0 = linear head; positive int = one MLP hidden layer width
-  head_hidden: 256
-  # Dropout after the MLP hidden GELU (ignored when head_hidden is 0)
-  head_dropout: 0.1
-  # SequenceDecoder head mode in standalone_hyenadna.py: last, first, pool, sum
+  # Pool the HyenaDNA backbone's per-position hidden states into a single vector
+  # before applying genome_models.head_type. Modes: last, first, pool, sum.
+  # (HyenaDNA-only: SetBERT's [CLS] token already pools the set.)
   head_pooling_mode: pool
-
-  # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
-  # results/scratch/train_hyenadna_<task>_<utc>.json. Experiments may set via template
-  results_json: null
-
-# Shared SetBERT model identity (used by both scripts/build_setbert_run_tensors.py
-# and scripts/train_setbert.py).
-setbert_model:
-  ## Pre-trained checkpoint (loaded from Hugging Face Hub; cached under $HF_HOME)
-  # Paper: SetBERT pre-trained on ~280k Qiita 16S amplicon samples.
-  # Note on dimensions: the released `qiita-16s` checkpoint is the "large" variant
-  # (embed_dim=768, 6 SAB layers, 12 heads, DNABERT base "768d-silva16s-250bp", kmer=3).
-  # The SetBERT paper describes a 64-dim model (8 SAB layers, 8 heads, DNABERT base
-  # "64d-silva16s-250bp") which is not available on HF.
-  pretrained_repo: sirdavidludwig/setbert
-  pretrained_revision: qiita-16s
-
-  ## Device: cuda, cpu, or null / auto for torch.cuda.is_available()
-  device: null
 
 # SetBERT run tensor cache (scripts/build_setbert_run_tensors.py)
 # Reuses sequence_cache.{seq_offset, min_seqs, sample_mode, sampling_seed} for run-row selection.
 # Numeric defaults below match the released qiita-16s checkpoint; YAML comments note where the
 # SetBERT paper (Suppl. §3.1-3.2) describes different values.
-# The pretrained checkpoint and device come from `setbert_model:` above.
+# The pretrained checkpoint and device come from genome_models above.
 setbert_run_tensors:
   ## Sample (run) construction
   # Sequences sampled per Run (the SetBERT set size / n_sample of the SAB stack)
@@ -212,30 +227,12 @@ setbert_run_tensors:
 # SetBERT fine-tuning (scripts/train_setbert.py)
 # Reads the feature-only per-run token tensor cache at paths.setbert_run_tensors_dir/
 # (one <Run>.pt per run from scripts/build_setbert_run_tensors.py).
-# The pretrained checkpoint and device come from `setbert_model:` above; train_setbert below
-# holds all training-time knobs (and may override setbert_model values via experiments.yaml).
-# Optional --expt overlays train_setbert.experiments in experiments.yaml (1-based index).
+# Reads genome_models above + this block. Optional --expt overlays
+# experiments.yaml train_setbert.experiments (1-based index).
 train_setbert:
-  ## Precision
-  amp: true
-  amp_dtype: bfloat16
-
-  ## Backbone initialization
-  # pretrained (default): load weights from setbert_model.pretrained_repo @ pretrained_revision.
-  # random: keep the released architecture/config but reinitialize both the DNABERT
-  # sequence encoder and the SAB transformer (incl. class_token) with random weights.
-  # Random init is seeded by train_setbert.random_seed for reproducibility.
-  weight_init: pretrained
-
-  ## Task / tuning
-  # cancer_diagnosis or cancer_type
-  task: cancer_type
-  # Validation metric used to pick the best epoch: auc | f1
-  tuning_metric: auc
-
   ## Set construction (override of setbert_run_tensors.set_size for training only)
   # Must be <= the set_size baked into the run tensor cache.
-  # 350/1000 fits in 16GB GPU RAM for frozen/unfrozen encoder
+  # 350/1000 fits in 16GB GPU RAM for frozen/unfrozen encoder.
   set_size: 350
   # DNABERT activation-checkpoint chunk size during fine-tuning. Activations are stored for
   # backward through the SAB stack, so this is typically lower than the bundled checkpoint
@@ -243,58 +240,16 @@ train_setbert:
   sequence_encoder_chunk_size: 500
 
   ## Optimization
+  # GPU memory dictates batch size; SetBERT is more memory-hungry than HyenaDNA.
   batch_size: 1
   # Forward-only batch size for val/test/holdout scoring; no activations are
   # stored for backward so this can usually be larger than batch_size.
   # null / unset -> use batch_size.
   inference_batch_size: 20
-  epochs: 5
-  random_seed: 0
-  num_workers: 4
-  # Paper default for SetBERT fine-tuning (Adam, constant LR). AdamW is used here.
-  learning_rate: 1.0e-4
-  weight_decay: 0.1
-  # lr_backbone = learning_rate * backbone_lr_mult (applies to both DNABERT and SAB);
-  # head uses learning_rate unchanged (1.0 = no scale)
-  backbone_lr_mult: 0.1
 
   ## Two-knob backbone freezing
   # DNABERT sequence encoder: 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
   freeze_sequence_encoder_epochs: 0
   # SAB transformer (incl. class_token): 0 = trainable from epoch 1; N > 0 freezes epochs 1..N
   freeze_sab_epochs: 0
-
-  ## Sampling / class imbalance
-  # train sampler: random | study_balanced (approximate uniform over study_name)
-  train_sampler: study_balanced
-  # BCE pos_weight = none | balanced (n_neg / n_pos) | balanced_sqrt (sqrt of balanced)
-  class_weight: none
-
-  ## Head
-  # Classifier head architecture on the transformed SetBERT outputs.
-  # LayerNorm reasoning:
-  # spectral - Lipschitz bound is meaningful only if input scale is bounded
-  # pooled - equalizes the heterogeneous scales of the concatenated [CLS] || mean || max blocks
-  # Other heads rely on the LayerNorm already present at the end of the SetBERT backbone.
-  #   linear     - Linear([CLS]) -> 1                                            (paper default)
-  #   mlp        - Linear(d, h) + GELU + Dropout + Linear(h, 1)                  (one-hidden-layer MLP)
-  #   spectral   - LayerNorm + spectral-norm(Linear([CLS])) -> 1                 (Lipschitz-bounded head)
-  #   pooled     - LayerNorm + Linear([CLS] || mean_pool || max_pool) -> 1       (uses set tokens too)
-  #   cosine     - cosine([CLS], w) * temperature                                (one normalized direction)
-  #   prototype  - cos_sim to two class prototypes; logit = sim(pos) - sim(neg)
-  head_type: linear
-  # linear, spectral pooled: dropout applied to the head input
-  # mlp: dropout applied between GELU and the final Linear (standard MLP regularization).
-  head_dropout: 0.1
-  # Hidden width for the one-hidden-layer MLP head (must be > 0).
-  head_hidden: 256
-  # prototype head init: random or class_means
-  # class_means uses one extra train-set forward pass at startup;
-  # anchors the the decision direction before any SGD update.
-  prototype_init: class_means
-
-  ## Output
-  # Optional metrics JSON path; null disables. Empty string (CLI --results-json) uses
-  # results/scratch/train_setbert_<task>_<utc>.json. Experiments may set via template.
-  results_json: null
 
