@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Figure 2: HyenaDNA AUC vs sequence length per set (test vs holdout).
+Build Figure 3: HyenaDNA AUC vs sequence length per set (test vs holdout).
 
 Layout:
 - 1 row, 2 columns (cancer diagnosis, cancer type)
@@ -14,9 +14,9 @@ Each subplot draws:
 
 Missing ``max_length_*`` result groups are skipped (partial result trees are OK).
 
-Writes ``manuscript/figure2_hyenadna.png`` and ``manuscript/figure2_hyenadna.svg``.
+Writes ``manuscript/figure3_hyenadna.png`` and ``manuscript/figure3_hyenadna.svg``.
 
-Run from the repository root: ``python helpers/figure2_hyenadna.py``
+Run from the repository root: ``python helpers/figure3_hyenadna.py``
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ TASK_COLUMNS: Tuple[Tuple[str, str, str], ...] = (
 LENGTHS_BP: Tuple[int, ...] = (1024, 2048, 4096, 8192, 16384, 32768)
 _RESULT_RE = re.compile(r"^(cd|ct)_max_length_(\d+)_(\d+k)_s\d+\.json$")
 
-OUTPUT_PNG = Path("manuscript") / "figure2_hyenadna.png"
-OUTPUT_SVG = Path("manuscript") / "figure2_hyenadna.svg"
+OUTPUT_PNG = Path("manuscript") / "figure3_hyenadna.png"
+OUTPUT_SVG = Path("manuscript") / "figure3_hyenadna.svg"
 
 
 @dataclass(frozen=True)

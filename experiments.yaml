@@ -72,109 +72,58 @@ train_hyenadna:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         head_type: cosine
-    # Increasing max_length experiment grid (per task, per seed)
-    - name: max_length_1024  # EXPT=4
+    # Increasing max_length experiment grid
+    - name: max_length_1024  # EXPT=4 (10 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         max_length: 1024
         batch_size: 40
-    - name: max_length_2048  # EXPT=5
+    - name: max_length_2048  # EXPT=5 (20 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         max_length: 2048
         batch_size: 20
-    - name: max_length_4096  # EXPT=6
+    - name: max_length_4096  # EXPT=6 (40 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         max_length: 4096
         batch_size: 10
-    - name: max_length_8192  # EXPT=7
+    - name: max_length_8192  # EXPT=7 (80 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         max_length: 8192
         batch_size: 5
-    - name: max_length_16384  # EXPT=8
+    - name: max_length_16384  # EXPT=8 (160 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         max_length: 16384
         batch_size: 2
 
-    # Refactor verification: byte-identical pre/post comparison of the shared
-    # head + train_genome_common refactor. 3 head types x 2 tasks x seed 0 x
-    # 2 epochs (~18 min total). Linear variant also sets class_weight=balanced
-    # to exercise the consolidated compute_pos_weight path.
-    - name: verify_linear  # EXPT=9
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: 0
-        head_type: linear
-        epochs: 2
-        class_weight: balanced
-    - name: verify_mlp  # EXPT=10
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: 0
-        head_type: mlp
-        epochs: 2
-    - name: verify_cosine  # EXPT=11
-      overrides:
-        task: [cancer_diagnosis, cancer_type]
-        random_seed: 0
-        head_type: cosine
-        epochs: 2
-
 train_setbert:
   results_json_template: results/setbert/{task_abbrv}_{name}_s{seed}.json
   # Extra retries per child after SIGSEGV (signal 11) - often from native code (CUDA / cuDNN / GPU driver)
   sigsegv_retries: 2
-  # Timing for 5 epochs (set_size 350, batch_size 1):
-  #   39 minutes for cancer_type
+  # Timing for set_size 350, batch_size 1, 5 epochs, 1 seed:
   #   77 minutes for cancer_diagnosis
+  #   39 minutes for cancer_type
   experiments:
     - name: head_linear
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0, 1]
+        random_seed: [0,1]
         head_type: linear
     - name: head_mlp
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0, 1]
+        random_seed: [0,1]
         head_type: mlp
     - name: head_cosine
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0, 1]
+        random_seed: [0,1]
         head_type: cosine
-
-    # Refactor verification: byte-identical pre/post comparison of the shared
-    # head + train_genome_common refactor. 3 head types x cancer_type x seed 0
-    # x 1 epochs (~5 min total for set_size: 50). Linear variant also sets class_weight=balanced
-    # to exercise the consolidated compute_pos_weight path.
-    - name: verify_linear  # EXPT=4
-      overrides:
-        task: cancer_type
-        random_seed: 0
-        head_type: linear
-        epochs: 1
-        class_weight: balanced
-        set_size: 50
-    - name: verify_mlp  # EXPT=5
-      overrides:
-        task: cancer_type
-        random_seed: 0
-        head_type: mlp
-        epochs: 1
-        set_size: 50
-    - name: verify_cosine  # EXPT=6
-      overrides:
-        task: cancer_type
-        random_seed: 0
-        head_type: cosine
-        epochs: 1
-        set_size: 50

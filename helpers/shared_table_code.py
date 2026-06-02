@@ -1,13 +1,25 @@
-"""Shared UC/CAP classifier table logic for tetramer result trees."""
+"""Shared classifier and ablation table logic.
+
+Two table families share rendering primitives here:
+
+- **UC/CAP classifier tables** (``write_uc_cap_table``): model × task grid
+  rendered from per-feature-set JSON, with a single AUC value per cell.
+- **HyenaDNA / SetBERT ablation tables** (``format_ablation_table_html``):
+  ablation × task grid rendered from per-seed JSON, with each cell showing
+  ``mean ± sd`` across random seeds.
+
+Both families bold the highest value in each AUC column.
+"""
 
 from __future__ import annotations
 
 import html
 import json
 import math
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import yaml
 
@@ -26,6 +38,30 @@ TASK_HEADER = {
 }
 
 DECIMALS = 2
+EM_DASH = "\u2014"
+PLUS_MINUS = "\u00b1"
+
+# Plain-English row labels keyed by ablation ``name`` in experiments.yaml.
+# Shared by helpers/table6_hyenadna.py and helpers/table7_setbert.py.
+ABLATION_DESCRIPTIONS: Dict[str, str] = {
+    "head_linear": "Linear head",
+    "head_mlp": "MLP head",
+    "head_cosine": "Cosine head",
+}
+
+# Per-seed JSON keys read for ablation cells.
+ABLATION_METRIC_KEYS: Tuple[str, ...] = ("test_auc", "holdout_auc")
+
+# Column order for ablation tables: (task, metric_key).
+ABLATION_COLUMNS: Tuple[Tuple[str, str], ...] = tuple(
+    (task, metric) for task in TASKS for metric in ABLATION_METRIC_KEYS
+)
+
+# Filename abbreviation for each task (matches results_json_template in experiments.yaml).
+TASK_ABBRV: Dict[str, str] = {
+    "cancer_diagnosis": "cd",
+    "cancer_type": "ct",
+}
 
 
 @dataclass(frozen=True)
@@ -144,7 +180,7 @@ def _models_at_max_auc(
     return {m for m, v in values.items() if math.isclose(v, best, rel_tol=0.0, abs_tol=1e-12)}
 
 
-def format_table_html(data: UcCapTableData, *, decimals: int) -> str:
+def format_uc_cap_table_html(data: UcCapTableData, *, decimals: int) -> str:
     thead = (
         "<thead>\n"
         "<tr>\n"
@@ -216,8 +252,110 @@ def write_uc_cap_table(
 
     n_features = feature_count(repo_root)
     data = build_uc_cap_table_data(uc_cap_dir, n_features)
-    text = format_table_html(data, decimals=decimals)
+    text = format_uc_cap_table_html(data, decimals=decimals)
     out_path = repo_root / output_rel
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(text, encoding="utf-8")
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Ablation tables (HyenaDNA, SetBERT): per-seed JSON aggregated into mean ± sd
+# ---------------------------------------------------------------------------
+
+
+def mean_std(values: Sequence[float]) -> Tuple[Optional[float], Optional[float]]:
+    """Sample mean and standard deviation; ``(None, None)`` if empty, ``sd=None`` for n < 2."""
+    if not values:
+        return None, None
+    mean = statistics.fmean(values)
+    std = statistics.stdev(values) if len(values) >= 2 else None
+    return mean, std
+
+
+def render_mean_sd_cell(
+    values: Sequence[float], *, decimals: int = DECIMALS, bold: bool = False
+) -> str:
+    """Render ``mean`` (optionally bold) followed by a smaller-font ``± sd``."""
+    mean, std = mean_std(values)
+    if mean is None:
+        return EM_DASH
+    mean_txt = html.escape(f"{mean:.{decimals}f}")
+    mean_html = f"<strong>{mean_txt}</strong>" if bold else mean_txt
+    if std is None:
+        return mean_html
+    sd_txt = html.escape(f"{PLUS_MINUS} {std:.{decimals}f}")
+    return f"{mean_html} <small>{sd_txt}</small>"
+
+
+def bold_row_indices(column_means: Sequence[Optional[float]]) -> Set[int]:
+    """Indices tied for the maximum (ignoring ``None``) within a column."""
+    valid = [(i, v) for i, v in enumerate(column_means) if v is not None]
+    if not valid:
+        return set()
+    best = max(v for _, v in valid)
+    return {
+        i for i, v in valid
+        if math.isclose(v, best, rel_tol=0.0, abs_tol=1e-12)
+    }
+
+
+@dataclass(frozen=True)
+class AblationRow:
+    """One ablation row for ``format_ablation_table_html``.
+
+    ``cells`` maps each ``(task, metric_key)`` column in ``ABLATION_COLUMNS``
+    to the per-seed values for that cell. Missing columns render as em-dash.
+    ``label_html`` is inserted verbatim into the row's first ``<td>`` so
+    callers may include inline HTML (e.g. ``<sup>``).
+    """
+
+    label_html: str
+    cells: Dict[Tuple[str, str], List[float]]
+
+
+def format_ablation_table_html(
+    rows: Sequence[AblationRow], *, decimals: int = DECIMALS
+) -> str:
+    """Render an ablation × task table (Test/Holdout per task, mean ± sd cells).
+
+    The highest mean in each AUC column is wrapped in ``<strong>``; ties at
+    floating-point precision all get bolded.
+    """
+    thead = (
+        "<thead>\n"
+        "<tr>\n"
+        '<th rowspan="2">Ablation</th>'
+        f'<th colspan="2">{html.escape(TASK_HEADER["cancer_diagnosis"])}</th>'
+        f'<th colspan="2">{html.escape(TASK_HEADER["cancer_type"])}</th>\n'
+        "</tr>\n"
+        "<tr>\n"
+        "<th>Test</th><th>Holdout</th>"
+        "<th>Test</th><th>Holdout</th>\n"
+        "</tr>\n"
+        "</thead>\n"
+    )
+
+    per_column_values: Dict[Tuple[str, str], List[List[float]]] = {
+        col: [list(row.cells.get(col, [])) for row in rows]
+        for col in ABLATION_COLUMNS
+    }
+    bold_rows: Dict[Tuple[str, str], Set[int]] = {
+        col: bold_row_indices([mean_std(v)[0] for v in per_column_values[col]])
+        for col in ABLATION_COLUMNS
+    }
+
+    body_rows: List[str] = []
+    for i, row in enumerate(rows):
+        cells = [
+            render_mean_sd_cell(
+                per_column_values[col][i],
+                decimals=decimals,
+                bold=i in bold_rows[col],
+            )
+            for col in ABLATION_COLUMNS
+        ]
+        tds = "".join(f"<td>{c}</td>" for c in cells)
+        body_rows.append(f"<tr>\n<td>{row.label_html}</td>{tds}\n</tr>")
+    tbody = "<tbody>\n" + "\n".join(body_rows) + "\n</tbody>\n"
+    return f"<table>\n{thead}{tbody}</table>\n"
