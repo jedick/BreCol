@@ -85,19 +85,19 @@ train_hyenadna:
         random_seed: [0,1,2]
         max_length: 2048
         batch_size: 20
-    - name: max_length_4096  # EXPT=6 (40 min)
+    - name: max_length_4096  # EXPT=6 (35 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         max_length: 4096
         batch_size: 10
-    - name: max_length_8192  # EXPT=7 (80 min)
+    - name: max_length_8192  # EXPT=7 (70 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]
         max_length: 8192
         batch_size: 5
-    - name: max_length_16384  # EXPT=8 (160 min)
+    - name: max_length_16384  # EXPT=8 (140 min)
       overrides:
         task: [cancer_diagnosis, cancer_type]
         random_seed: [0,1,2]

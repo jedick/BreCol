@@ -54,7 +54,7 @@ See the list for a quick overview of the steps and read below for details.
 7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/tetramer_uc_cap` (26 min).
 8. HyenaDNA run tensors: `make hyenadna_run_tensors` builds `outputs/hyenadna_run_tensors/*.pt` from FASTA files (12 min/ 2.5 GB on disk).
 9. HyenaDNA classifier: `make train_hyenadna EXPT=0` generates HyenaDNA experiment results in `results/hyenadna` (about 6 hr).
-10. SetBERT run tensors: `make setbert_run_tensors` builds `outputs/setbert_run_tensors/<Run>.pt` from FASTA files.
+10. SetBERT run tensors: `make setbert_run_tensors` builds `outputs/setbert_run_tensors/<Run>.pt` from FASTA files (43 min).
 11. SetBERT fine-tuning: `make train_setbert EXPT=0` generates SetBERT experiment results in `results/setbert/` (about 11.5 hr).
 12. Run `helpers/table*.py` and `helpers/figure*.py` to generate tables and figures in `manuscript/`.
 
