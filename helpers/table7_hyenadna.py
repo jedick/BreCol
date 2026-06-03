@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Table 6 (HyenaDNA ablations) as HTML under manuscript/table6_hyenadna.html.
+Build Table 7 (HyenaDNA ablations) as HTML under manuscript/table7_hyenadna.html.
 
 Reads ``experiments.yaml`` ``train_hyenadna.experiments`` and aggregates
 ``metrics.{test,holdout}_auc`` from per-seed JSON under ``results/hyenadna/``
@@ -19,7 +19,7 @@ listed in ``experiments.yaml`` (sample standard deviation; the
 ``\u00b1 sd`` part is omitted when only one seed is available). The mean is
 wrapped in ``<strong>`` for the row with the highest mean in its column.
 
-Run from the repository root: ``python helpers/table6_hyenadna.py``
+Run from the repository root: ``python helpers/table7_hyenadna.py``
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from shared_table_code import (
 
 
 DECIMALS = 2
-OUTPUT_REL = Path("manuscript") / "table6_hyenadna.html"
+OUTPUT_REL = Path("manuscript") / "table7_hyenadna.html"
 
 
 def _load_yaml(path: Path) -> dict:

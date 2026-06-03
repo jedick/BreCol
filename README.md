@@ -49,9 +49,9 @@ See the list for a quick overview of the steps and read below for details.
 2. Download data: `make download_data` downloads 16S sequences from SRA (13 GB on disk).
 3. Tetramer cache: `make -j4 tetramer_cache` reads FASTA and writes hive-partitioned Parquet under `outputs/tetramer_cache/` (16 min / 1.5 GB on disk).
 4. Tetramer frequencies: `make tetramer_frequencies` sums cached sequences per run into `outputs/tetramer_frequencies.csv` (2 min).
-5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (3 min).
+5. Tetramer classifier: `make -j4 fit_tetramer EXPT=0` generates results files in `results/tetramer` (1 min).
 6. UC/CAP pipeline: `make run_uc_cap FEAT=0` generates cluster abundance profiles in `outputs/tetramer_uc_cap/` (29 min / 13 GB RAM).
-7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/tetramer_uc_cap` (26 min).
+7. UC/CAP classifier: `make -j4 fit_uc_cap FEAT=0 EXPT=0` generates results files in `results/tetramer_uc_cap` (13 min).
 8. HyenaDNA run tensors: `make hyenadna_run_tensors` builds `outputs/hyenadna_run_tensors/*.pt` from FASTA files (12 min/ 2.5 GB on disk).
 9. HyenaDNA classifier: `make train_hyenadna EXPT=0` generates HyenaDNA experiment results in `results/hyenadna` (about 6 hr).
 10. SetBERT run tensors: `make setbert_run_tensors` builds `outputs/setbert_run_tensors/<Run>.pt` from FASTA files (43 min).

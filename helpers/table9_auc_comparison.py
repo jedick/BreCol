@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Build Table 8 (per-study cancer-diagnosis AUC vs literature) as HTML under
-manuscript/table8_auc_comparison.html.
+Build Table 9 (per-study cancer-diagnosis AUC vs literature) as HTML under
+manuscript/table9_auc_comparison.html.
 
 For each cancer type, lists 7 development + 6 holdout studies from datasets.csv
 (row order preserved). Per-study AUC comes from the test or holdout per_study
@@ -12,7 +12,7 @@ then best model within that feature set by test AUC.
 Literature AUC for colorectal studies is read from the datasets.csv ``auc``
 column (empty cells render as an em dash).
 
-Run from the repository root: ``python helpers/table8_auc_comparison.py``
+Run from the repository root: ``python helpers/table9_auc_comparison.py``
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from shared_table_code import (
 
 TASK = "cancer_diagnosis"
 RESULTS_SUBDIR = "tetramer_uc_cap"
-OUTPUT_REL = Path("manuscript") / "table8_auc_comparison.html"
+OUTPUT_REL = Path("manuscript") / "table9_auc_comparison.html"
 DECIMALS = 2
 EM_DASH = "\u2014"
 
