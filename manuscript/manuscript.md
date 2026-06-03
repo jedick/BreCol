@@ -15,10 +15,8 @@ breast cancer, colorectal cancer, and healthy cohorts across 26 studies spanning
 By reserving the six most recent studies per cancer type as an external holdout,
 we ensure that holdout evaluation reflects deployment on data from new laboratories, clinical protocols, and geographic regions.
 We evaluate four classifier pipelines: classical (tetramer counts aggregated to run-level frequencies or
-unsupervised clustering with cluster abundance profiles (UC/CAP))
-and deep learning (HyenaDNA and SetBERT).
-Among classical methods, UC/CAP achieves the strongest holdout performance (AUC 0.84 for cancer type with KNN,
-0.61 for cancer diagnosis with SVM).
+unsupervised clustering with cluster abundance profiles (UC/CAP)) and deep learning (HyenaDNA and SetBERT).
+Among classical methods, UC/CAP achieves the strongest holdout performance (AUC 0.84 for cancer type with KNN, 0.61 for cancer diagnosis with SVM).
 The differential between test (in-study) and holdout AUC is 0.15 points for both tasks
 with the best classical classifier, confirming that conventional evaluation inflates apparent model skill.
 Both deep-learning pipelines underperform the best classical methods on holdout data;
@@ -28,8 +26,8 @@ Our benchmark and associated code are publicly available to support reproducible
 ## Introduction
 
 The community of microorganisms inhabiting the human digestive tract, known as the gut microbiome, is increasingly linked to cancer risk and progression.
-Large-scale epidemiological and mechanistic studies have associated compositional shifts in gut bacteria with colorectal cancer (CRC),
-and growing evidence implicates gut dysbiosis in breast cancer as well.
+Clinical studies have associated compositional shifts in gut bacteria with colorectal cancer (CRC) [@ZFL18],
+and growing evidence implicates gut dysbiosis in breast cancer as well [@YTF+17; @ZXS21].
 Machine learning models trained on microbiome profiles have shown promise for distinguishing cancer patients from healthy controls within individual cohorts,
 raising the prospect of non-invasive, microbiome-based cancer screening [@WPK+19; @SHL+25].
 
@@ -52,9 +50,10 @@ This problem is exacerbated for cancer type prediction (a different task from ca
 Breast and colorectal cancer samples almost always come from entirely separate studies,
 so a classifier can achieve near-perfect in-study accuracy simply by identifying the study of origin rather than the disease.
 Evaluating such a model on test samples from the same studies dramatically overestimates generalization.
-A reliable benchmark must therefore evaluate models on holdout studies, i.e. studies never encountered during training [@WSNP22].
 
-To build a reliable benchmark we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer, 13 colorectal cancer),
+Reliable benchmarks for both cancer diagnosis and type prediction must evaluate models on one or more "prediction sets" [@WSNP22],
+i.e. studies never encountered during training, which we refer to as holdout studies.
+To to this, we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer, 13 colorectal cancer),
 covering healthy controls and two cancer types across studies from 2013 to 2026.
 Studies are partitioned chronologically: the first seven studies per cancer type form the development set (training, validation, and test),
 while the more recent six studies per cancer type are reserved as an external holdout.
@@ -67,11 +66,12 @@ HyenaDNA, which encodes packed sets of sequences with a mean-pooled token repres
 and SetBERT, which contextualizes individual reads within their parent sample.
 Both models are described in the **Models** section below.
 
+![Classification pipelines.](figure1_pipelines.svg)
+
 Our main contributions are (1) a custom curated, temporally structured multi-study benchmark for microbiome-based cancer classification
 that provides more reliable estimates of real-world performance than within-study splits,
-(2) a reference-free cluster abundance profile method that shows consistent gains on cancer type classification
-and achieves the best overall holdout performance,
-and (3) a comparison of two deep-learning sequence models — HyenaDNA and SetBERT — showing that both trail the best classical methods on holdout data,
+(2) a reference-free cluster abundance profile method that achieves the best overall holdout performance among our tested models,
+and (3) a comparison of two deep-learning sequence models (HyenaDNA and SetBERT) showing that both trail the best classical methods on holdout data,
 with HyenaDNA generalizing somewhat better than SetBERT.
 
 ## Models
@@ -80,20 +80,20 @@ with HyenaDNA generalizing somewhat better than SetBERT.
 
 Rather than performing taxonomic classification, we count tetramer occurrences in each raw 16S sequence
 to generate a 256-dimensional feature space from sequence composition alone.
+Tetramer frequencies, also known as tetranucleotide frequencies, have proven useful for taxonomic binning of metagenomic sequences [@DAB+09].
 Tetramer counting is a specific instance of *k*-mer counting, which has recently gained interest
 as an efficient, reference-free method for feature engineering in microbiome machine learning [@Bok25].
 
-For run-level features, tetramers are summed across all sequences in a run and converted to relative frequencies.
-Because these run-level features are averages, they lose within-run compositional structure —
+For run-level features, tetramer counts are summed across all sequences in a run and converted to relative frequencies.
+Because these run-level features are averages, they lose within-run compositional structure, i.e.
 information about which sequence types tend to co-occur in the same sample.
-Taxonomic profiling preserves this structure through species-level groupings [@WSNP22],
+Taxonomic profiling preserves this structure through genus- or species-level groupings,
 but taxonomic assignment is not the only route to sequence similarity clusters.
 
 Here we introduce unsupervised clustering with cluster abundance profiles (UC/CAP).
-Rather than averaging across all sequences, UC/CAP groups sequences by similar tetramer composition
+Rather than averaging across all sequences, UC/CAP build sequence clusters with similar tetramer composition
 and then profiles the cluster membership of a large number of sequences from each run.
-This approach is analogous in purpose to operational taxonomic unit (OTU)-based methods,
-but entirely reference-free.
+This approach is analogous in purpose to operational taxonomic unit (OTU)-based methods, but entirely reference-free.
 
 ### Deep learning
 
@@ -105,15 +105,14 @@ Because this pooled representation collapses all sequences in a set into one vec
 it cannot capture within-run compositional structure, a limitation shared with run-level tetramer aggregation.
 
 **SetBERT** [@LGA+25] is a transformer architecture designed specifically for high-throughput sequencing data.
-It represents each read with a DNABERT sequence encoder (3-mer tokens, 768-dimensional embeddings
-in the released *qiita-16s* checkpoint)
-and then contextualizes the full set of reads from one run with a stack of Set Attention Blocks (SABs) —
-standard transformer blocks without positional encoding, making the model permutation-equivariant.
+It represents each read with a DNABERT sequence encoder (3-mer tokens, 768-dimensional embeddings in the released *qiita-16s* checkpoint)
+and then contextualizes the full set of reads from one run with a stack of Set Attention Blocks (SABs).
+SABs are standard transformer blocks without positional encoding, making the model permutation-equivariant.
 A learned class token ([CLS]) prepended to the set is conditioned on all reads by the SABs;
 its output embedding summarizes the entire run and serves as input to the classification head.
 Unlike HyenaDNA, SetBERT was pre-trained on approximately 280,000 microbial 16S amplicon samples
 with a relative-abundance prediction objective [@LGA+25],
-making its learned representations directly relevant to the domain.
+making its learned representations relevant to the domain.
 
 Key differences between the two models are summarized below.
 
@@ -125,9 +124,8 @@ Key differences between the two models are summarized below.
 | Sequences per run | ~323 ± 112 (at 16k/set, 5 sets) | 350 |
 | Sequence length limit | Not truncated (packed to context) | Trimmed to 150 bp |
 
-Taking 5 sets each at 16k per-set context length, the mean number of sequences used per sample is
-323 ± 112 (minimum 50 for [@YTK+26], maximum 540 for [@BVW+21]),
-comparable to the 350 sequences per run used for SetBERT.
+Although HyenaDNA offers larger context lengths (up to 1 million bases) and SetBERT was pre-trained with 1000 sequences per run
+and tested with up to 10,000 sequences per run [@LGA+25], we use a smaller number of sequences due to lower GPU resources (16 GB GPU RAM) available in our study.
 
 ### Classification heads
 
@@ -135,19 +133,14 @@ For both models we tried three classification head architectures applied to the 
 A **linear** head is a single fully connected layer mapping the embedding to a scalar logit;
 this is the simplest option and the one used in the original HyenaDNA paper.
 An **MLP** (multi-layer perceptron) head adds a hidden layer (256 units, GELU activation, 0.1 dropout)
-before the output layer, giving the classifier more capacity to carve non-linear decision boundaries.
-A **cosine similarity** head projects the embedding onto a single learned direction,
-scoring it by cosine similarity scaled by a learnable temperature;
-because cosine similarity is direction-only, it is sensitive to the orientation of the embedding vector
-rather than its magnitude.
-The SetBERT pre-training objective uses a linear head with softmax for relative abundance prediction,
-so the linear head is the closest to the pre-trained regime.
+before the output layer, giving the classifier more capacity to learn non-linear decision boundaries.
+A **cosine similarity** head projects the embedding onto a single learned direction, scoring it by cosine similarity scaled by a learnable temperature.
+Because cosine similarity is direction-only, it is sensitive to the orientation of the embedding vector rather than its magnitude.
+The SetBERT pre-training objective uses a linear head with softmax for relative abundance prediction, so the linear head is the closest to the pre-trained regime.
 
-For both models we used a learning rate of 1×10⁻⁴ for the classification head
-and 1×10⁻⁵ for the backbone (a 10× reduction to preserve pre-trained representations).
+For both models we used a learning rate of 1×10^-4^ for the classification head
+and 1×10^-5^ for the backbone (a 10× reduction to preserve pre-trained representations).
 Models were trained for 5 epochs and the epoch with the highest validation AUC was selected.
-
-![Classification pipelines.](figure1_pipelines.svg)
 
 ## Methods
 
@@ -158,7 +151,7 @@ We collected sequencing runs from studies covering breast cancer and colorectal 
 studies were only included if both cancer-positive and healthy control labels were available.
 We stored SRA Run accessions (beginning with SRR, ERR, or DRR) and study metadata in the repository and downloaded each run's read archive from NCBI.
 
-Our compilation spans 26 studies in total—13 for breast cancer and 13 for colorectal cancer (Table 1).
+Our compilation spans 26 studies in total: 13 for breast cancer and 13 for colorectal cancer (Table 1).
 Arranged chronologically by publication year, the first seven studies per cancer type form the development partition
 (train, validation, and test splits), and the more recent six studies per cancer type are reserved as the holdout partition.
 Development and holdout sets are separated not only by study boundaries but also by time: all holdout studies are from 2023 onward.
@@ -293,6 +286,8 @@ Batch size was adjusted to maximize GPU memory utilization.
 We used the released *qiita-16s* checkpoint: a 12-layer DNABERT encoder embeds each amplicon read into a 768-dimensional vector,
 and a 6-layer SAB transformer with 12 heads contextualizes the set of read embeddings,
 producing a [CLS] token embedding that summarizes the run.
+The configuration of the available checkpoint differs somewhat from the model described in the paper
+(DNABERT: 8 transformer layers with 8 attention heads and 64-d embedding vector; 8 SAB layers each with 8 attention heads [@LGA+25]).
 
 For each binary task we attached a classification head to the [CLS] token and trained with binary cross-entropy.
 We used 350 reads per run, trimmed each read to 150 base pairs (following the original SetBERT paper [@LGA+25]),
@@ -374,35 +369,33 @@ than any tetramer-based classifier, demonstrating that richer within-run composi
 [Table 5 data](table5_tetramer_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts,
 with the best feature set selected per task by test AUC.").
 
-### Classification with HyenaDNA sequence modeling
+### Classification with HyenaDNA
 
 For each task we fine-tuned a HyenaDNA model from the same pre-trained backbone with its own classification head.
 The results with different head architectures are shown in Table 6.
 For cancer diagnosis, test and holdout AUC are similar across all three heads (around 0.61--0.62 test, 0.54--0.57 holdout),
 suggesting that head choice matters little for this task.
-For cancer type, the cosine head is the best on test (0.89) and the MLP head achieves the highest holdout AUC (0.79),
+For cancer type, all heads show similar test AUC (0.88--0.89) and the MLP head achieves the highest holdout AUC (0.79),
 though with the largest standard deviation (±0.10), indicating some instability across seeds.
 Linear and cosine heads both reach 0.74 on holdout.
 
 [Table 6 data](table6_hyenadna.html "HyenaDNA fine-tuning results with 5 sets at 2048 max length per set,
 reported as mean ± standard deviation across three random seeds.").
 
-We used the linear head — the configuration with the best holdout AUC for cancer diagnosis (0.57) — to study the effect of context length.
-We varied the length per set (1k, 2k, 4k, 8k, and 16k positions),
-obtaining shorter configurations by truncating a single large cache built at 16k.
+We used the linear head (the configuration with the best holdout AUC for cancer diagnosis) to study the effect of context length.
+We varied the length per set (1k, 2k, 4k, 8k, and 16k positions), obtaining shorter configurations by truncating a single large cache built at 16k.
 Figure 3 shows that for cancer diagnosis, holdout AUC increases modestly from 2k to 8k before leveling off,
 while for cancer type, 2k is best on holdout and longer contexts markedly reduce holdout AUC despite slight gains on the test split.
 The divergence between test and holdout trends for cancer type suggests that larger contexts allow the model to pick up study-specific signals.
 
-![Effect of context length per set on HyenaDNA AUC for cancer diagnosis (left) and cancer type (right), using the linear head.](figure3_hyenadna.svg)
+![Effect of context length per set on HyenaDNA AUC for cancer diagnosis (left) and cancer type (right),
+using the linear head with three random seeds.](figure3_hyenadna.svg)
 
 ### Classification with SetBERT
 
 We evaluated the same three classification heads on SetBERT (Table 7).
-For cancer diagnosis, test and holdout AUC are again similar across heads (0.61--0.64 test, 0.54--0.56 holdout),
-as with HyenaDNA.
-For cancer type, the pattern differs: the cosine head is best on holdout (0.70),
-the linear head leads on test (0.98),
+For cancer diagnosis, test and holdout AUC are similar across heads (0.61--0.64 test, 0.54--0.56 holdout), as with HyenaDNA.
+For cancer type, the pattern differs: test AUC is simila across heads (0.97--0.98), while the cosine head is best on holdout (0.70)
 and the MLP head is the worst on holdout (0.56 ± 0.16), with substantially higher variance than the other two heads.
 
 [Table 7 data](table7_setbert.html "SetBERT fine-tuning results with a per-run set size of 350 sequences,
@@ -447,26 +440,30 @@ but HyenaDNA generalizes better to holdout studies (best: 0.79 MLP versus 0.70 c
 HyenaDNA's stronger holdout AUC on cancer type is notable given that it was pre-trained on the human genome rather than on microbial sequences;
 the domain mismatch does not appear to be the limiting factor.
 
-At 16k positions per set and 5 sets per run, HyenaDNA sees roughly 323 sequences per sample,
-a fraction of what the tetramer and UC/CAP methods use (up to 5,000).
-The small number of sequences and their aggregated representation before classification
-likely contribute to the lower AUC relative to classical methods.
+At 16k positions per set and 5 sets per run, the number of sequences per sample seen by HyenaDNA is {hyenadna_sequences_per_sample_text}.
+This is comparable to the 350 sequences per run used for SetBERT
+Although this is a fraction of what the tetramer and UC/CAP methods use (up to 5,000),
+our set-size ablations do not support set size as the limiting factor (Figure 3).
 
-### Per-study variation in cancer diagnosis AUC
-
-Table 8 reveals substantial variation in per-study AUC for cancer diagnosis.
-Most values exceed 0.5, meaning the model makes better-than-random predictions for the majority of datasets.
-Where AUC falls below 0.5, the model is systematically wrong — these are the most challenging studies.
-This range of difficulty is visible only because the benchmark aggregates many studies;
-a single-study or small-scale evaluation would likely miss it.
-Targeting the most challenging studies for model improvement — for example, by up-weighting hard examples during training —
-could be a productive direction for future work.
+The aggregated representation in HyenaDNA before classification may contribute to the lower AUC relative to classical methods.
+SetBERT is an interesting alternative as it uses set attention blocks so embeddings are affected by sample context (i.e. other sequences).
+In our experiments, SetBERT performs better than HyenaDNA on in-study test splits but not on holdout datasets.
+A possible contributing factor is that SetBERT sequence processing takes only 150 bp from each sequence,
+which may lose information useful for generalizing to unseen studies.
+Also, SetBERT was pre-trained on V3-V4 regions on 16S rRNA, while some of our holdout studies use different regions.
 
 ### Directions for improvement
 
+Table 8 reveals substantial variation in per-study AUC for cancer diagnosis.
+Most values exceed 0.5, meaning the model makes better-than-random predictions for the majority of datasets.
+Where AUC falls below 0.5, the model is systematically wrong.
+This range of difficulty is visible only because the benchmark aggregates many studies;
+a single-study or small-scale evaluation would likely miss it.
+Targeting the most challenging studies for model improvement, for example, by up-weighting hard examples during training,
+could be a productive direction for future work.
+
 Several avenues may improve holdout performance.
-UC/CAP parameters (*K*, *n*<sub>CAP</sub>) could be tuned jointly with the classifier
-rather than selected independently.
+UC/CAP parameters (*K*, *n*<sub>CAP</sub>) could be tuned jointly with the classifier rather than selected independently.
 Soft cluster assignments (Gaussian mixture or fuzzy *k*-means) might better capture the continuous composition of microbial communities.
 For both deep-learning models, additional pre-training on 16S rRNA sequences would better align their representations with the target domain.
 
@@ -478,18 +475,18 @@ Evaluation against temporally and geographically diverse holdout cohorts should 
 
 Several limitations should be noted.
 First, the cancer-type task combines female-only datasets (breast cancer) with datasets of mixed sex (colorectal cancer).
-Sex-specific differences in fecal microbiome composition could confound this comparison,
+Sex-specific differences in fecal microbiome composition are known [@GVR25] and could confound this comparison,
 because a model may learn to distinguish female from mixed-sex samples rather than breast from colorectal cancer.
 Filtering colorectal cancer datasets to include only female participants would address this,
 but is feasible only where participant sex metadata are available.
 
-Second, study-level confounders — primer choice, sequencing platform, and geographic region —
+Second, study-level confounders, including primer choice, sequencing platform, and geographic region,
 are unavoidable in a multi-study benchmark and limit how cleanly the signal can be attributed to cancer biology.
 
-Third, both deep-learning models were fine-tuned with a fixed number of sequences per run (about 323--350),
-which is small relative to the full sequencing depth of many runs.
-Strategies that use more sequences, such as multi-instance learning or set-level ensembling with larger sets,
-could better exploit available data.
+Third, both deep-learning models were fine-tuned with a small number of sequences per run (about 323--350) relative to the full sequencing depth of many runs.
+Strategies that use more sequences, such as multi-instance learning or set-level ensembling with larger sets, could better exploit available data.
+This idea is conditioned by our finding that increasing set length above 2k positions has a small positive (cancer diagnosis)
+or large negative (cancer type) effect on holdout classification with HyenaDNA (Figure 3).
 
 ## Acknowledgments
 
@@ -501,15 +498,12 @@ All contributors to those studies are acknowledged for making this study possibl
 Cursor was used for code generation.
 Cursor and Claude Sonnet 4.6 were used for writing sections of the manuscript.
 Claude Sonnet 4.6 was used for polishing the text.
-
 AI-generated text was incorporated into the manuscript after human review and cleanup by the author.
-For example, Claude Sonnet wrote "Microbiome-based cancer prediction benchmarks routinely overestimate real-world performance" for the Abstract.
-The author decided that this was an exaggeration and changed "routinely" to "sometimes".
 
 ## Code and data availability
 
 Code and data are available at <https://github.com/jedick/BreCol>.
-The repository also holds the manuscript files and polishing prompts.
+The repository also holds the manuscript revision prompts and manuscript files with history of AI and human edits.
 
 ## References
 
