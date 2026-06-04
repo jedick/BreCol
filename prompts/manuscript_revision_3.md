@@ -1,6 +1,6 @@
 # Revising cancer classification benchmark manuscript
 
-Date: 20260522
+Date: 20260602
 
 ## JMD
 
@@ -61,3 +61,61 @@ Updated to match Table 7: cosine best on holdout for cancer type (0.70); MLP wor
 
 **Discussion (items 10–13)**
 Added "HyenaDNA versus SetBERT" subsection comparing the two models; notes that HyenaDNA generalizes better on cancer type despite human-genome pre-training. Added "Per-study variation" paragraph discussing the Table 8 AUC range and the opportunity to target hard studies. Consolidated the improvement directions into "Directions for improvement". Added a "Limitations" subsection covering: (1) sex confound in cancer-type task, (2) study-level technical confounders, (3) small sequence count per run for deep-learning models. Corrected the Table 8 caption from "Table 4" to "Table 5". Converted the breast-cancer comparison bullet list to prose.
+
+## JMD
+
+I want to respond and ask about your remark that "Both are backwards" for Figure 1 labels. I've changed the Processing column for HyenaDNA (Pool hidden states). But I'm not sure that the existing labels for SetBERT are backwards. You said "For SetBERT the correct flow is: DNABERT embeds reads → SABs → [CLS] token embedding.". To my reading the figure already shows DNABERT backbone (in the Features column) -> Set Attention Blocks -> [CLS] token embeddings. Can you check the new version of Figure 1 (uploaded as ) and tell me if the HyenaDNA and SetBERT pipelines (look at the entire row including Features and Processing) are represented correctly?
+
+Attached: figure1_pipelines_v2.svg
+
+## Claude
+
+Let me read the new SVG carefully.You're right to push back, and I owe you a correction of my earlier claim. Here's the accurate assessment of v2:
+
+**HyenaDNA row** — now correct. Features: "HyenaDNA backbone" → Processing: "Pool hidden states" → Classifier: "Linear / MLP / Cosine". That accurately describes the pipeline: the backbone produces per-position hidden states which are mean-pooled into a single vector, then passed to the head.
+
+**SetBERT row** — also correct, and your reading was right all along. Features: "SetBERT (DNABERT backbone)" → Processing: "Set Attention Blocks → [CLS] token embeddings" → Classifier: "Linear / MLP / Cosine". The arrow within the Processing label is being used as a mini flow indicator (SABs produce the [CLS] embedding), not as a column separator. The full pipeline reads: DNABERT embeds reads (Features) → SABs contextualize the set and the [CLS] token aggregates it (Processing) → classification head (Classifier). That's accurate.
+
+So my original remark that "both are backwards" was wrong. The SetBERT labels were correct in v1 and remain correct in v2. Only the HyenaDNA Processing label needed fixing (the old v1 label "[CLS] token embeddings → Pool hidden states" incorrectly implied a CLS token exists in HyenaDNA and placed pooling after it). The fix you made — replacing that with "Pool hidden states" — is the right change, and the figure is now accurate.
+
+## JMD
+
+Thanks. I wonder if a more precise name for the "Classifier" column would be "Classifier/Decoder". At least in the HyenaDNA paper they refer to a "linear decoder head". OTOH, the SetBERT paper refers to "Sequence-level Classifier" and "Token-level Classifier" on top of the contextualized embeddings - the text is "We construct a binary classifier to predict the soil sample region by attaching a single dense layer with one output neuron and the sigmoid activation function." The word "decoder" doesn't appear in the SetBERT paper. So the terminology choice between "classifier" and "decoder" is not universal. What is the *most readable and understandable* label for this part of the pipeline? "Classifier" is probably correct for classical models (KNN/SVM/RF) but what do we call the classifier? decoder? part of the deep-learning models (after embedding and pooling or contextualization)?
+
+## Claude
+
+This is a good question about terminology. Let me think through the options carefully.
+
+The column contains two genuinely different things: for classical models, KNN/SVM/RF are full classifiers that learn decision boundaries from the feature vectors. For deep learning, the linear/MLP/cosine component is a lightweight head that maps a pre-computed embedding to a logit — it's not doing the heavy lifting of classification in the same sense.
+
+The terminology options and their tradeoffs:
+
+**"Classifier"** — accurate for KNN/SVM/RF, but slightly loose for the deep-learning heads, which are better described as prediction heads attached to a backbone.
+
+**"Classifier/Decoder"** — adds precision for the deep-learning case, but "decoder" is loaded terminology in sequence modeling (it usually refers to the autoregressive half of an encoder-decoder architecture, like in machine translation), so importing it from the HyenaDNA paper risks confusion for readers who know transformer literature.
+
+**"Head"** — precise for the deep-learning rows ("classification head" is the standard term in fine-tuning literature), but odd for KNN/SVM/RF, which nobody calls a "head".
+
+**"Prediction"** — too vague; loses the useful information that these are classifiers.
+
+My recommendation is to keep **"Classifier"**. The reason is that a reader scanning the figure needs the column label to orient them quickly, and "Classifier" does that correctly for all three rows — KNN/SVM/RF are classifiers, and linear/MLP/cosine heads are the classification components of the deep-learning pipelines. The distinction between a full classifier and a lightweight classification head is real but fine-grained enough that it belongs in the text rather than the figure header.
+
+If you want to acknowledge both uses without cluttering the label, **"Classifier head"** is a reasonable compromise — it's standard in the fine-tuning literature, and KNN/SVM/RF can be reasonably called classifier heads on top of the tetramer/UC-CAP features. But it's a small gain over the simpler "Classifier".
+
+## JMD
+
+If the prediction head for HyenaDNA is attached to the backbone, where does the "Pool hidden states" step fit in? The HyenaDNA authors state: "We pool along the sequence dimension to obtain a classification token, and attach a simple linear decoder head." So the decoder head isn't attached to backbone, but to the pooled representation - or am I missing something?
+
+## Claude
+
+You're not missing anything — your reading is precise and correct.
+
+The actual HyenaDNA pipeline has three distinct steps: backbone → pool → head. "Pool hidden states" is an intermediate step between the backbone and the head, not part of either. The HyenaDNA authors are explicit about this: pooling produces a "classification token" and *then* the decoder head is attached to that token.
+
+This means the current figure is slightly misleading for HyenaDNA, because it compresses the pipeline into two cells (Features and Processing) before the Classifier column, but the Processing cell ("Pool hidden states") is really producing an intermediate representation that feeds the head, not a final feature vector in the same sense as run-level tetramer aggregation or UC/CAP.
+
+For SetBERT the two-cell structure works cleanly: the [CLS] token produced by the SABs *is* the run-level representation that goes directly to the head, so "Processing → Classifier" maps neatly.
+
+For HyenaDNA, you could argue the figure would be more accurate if the Processing cell said something like "Pool hidden states → classification token" to make explicit that pooling produces an intermediate representation, not a final feature. But that risks making the label verbose and asymmetric with the SetBERT row.
+
+The more fundamental question is whether this matters for readability. Most readers will likely not scrutinize the boundary between pooling and the head closely enough for it to cause confusion. If you're satisfied that the text in the Models section makes the three-step pipeline clear, the figure can stay as-is. But if you want the figure to stand alone more precisely, renaming the Processing cell for HyenaDNA to "Pool hidden states (→ head)" or splitting it would be the honest fix.

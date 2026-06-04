@@ -412,7 +412,7 @@ Fitting to cluster abundance profiles (UC/CAP) preserves within-run compositiona
 and improves holdout performance on cancer type but not on the cancer diagnosis task.
 
 We list our per-study AUC for cancer diagnosis and comparisons with colorectal cancer where available (Table 9).
-On two of the three development studies with a published comparison ([@ZTV+14] and [@YDS+21]), our per-study test AUC is very high (0.98--1.0.0),
+On two of the three development studies with a published comparison ([@ZTV+14] and [@YDS+21]), our per-study test AUC is very high (0.98--1.00),
 but it drops to 0.73 on a third dataset where the literature value is 0.85 [@BRRS16].
 For holdout studies with published AUC values ([@BWY+23], [@CAB+24], [@GYX+25]), our AUC (0.66--0.68) is consistently lower than the literature (0.86--0.88).
 The literature numbers come from within-study cross-validation or test splits rather than independent cohorts
