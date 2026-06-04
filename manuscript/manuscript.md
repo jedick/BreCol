@@ -8,20 +8,16 @@ link-citations: true
 
 ## Abstract
 
-Microbiome-based cancer prediction benchmarks sometimes overestimate real-world performance because test samples are drawn from the same studies used for training,
-allowing models to exploit study-specific technical artifacts rather than biological signal.
-We present BreCol, a temporally structured multi-study compilation of 2,040 16S rRNA sequencing runs covering
-breast cancer, colorectal cancer, and healthy cohorts across 26 studies spanning more than a decade.
-By reserving the six most recent studies per cancer type as an external holdout,
-we ensure that holdout evaluation reflects deployment on data from new laboratories, clinical protocols, and geographic regions.
-We evaluate four classifier pipelines: classical (tetramer counts aggregated to run-level frequencies or
-unsupervised clustering with cluster abundance profiles (UC/CAP)) and deep learning (HyenaDNA and SetBERT).
-Among classical methods, UC/CAP achieves the strongest holdout performance (AUC 0.60 for cancer diagnosis with SVM, 0.83 for cancer type with KNN).
-The differential between test (in-study) and holdout AUC is 0.15 points for both tasks
-with the best classical classifier, confirming that conventional evaluation inflates apparent model skill.
-Both deep-learning pipelines underperform the best classical methods on holdout data;
-HyenaDNA (holdout AUC 0.57 for cancer diagnosis, 0.79 for cancer type) edges out SetBERT on generalization.
-Our benchmark and associated code are publicly available to support reproducible, credible evaluation of microbiome-based cancer classifiers.
+We introduce BreCol, a multi-study 16S rRNA benchmark of 2,040 sequencing runs across 26 studies spanning breast cancer, colorectal cancer, and healthy cohorts.
+The benchmark supports two tasks: cancer diagnosis and cancer type prediction.
+Holdout evaluation uses the six most recent studies per cancer type, reflecting temporal separation from training data.
+Features are derived from tetramer frequencies using unsupervised clustering, preserving within-run compositional signal without reference-based taxonomy.
+Classical models reach holdout AUCs of 0.60 for cancer diagnosis and 0.83 for cancer type prediction.
+Colorectal cancer is consistently easier to detect than breast cancer when models are trained on both cancer types simultaneously.
+We also evaluate two deep learning pipelines: HyenaDNA, a long-range sequence model that pools backbone hidden states across token positions for classification,
+and SetBERT, a transformer that produces contextualized embeddings over sets of reads.
+Both deep learning models underperform the best classical methods on holdout data, though tuning training set size and the decoder head yields modest gains.
+BreCol and associated code are publicly available.
 
 ## Introduction
 
@@ -411,8 +407,7 @@ reported as mean ± standard deviation across two random seeds.").
 
 ## Discussion
 
-Results are consistently lower on holdout splits than on in-study test splits,
-confirming that test performance within the same studies used for training gives optimistic estimates of real-world model skill.
+Results are consistently lower on holdout splits than on in-study test splits.
 For run-level tetramer frequencies, the stark contrast betwen test and holdout performance (AUC >0.9 for test vs 0.71 or less for holdout)
 indicates that classifiers overfit to study-level signals when trained on single-study cancer-type data.
 Fitting to cluster abundance profiles (UC/CAP) preserves within-run compositional information
