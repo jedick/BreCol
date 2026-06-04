@@ -43,7 +43,7 @@ fit_classifier:
 
 # Flat list merged shallowly over the defaults.yaml run_uc_cap_pipeline baseline (feature sets; --feat 1..N).
 run_uc_cap_pipeline:
-  - { n_uc:  500, n_clusters: 1000, n_cap: 1000 }
+  - { n_uc:  350, n_clusters: 1000, n_cap:  350 }
   - { n_uc: 1000, n_clusters: 1000, n_cap: 1000 }
   - { n_uc: 1000, n_clusters: 2000, n_cap: 1000 }
   - { n_uc: 1000, n_clusters: 1000, n_cap: 5000 }

@@ -348,7 +348,7 @@ We explored six combinations of the three UC/CAP hyperparameters defined by *n*<
 
 | Feature set | *n*UC | *K* | *n*CAP | Feature set | *n*UC | *K* | *n*CAP |
 |-|-|-|-|-|-|-|-|
-| 1 |  500 | 1000 |   500 | 4 | 1000 | 1000 |  5000 |
+| 1 |  350 | 1000 |   350 | 4 | 1000 | 1000 |  5000 |
 | 2 | 1000 | 1000 |  1000 | 5 | 1000 | 2000 |  5000 |
 | 3 | 1000 | 2000 |  1000 | 6 | 1000 | 3000 |  5000 |
 
@@ -389,8 +389,15 @@ Figure 3 shows that for cancer diagnosis, holdout AUC increases modestly from 2k
 while for cancer type, 2k is best on holdout and longer contexts markedly reduce holdout AUC despite slight gains on the test split.
 The divergence between test and holdout trends for cancer type suggests that larger contexts allow the model to pick up study-specific signals.
 
-![Effect of context length per set on HyenaDNA AUC for cancer diagnosis (left) and cancer type (right),
+![Effect of context length per set on HyenaDNA predictions for cancer diagnosis (left) and cancer type (right),
 using the linear head with three random seeds.](figure3_hyenadna.svg)
+
+For the most direct comparison between HyenaDNA and the UC/CAP pipeline, look at the results for feature set 1 in Figure 2 and 16k set length in Figure 3.
+Feature set 1 uses 350 sequences per sample for clustering (Table 5).
+At 16k positions per set and 5 sets per run, the number of sequences per sample seen by HyenaDNA is 323 ± 112 (min 50 for ref [@YTK+26], max 540 for ref [@BVW+21]).
+For cancer diagnosis, HyenaDNA loses to both SVM and KNN on test AUC, but shows competetive holdout AUC near 0.58, slightly higher than either SVM or KNN.
+For cancer type, HyenaDNA shows respectable test AUC (>0.9) and but struggles on holdout (<0.6), considerably lower than either SVM or KNN.
+Interestingly, HyenaDNA with 2k set size beats other sizes by a wide margin for cancer type, with the MLP head achieving a holdout AUC of 0.79.
 
 ### Classification with SetBERT
 
@@ -412,9 +419,9 @@ Fitting to cluster abundance profiles (UC/CAP) preserves within-run compositiona
 and improves holdout performance on cancer type but not on the cancer diagnosis task.
 
 We list our per-study AUC for cancer diagnosis and comparisons with colorectal cancer where available (Table 9).
-On two of the three development studies with a published comparison ([@ZTV+14] and [@YDS+21]), our per-study test AUC is very high (0.98--1.00),
-but it drops to 0.73 on a third dataset where the literature value is 0.85 [@BRRS16].
-For holdout studies with published AUC values ([@BWY+23], [@CAB+24], [@GYX+25]), our AUC (0.66--0.68) is consistently lower than the literature (0.86--0.88).
+On two of the three development studies with a published comparison (refs [@ZTV+14; @YDS+21]), our test AUC is very high (0.98--1.00),
+but it drops to 0.73 on a third dataset where the literature value is 0.85 (ref [@BRRS16]).
+For holdout studies with published AUC values (refs [@BWY+23; @CAB+24; @GYX+25]), our AUC (0.66--0.68) is consistently lower than the literature (0.86--0.88).
 The literature numbers come from within-study cross-validation or test splits rather than independent cohorts
 and are therefore not directly comparable to true holdout performance.
 
@@ -426,7 +433,7 @@ We did not find direct AUC comparisons in the literature for the breast cancer d
 Daga and Oudah [@DO24] reported a peak within-cohort AUC of 0.83 for breast cancer with Bernoulli Naïve Bayes.
 Our in-study test AUCs for breast cancer diagnosis are all lower than this except for one dataset.
 Wang et al. [@WYH+22] trained random forest classifiers on fecal microbiome data from breast cancer patients and healthy controls, achieving cross-cohort
-AUCs of 0.65--0.66, which sits toward the upper end of our per-study holdout values for breast cancer (0.47--0.69 Table 9).
+AUCs of 0.65--0.66, which sits toward the upper end of our holdout values for breast cancer (0.47--0.69; Table 9).
 
 Interestingly, the test AUCs for breast cancer are generally lower than those for colorectal cancer datasets (Table 9).
 This pattern extends to the holdout studies - for breast cancer only 2 out of 6 holdout studies have AUC > 0.6,
@@ -449,11 +456,6 @@ but HyenaDNA generalizes better to holdout studies (best: 0.79 MLP versus 0.70 c
 HyenaDNA's stronger holdout AUC on cancer type is notable given that it was pre-trained on the human genome rather than on microbial sequences;
 the domain mismatch does not appear to be the limiting factor.
 
-At 16k positions per set and 5 sets per run, the number of sequences per sample seen by HyenaDNA is 323 ± 112 (min 50 for ref [@YTK+26], max 540 for ref [@BVW+21]).
-This is comparable to the 350 sequences per run used for SetBERT
-Although this is a fraction of what the tetramer and UC/CAP methods use (up to 5,000),
-our set-size ablations do not support set size as the limiting factor (Figure 3).
-
 The aggregated representation in HyenaDNA before classification may contribute to the lower AUC relative to classical methods.
 SetBERT is an interesting alternative as it uses set attention blocks so embeddings are affected by sample context (i.e. other sequences).
 In our experiments, SetBERT performs better than HyenaDNA on in-study test splits but not on holdout datasets.
@@ -466,8 +468,6 @@ Also, SetBERT was pre-trained on V3-V4 regions on 16S rRNA, while some of our ho
 Table 9 reveals substantial variation in per-study AUC for cancer diagnosis.
 Most values exceed 0.5, meaning the model makes better-than-random predictions for the majority of datasets.
 Where AUC falls below 0.5, the model is systematically wrong.
-This range of difficulty is visible only because the benchmark aggregates many studies;
-a single-study or small-scale evaluation would likely miss it.
 Targeting the most challenging studies for model improvement, for example, by up-weighting hard examples during training,
 could be a productive direction for future work.
 
@@ -475,10 +475,6 @@ Several avenues may improve holdout performance.
 UC/CAP parameters (*K*, *n*<sub>CAP</sub>) could be tuned jointly with the classifier rather than selected independently.
 Soft cluster assignments (Gaussian mixture or fuzzy *k*-means) might better capture the continuous composition of microbial communities.
 For both deep-learning models, additional pre-training on 16S rRNA sequences would better align their representations with the target domain.
-
-More broadly, our results reinforce a general lesson for machine learning in genomics and microbiome research:
-metrics from within-study test splits can be misleading by a wide margin.
-Evaluation against temporally and geographically diverse holdout cohorts should be a standard requirement [@WSNP22].
 
 ### Limitations
 
@@ -492,10 +488,9 @@ but is feasible only where participant sex metadata are available.
 Second, study-level confounders, including primer choice, sequencing platform, and geographic region,
 are unavoidable in a multi-study benchmark and limit how cleanly the signal can be attributed to cancer biology.
 
-Third, both deep-learning models were fine-tuned with a small number of sequences per run (about 323--350) relative to the full sequencing depth of many runs.
-Strategies that use more sequences, such as multi-instance learning or set-level ensembling with larger sets, could better exploit available data.
-This idea is conditioned by our finding that increasing set length above 2k positions has a small positive (cancer diagnosis)
-or large negative (cancer type) effect on holdout classification with HyenaDNA (Figure 3).
+Third, both deep-learning models were fine-tuned with a small number of sequences per run relative to the full sequencing depth of many runs.
+Strategies that use more sequences could better exploit available data.
+However, our experiments do not support set size between 1k and 16k as the limiting factor for HyenaDNA (Figure 3).
 
 ## Acknowledgments
 
