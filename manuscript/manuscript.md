@@ -1,6 +1,11 @@
 ---
-title: "BreCol: Cancer classification benchmark and reference-free baseline with gut microbiome data"
-author: "Jeffrey M. Dick"
+title: "BreCol: Benchmark for cancer classification covering 26 gut microbiome studies"
+author-meta: Jeffrey M. Dick
+author: |
+  Jeffrey M. Dick \
+  School of Geosciences and Info-Physics \
+  Central South University, Changsha, China \
+  \href{mailto:jeff@chnosz.net}{jeff@chnosz.net}
 bibliography: references.bib
 csl: csl/nature.csl
 link-citations: true
@@ -8,16 +13,18 @@ link-citations: true
 
 ## Abstract
 
-We introduce BreCol, a multi-study 16S rRNA benchmark of 2,040 sequencing runs across 26 studies spanning breast cancer, colorectal cancer, and healthy cohorts.
-The benchmark supports two tasks: cancer diagnosis and cancer type prediction.
+Processing gut microbiomes for cancer diagnosis and cancer type prediction needs robust evaluations across multiple datasets.
+We introduce **BreCol**, a multi-study 16S rRNA benchmark of 2,040 sequencing runs across 26 studies
+spanning **bre**ast cancer, **col**orectal cancer, and healthy cohorts.
 Holdout evaluation uses the six most recent studies per cancer type, reflecting temporal separation from training data.
-Features are derived from tetramer frequencies using unsupervised clustering, preserving within-run compositional signal without reference-based taxonomy.
+Features are derived from tetramer frequencies using unsupervised clustering, preserving within-run compositional signal.
 Classical models reach holdout AUCs of 0.60 for cancer diagnosis and 0.83 for cancer type prediction.
 Colorectal cancer is consistently easier to detect than breast cancer when models are trained on both cancer types simultaneously.
 We also evaluate two deep learning pipelines: HyenaDNA, a long-range sequence model that pools backbone hidden states across token positions for classification,
 and SetBERT, a transformer that produces contextualized embeddings over sets of reads.
-Both deep learning models underperform the best classical methods on holdout data, though tuning training set size and the decoder head yields modest gains.
-BreCol and associated code are publicly available.
+Both deep learning models underperform the best classical methods on holdout data, though tuning training set size and the classification head yields modest gains.
+Our classical pipeline achieves near state-of-the-art performance without using taxonomic assignments.
+BreCol data and associated code are publicly available.
 
 ## Introduction
 
@@ -38,14 +45,12 @@ Methods that work directly on raw sequence data or on reference-free sequence fe
 A deeper problem, however, arises when test sets are constructed by random sampling from the same studies used for training.
 This creates optimistically biased performance estimates that do not reflect real-world deployment.
 In microbiome studies the bias is especially severe because technical factors (e.g. primer choice and sequencing platform) and
-regional microbiome variation introduce large study-level signals that a model can exploit without learning any biology [@WSNP22].
-As a specific example, Sun et al. [@SHL+25] found lower AUC for leave-one-dataset-out (LODO) than for cross-validation (CV)
-in CRC prediction from 16S-based taxonomic profiles (average AUC for CV: 0.82, LODO: 0.77).
+regional microbiome variation introduce large study-level signals that a model can exploit without learning any biology [@WSNP22; @SHL+25].
 
 This problem is exacerbated for cancer type prediction (a different task from cancer vs healthy prediction).
 Breast and colorectal cancer samples almost always come from entirely separate studies,
 so a classifier can achieve near-perfect in-study accuracy simply by identifying the study of origin rather than the disease.
-Evaluating such a model on test samples from the same studies dramatically overestimates generalization.
+We are not aware of existing benchmarks that measure the performance of cancer-type classifiers on holdout studies.
 
 Reliable benchmarks for both cancer diagnosis and type prediction must evaluate models on one or more "prediction sets" [@WSNP22],
 i.e. studies never encountered during training, which we refer to as holdout studies.
@@ -56,7 +61,7 @@ while the more recent six studies per cancer type are reserved as an external ho
 The temporal and study-level separation in this benchmark provides a demanding but credible measure of real-world generalizability.
 
 Against this benchmark we evaluate a progression of feature representations and learning approaches (Figure 1).
-For classical machine learning we use either run-level aggregated tetramer frequencies or UC/CAP cluster abundance profiles.
+For classical machine learning we use either run-level aggregated tetramer frequencies or cluster abundance profiles.
 For deep learning we fine-tune two pre-trained sequence models:
 HyenaDNA, which encodes packed sets of sequences with a mean-pooled token representation,
 and SetBERT, which contextualizes individual reads within their parent sample.
@@ -86,7 +91,7 @@ information about which sequence types tend to co-occur in the same sample.
 Taxonomic profiling preserves this structure through genus- or species-level groupings,
 but taxonomic assignment is not the only route to sequence similarity clusters.
 
-Here we introduce unsupervised clustering with cluster abundance profiles (UC/CAP).
+Here we use unsupervised clustering with cluster abundance profiles (UC/CAP).
 Rather than averaging across all sequences, UC/CAP build sequence clusters with similar tetramer composition
 and then profiles the cluster membership of a large number of sequences from each run.
 This approach is analogous in purpose to operational taxonomic unit (OTU)-based methods, but entirely reference-free.
@@ -129,7 +134,7 @@ and tested with up to 10,000 sequences per run [@LGA+25], we use a smaller numbe
 
 For both models we tried three classification head architectures applied to the run-level summary vector.
 A **linear** head is a single fully connected layer mapping the embedding to a scalar logit;
-this is the simplest option and the one used in the original HyenaDNA paper.
+this is the simplest option and the one used in the original HyenaDNA paper, where it is referred to as the decoder head.
 An **MLP** (multi-layer perceptron) head adds a hidden layer (256 units, GELU activation, 0.1 dropout)
 before the output layer, giving the classifier more capacity to learn non-linear decision boundaries.
 A **cosine similarity** head projects the embedding onto a single learned direction, scoring it by cosine similarity scaled by a learnable temperature.
@@ -157,7 +162,7 @@ This design makes the benchmark a realistic challenge: predictions must transfer
 
 : Breast and colorectal cancer studies included in the BreCol compilation, arranged chronologically by publication year and partitioned into development
 (first seven studies per cancer type) and holdout (remaining six per cancer type) sets.
-Sample counts reflect counts after stratified subsampling at the indicated rate.
+Cancer and healthy numbers reflect counts after stratified subsampling at the indicated rate.
 
 |Ref|Year|Type|Cancer|Healthy|Rate|BioProject|Partition|
 |---|---|---|---|---|---|---|---|
@@ -190,9 +195,9 @@ Sample counts reflect counts after stratified subsampling at the indicated rate.
 |||||||PRJNA1092376||
 
 Some studies have substantially larger sample counts than others.
-To improve study balance, we applied random sampling within several studies (stratified by cancer-versus-healthy label).
-The sample sizes in Table 2 reflect counts after sampling at the indicated rate; these samples are flagged as `sample_used=TRUE` in the data CSV files.
-Additionally, for two studies ([@BVW+21] and [@CAB+24]) we excluded runs with <2000 spots.
+To improve study balance, we applied random sampling within several studies (stratified by cancer vs healthy label).
+The sample sizes in Table 2 reflect counts after sampling at the indicated rate.
+Additionally, for two studies (refs [@BVW+21] and [@CAB+24]) we excluded runs with <2000 spots.
 
 ### Preprocessing, splits, and sampling
 
@@ -393,13 +398,12 @@ Feature set 1 uses 350 sequences per sample for clustering (Table 5).
 At 16k positions per set and 5 sets per run, the number of sequences per sample seen by HyenaDNA is 323 ± 112 (min 50 for ref [@YTK+26], max 540 for ref [@BVW+21]).
 For cancer diagnosis, HyenaDNA loses to both SVM and KNN on test AUC, but shows competetive holdout AUC near 0.58, slightly higher than either SVM or KNN.
 For cancer type, HyenaDNA shows respectable test AUC (>0.9) and but struggles on holdout (<0.6), considerably lower than either SVM or KNN.
-Interestingly, HyenaDNA with 2k set size beats other sizes by a wide margin for cancer type, with the MLP head achieving a holdout AUC of 0.79.
 
 ### Classification with SetBERT
 
 We evaluated the same three classification heads on SetBERT (Table 8).
 For cancer diagnosis, test and holdout AUC are similar across heads (0.61--0.64 test, 0.54--0.56 holdout), as with HyenaDNA.
-For cancer type, the pattern differs: test AUC is simila across heads (0.97--0.98), while the cosine head is best on holdout (0.70)
+For cancer type, the pattern differs: test AUC is similar across heads (0.97--0.98), while the cosine head is best on holdout (0.70)
 and the MLP head is the worst on holdout (0.56 ± 0.16), with substantially higher variance than the other two heads.
 
 [Table 8 data](table8_setbert.html "SetBERT fine-tuning results with a per-run set size of 350 sequences,
@@ -424,15 +428,14 @@ and are therefore not directly comparable to true holdout performance.
 AUC is computed over each study's test-split runs (development) or all runs (holdout); the *n* column reports the total number of samples (cancer + healthy)
 contributing to each per-study AUC. Literature AUC values for colorectal cancer are shown where reported.")
 
-We did not find direct AUC comparisons in the literature for the breast cancer datasets we used, but some comparable results exist.
-Daga and Oudah [@DO24] reported a peak within-cohort AUC of 0.83 for breast cancer with Bernoulli Naïve Bayes.
-Our in-study test AUCs for breast cancer diagnosis are all lower than this except for one dataset.
-Wang et al. [@WYH+22] trained random forest classifiers on fecal microbiome data from breast cancer patients and healthy controls, achieving cross-cohort
-AUCs of 0.65--0.66, which sits toward the upper end of our holdout values for breast cancer (0.47--0.69; Table 9).
+We did not find microbiome-based AUC values reported in the breast cancer studies we used, but some comparable results exist.
+Wang et al. [@WYH+22] trained random forest classifiers on fecal microbiome data from four studies,
+two of which include healthy controls and correspond to development datasets in our compilation (refs [@GHB+18;@BVW+21]).
+They reported cross-cohort AUCs of 0.65--0.66, which sit toward the upper end of our holdout values for breast cancer (0.47--0.69).
 
-Interestingly, the test AUCs for breast cancer are generally lower than those for colorectal cancer datasets (Table 9).
-This pattern extends to the holdout studies - for breast cancer only 2 out of 6 holdout studies have AUC > 0.6,
-while for colorectal cancer this improves to 5 out of 6 studies.
+Interestingly, the test AUCs for breast cancer are generally lower than those for colorectal cancer (Table 9).
+This pattern extends to the holdout studies; for breast cancer only 2 out of 6 holdout studies have AUC > 0.6,
+while for colorectal cancer this grows to 5 out of 6 studies.
 This indicates easier detection of colorectal cancer than breast cancer for models simultaneously trained on data from both cancer types.
 
 Comparing holdout performance across Tables 4 and 6, UC/CAP offers a consistent advantage over run-level tetramer features for cancer type.
@@ -475,7 +478,7 @@ For both deep-learning models, additional pre-training on 16S rRNA sequences wou
 
 Several limitations should be noted.
 First, the cancer-type task combines female-only datasets (breast cancer) with datasets of mixed sex (colorectal cancer).
-Sex-specific differences in fecal microbiome composition are known [@GVR25] and could confound this comparison,
+Sex-specific differences in fecal microbiome composition [@GVR25] could confound this comparison,
 because a model may learn to distinguish female from mixed-sex samples rather than breast from colorectal cancer.
 Filtering colorectal cancer datasets to include only female participants would address this,
 but is feasible only where participant sex metadata are available.

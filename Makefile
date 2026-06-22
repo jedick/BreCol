@@ -53,7 +53,7 @@ DATA_CSVS := $(shell find $(ROOT)/$(DATA_DIR) -type f -name '*.csv' 2>/dev/null)
 	fit_uc_cap run_uc_cap hyenadna_run_tensors train_hyenadna \
 	setbert_run_tensors train_setbert \
 	explain explain-% \
-	manuscript_pdf manuscript_jekyll publish_blog
+	manuscript_pdf manuscript_tex manuscript_jekyll publish_blog
 
 help:
 	@echo "BreCol Makefile (script defaults from defaults.yaml)"
@@ -107,9 +107,10 @@ help:
 	@echo "      Examples: make explain TARGET=tetramer_cache"
 	@echo "                make explain-tetramer_cache"
 	@echo ""
-	@echo "  make manuscript_pdf | manuscript_jekyll"
+	@echo "  make manuscript_pdf | manuscript_tex | manuscript_jekyll"
 	@echo "      Render manuscript/manuscript.md via Pandoc + BibTeX (references.bib, csl/nature.csl)."
-	@echo "      Outputs under manuscript/build/: manuscript.pdf, manuscript.jekyll.md."
+	@echo "      Outputs under manuscript/build/: manuscript.pdf, manuscript.tex, manuscript.jekyll.md."
+	@echo "      manuscript_tex emits the same LaTeX pandoc would feed to the pdf-engine for manuscript_pdf."
 	@echo ""
 	@echo "  make publish_blog BLOG_REPO=<path> [PUSH=1]"
 	@echo "      Render manuscript.jekyll.md and copy it (with figures and table HTML) into"
@@ -306,6 +307,7 @@ MANUSCRIPT_BIB := $(ROOT)/manuscript/references.bib
 MANUSCRIPT_CSL := $(ROOT)/manuscript/csl/nature.csl
 MANUSCRIPT_BUILD_DIR := $(ROOT)/manuscript/build
 MANUSCRIPT_PDF := $(MANUSCRIPT_BUILD_DIR)/manuscript.pdf
+MANUSCRIPT_TEX := $(MANUSCRIPT_BUILD_DIR)/manuscript.tex
 MANUSCRIPT_JEKYLL := $(MANUSCRIPT_BUILD_DIR)/manuscript.jekyll.md
 
 MANUSCRIPT_FILTER_INLINE := $(ROOT)/manuscript/filters/inline_html_tables.lua
@@ -321,12 +323,17 @@ MANUSCRIPT_TABLE_HTML := $(wildcard $(ROOT)/manuscript/table*.html)
 $(MANUSCRIPT_BUILD_DIR):
 	@mkdir -p "$(MANUSCRIPT_BUILD_DIR)"
 
-$(MANUSCRIPT_PDF): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) $(MANUSCRIPT_LATEX_HEADER) | $(MANUSCRIPT_BUILD_DIR)
+# Same pandoc invocation drives both manuscript_pdf and manuscript_tex; the
+# output extension ($@) decides whether pandoc runs the pdf-engine or just
+# writes the LaTeX it would have fed to the pdf-engine. --standalone is
+# implicit for PDF output and required for the .tex case.
+$(MANUSCRIPT_PDF) $(MANUSCRIPT_TEX): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_TABLE_HTML) $(MANUSCRIPT_LATEX_HEADER) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
 		--lua-filter "$(MANUSCRIPT_FILTER_INLINE)" \
 		--include-in-header="$(MANUSCRIPT_LATEX_HEADER)" \
 		--citeproc --pdf-engine=$(PDF_ENGINE) \
-		-o "$(MANUSCRIPT_PDF)"
+		--standalone \
+		-o "$@"
 
 $(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_FILTER_NUMFIG) $(MANUSCRIPT_FILTER_NUMTAB) $(MANUSCRIPT_FILTER_TABCAP) $(MANUSCRIPT_TABLE_HTML) | $(MANUSCRIPT_BUILD_DIR)
 	cd "$(ROOT)/manuscript" && $(PANDOC) manuscript.md \
@@ -340,6 +347,9 @@ $(MANUSCRIPT_JEKYLL): $(MANUSCRIPT_DEPS) $(MANUSCRIPT_FILTER_NUMFIG) $(MANUSCRIP
 
 manuscript_pdf: $(MANUSCRIPT_PDF)
 	@echo "Up to date: $(MANUSCRIPT_PDF)"
+
+manuscript_tex: $(MANUSCRIPT_TEX)
+	@echo "Up to date: $(MANUSCRIPT_TEX)"
 
 manuscript_jekyll: $(MANUSCRIPT_JEKYLL)
 	@echo "Up to date: $(MANUSCRIPT_JEKYLL)"
