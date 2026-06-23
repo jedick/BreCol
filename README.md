@@ -1,4 +1,4 @@
-# BreCol: Multi-Study Benchmark for Cancer Detection from Gut Microbiomes
+# BreCol: Benchmark for Microbiome-Based Cancer Detection
 
 **BreCol** is a curated benchmark of 2,040 16S rRNA sequencing runs across 26 studies
 spanning breast cancer, colorectal cancer, and healthy cohorts.
@@ -8,22 +8,23 @@ Its central question: *do microbiome-based cancer classifiers generalize to stud
 
 ## Overview
 
-The gut microbiome is increasingly linked to cancer risk. Machine learning models trained
-on fecal microbiome profiles have shown promise for distinguishing cancer patients from
-healthy controls. But a persistent problem undermines many published results: when
-test samples are drawn from the same studies used for training, performance estimates are
-inflated by study-level signals (e.g. differences in sequencing protocol, primer choice,
-and regional microbiome variation) rather than genuine cancer biology.
+Machine learning models trained on fecal microbiome profiles have shown promise
+for distinguishing cancer patients from healthy controls. But a persistent
+problem undermines many published results: performance estimates are inflated
+when test samples are drawn from the same studies used for training.
+Cross-study differences in sequencing protocol, primer choice, and regional
+microbiome variation are some of the factors that limit the generalizability of
+models.
 
-BreCol addresses this by structuring evaluation around **temporal holdout**: the 26
-included studies are divided chronologically into a development partition (pre-2023)
-and a holdout partition (2023 and later). Models are trained and tuned on development
-studies and evaluated on holdout studies they have never seen, reflecting how a
+BreCol addresses this by structuring evaluation around a **temporal holdout**.
+Twenty-six studies are divided chronologically into a development partition and
+a holdout partition. Models are trained and tuned on development studies and
+evaluated on holdout studies they have never seen, reflecting how a
 model would actually perform on future data.
 
 We benchmark two approaches to feature representation:
 
-- **Classical ML** — k-nearest neighbors, random forest, and SVM applied to either
+- **Classical ML** — *k*-nearest neighbors, random forest, and SVM applied to either
   run-level tetramer frequencies or cluster abundance profiles (UC/CAP, described below).
 - **Deep learning** — two pre-trained genome language models, HyenaDNA and SetBERT,
   fine-tuned for cancer classification.
@@ -50,60 +51,60 @@ This design creates a realistic challenge: predictions must transfer to datasets
 became available only after the model was trained, eliminating the shortcut of learning
 study-level technical signals instead of cancer biology.
 
-### Two classification tasks
+### Classification tasks
 
 - **Cancer diagnosis** — cancer vs. healthy, using all samples.
 - **Cancer type** — breast vs. colorectal, using cancer-positive samples only.
 
-Cancer type is the harder generalization task: because breast and colorectal samples
-almost always come from different studies, a model can achieve near-perfect in-study
-accuracy by learning study identity rather than disease. Holdout evaluation removes
+Because breast and colorectal samples almost always come from different studies,
+a model can achieve near-perfect in-study accuracy on cancer type prediction by 
+learning study identity rather than disease. Holdout evaluation removes
 this shortcut.
 
 ### Feature representations
 
-**Run-level tetramer frequencies.** All 4-mer counts are summed across the sequences
-in a run and converted to relative frequencies, producing a single 256-dimensional
-vector per run. Tetranucleotide (4-mer) frequencies are reference-free, so they
-avoid any dependence on curated taxonomic databases. The tradeoff is that averaging
-across sequences discards within-run compositional structure.
+**Run-level tetramer frequencies.** All 4-mer counts are summed across the
+sequences in a run and converted to relative frequencies, producing a single
+256-dimensional vector per run. Tetranucleotide (4-mer) frequencies are
+reference-free, meaning that they avoid any dependence on curated taxonomic
+databases. However, averaging across sequences discards within-run
+compositional structure.
 
 **Unsupervised clustering / cluster abundance profiles (UC/CAP).** To recover
-within-run structure, sequences are clustered by tetramer composition using k-means
-(fit only on training-split sequences) to produce a sequence codebook. Each run is
-then represented by the distribution of its sequences across clusters: a cluster
-abundance profile (CAP). This is conceptually analogous to OTU-based methods but
-entirely reference-free.
+within-run structure, sequences are clustered by tetramer composition using
+*k*-means (fit only on training-split sequences). Each run is then represented
+by the distribution of its sequences across clusters: a cluster abundance
+profile (CAP). This is conceptually analogous to OTU-based methods but entirely
+reference-free.
 
 **HyenaDNA.** A long-range genomic sequence model pre-trained on the human reference
 genome. Sequences from each run are packed into context windows and the backbone
 hidden states are mean-pooled across token positions to produce a run-level embedding
 for classification.
 
-**SetBERT.** A transformer pre-trained on ~280,000 microbial 16S samples with a
-relative-abundance prediction objective. Each read is encoded by a DNABERT encoder;
-a stack of Set Attention Blocks (SABs) contextualizes the reads from a single run and
-produces a [CLS] embedding summarizing the run. Unlike HyenaDNA, SetBERT was
-pre-trained on microbial sequences, making its representations directly relevant
-to the domain.
+**SetBERT.** A transformer [pre-trained on ca. 280k microbial 16S rRNA
+samples](https://github.com/DLii-Research/setbert/tree/ecb5dc7181e0221e029fdeff694dc92c73cdac9d#available-models)
+with a relative-abundance prediction objective. Each read is encoded by a
+DNABERT encoder; a stack of Set Attention Blocks (SABs) contextualizes the
+reads from a single run and produces a [CLS] embedding summarizing the run. 
 
-For both deep learning models, three classification head architectures were tested:
+For both deep learning models, three classification heads were tested:
 linear, MLP, and cosine similarity.
 
 ---
 
 ## Dataset Compilation
 
-A major contribution of BreCol is the curation of a multi-study benchmark dataset.
-The `data/` directory holds one CSV file per study (named by first-author initials and
-year) under `data/breast/` and `data/colorectal/`. The `datasets.csv` file at the
-repository root records the development/holdout partition assignment for each study.
+A multi-study benchmark dataset was curated for the BreCol project.
+The `data/breast/` and `data/colorectal/` directories hold one CSV file per study,
+named by first-author initials and year. The `datasets.csv` file at the
+repository root records the partition assignment for each study (development or holdout).
 
 ### Study list
 
-Sample counts reflect post-subsampling sizes. Several studies have substantially larger
-sample counts than others; **stratified subsampling** (by cancer/healthy label) was
-applied to improve study balance across the benchmark.
+Several studies have substantially larger sample counts than others. We used
+**stratified subsampling** (by cancer/healthy label) to improve study balance
+across the benchmark. Sample counts reflect sizes after subsampling.
 
 | Ref | Year | BioProject | Type | Cancer | Healthy | Partition | Country |
 |---|---|---|---|---|---|---|---|
@@ -174,7 +175,7 @@ make run_uc_cap FEAT=0             # Build cluster abundance profiles (~29 min, 
 make -j4 fit_uc_cap FEAT=0 EXPT=0  # Train UC/CAP classifiers (~13 min)
 make hyenadna_run_tensors          # Build HyenaDNA input tensors (~12 min, 2.5 GB)
 make train_hyenadna EXPT=0         # Fine-tune HyenaDNA (~6 hr)
-make setbert_run_tensors           # Build SetBERT input tensors (~43 min)
+make setbert_run_tensors           # Build SetBERT input tensors (~43 min, 2.3 GB)
 make train_setbert EXPT=0          # Fine-tune SetBERT (~11.5 hr)
 ```
 
@@ -197,7 +198,7 @@ over one of them.
 prerequisite chain. For example: `make explain-run_uc_cap FEAT=0`.
 
 **Hardware:** The full pipeline runs in approximately 20 hours on a machine with
-8 CPU cores, 40 GB RAM, and a 16 GB NVIDIA GPU.
+8 CPU cores, a 16 GB NVIDIA GPU, and 32 GB of RAM.
 
 ---
 
@@ -215,7 +216,7 @@ pip install -e hyenadna
 - `standalone_hyenadna.py` — downloaded from [HazyResearch/hyena-dna](https://github.com/HazyResearch/hyena-dna/tree/d553021b483b82980aa4b868b37ec2d4332e198a)
 - `huggingface_wrapper.py` and `inference_example.py` — extracted from the [HyenaDNA Colab Notebook](https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL)
 
-Local modifications are summarized in comments within each file. To verify the
+Local modifications are summarized in the comments within each file. To verify the
 installation: `cd hyenadna; python -c 'import inference_example as ex; ex.inference_single()'`
 
 Pre-trained checkpoint: `hyenadna-small-32k-seqlen`, cloned from Hugging Face
@@ -239,9 +240,10 @@ Local modifications:
 - Match the destination embedding dtype to the encoder output to avoid bf16/fp32
   conversions under AMP.
 
-Pre-trained checkpoint: `qiita-16s` (12-layer DNABERT encoder, 768-dimensional
-embeddings, 6-layer SAB transformer). Note: the SetBERT paper describes a 64-dim
-model (`64d-silva16s-250bp`) that is not published on Hugging Face.
+Pre-trained checkpoint:
+[`qiita-16s`](https://huggingface.co/SirDavidLudwig/setbert) (12-layer DNABERT
+encoder, 768-dimensional embeddings, 6-layer SAB transformer). Note: the
+SetBERT paper describes a 64-dim model that is not published on Hugging Face.
 
 ---
 
@@ -251,19 +253,24 @@ model (`64d-silva16s-250bp`) that is not published on Hugging Face.
 data/               Per-study CSV files (breast/ and colorectal/)
 datasets.csv        Study list with partition assignments (development/holdout)
 defaults.yaml       Default pipeline parameters
-experiments.yaml    Named experiment configurations for Make targets
+experiments.yaml    Experiment configurations for Make targets
 scripts/            Analysis scripts called by Make targets
 helpers/            Scripts for generating manuscript tables and figures
-manuscript/         Manuscript source, figures, and tables
+manuscript/         Manuscript source, figures, and tables [*]
 hyenadna/           Local HyenaDNA package
 setbert/            Local SetBERT package
 Makefile            Pipeline entry point
 requirements.txt    Python dependencies
 ```
 
+[\*] Note: `manuscript.lyx` is the live version of the manuscript that is being hand-edited in [LyX](https://www.lyx.org/).
+`manuscript.md` is an abandoned version that is kept here to retain edit history (including human and AI edits).
+`make manuscript_pdf` creates a PDF file from the outdated `manuscript.md`; refer to the LyX file instead for the latest changes.
+
 ---
 
 ## Citation
 
-If you use BreCol data or code, please cite the accompanying manuscript (forthcoming).
-Raw sequencing data are available at the SRA accessions listed in the study table above.
+- If you use BreCol data or code, please cite the accompanying manuscript (forthcoming).
+- Raw sequencing data are available at the SRA accessions listed
+in the study table above; those studies should be cited when using their data.
