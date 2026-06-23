@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Build Table 6 (tetramer UC/CAP classifiers) as HTML under manuscript/table6_tetramer_uc_cap.html.
+Build Table 5 (tetramer UC/CAP classifiers) as HTML under manuscript/table5_tetramer_uc_cap.html.
 
 For each task, scans the 3×6 model × feature-set test AUC grid, picks the feature set
 that contains the single best test value, then reports test and holdout AUC for every
 model on that feature set only.
 
-Run from the repository root: ``python helpers/table6_tetramer_uc_cap.py``
+Run from the repository root: ``python helpers/table5_tetramer_uc_cap.py``
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ ROW_LABELS: Dict[str, str] = {
     "random_forest": "Random Forest",
 }
 
-OUTPUT_REL = Path("manuscript") / "table6_tetramer_uc_cap.html"
+OUTPUT_REL = Path("manuscript") / "table5_tetramer_uc_cap.html"
 RESULTS_SUBDIR = "tetramer_uc_cap"
 
 

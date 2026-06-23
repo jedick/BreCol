@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build Table 4 (tetramer classifiers) as HTML under manuscript/table4_tetramer.html.
+Build Table 3 (tetramer classifiers) as HTML under manuscript/table3_tetramer.html.
 
 Reads eight JSON files under results/tetramer/ named {task}_{model}.json
 (e.g. cancer_diagnosis_knn.json), as written by scripts/fit_classifier.py:
@@ -8,7 +8,7 @@ tasks cancer_diagnosis and cancer_type; models baseline, knn, svm, and
 random_forest. Each file must have metrics.test.auc and
 metrics.holdout.auc.
 
-Run from the repository root: ``python helpers/table4_tetramer.py``
+Run from the repository root: ``python helpers/table3_tetramer.py``
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ TASK_HEADER = {
 }
 
 DECIMALS = 2
-OUTPUT_REL = Path("manuscript") / "table4_tetramer.html"
+OUTPUT_REL = Path("manuscript") / "table3_tetramer.html"
 
 
 def _load_metrics(

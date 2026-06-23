@@ -115,18 +115,6 @@ Unlike HyenaDNA, SetBERT was pre-trained on approximately 280,000 microbial 16S 
 with a relative-abundance prediction objective [@LGA+25],
 making its learned representations relevant to the domain.
 
-Key differences between the two models are summarized in Table 1.
-
-: Comparison of HyenaDNA and SetBERT models.
-
-| | HyenaDNA | SetBERT |
-|-|:-:|:-:|
-| Pre-training domain | Human genome | Microbial 16S |
-| Tokenization | Single nucleotides | Overlapping 3-mers |
-| Run representation | Mean-pooled hidden states | [CLS] token (context-aware) |
-| Sequences per run | ~323 ± 112 (at 16k/set, 5 sets) | 350 |
-| Sequence length limit | Not truncated (packed to context) | Trimmed to 150 bp |
-
 Although HyenaDNA offers larger context lengths (up to 1 million bases) and SetBERT was pre-trained with 1000 sequences per run
 and tested with up to 10,000 sequences per run [@LGA+25], we use a smaller number of sequences due to lower GPU resources (16 GB GPU RAM) available in our study.
 
@@ -154,7 +142,7 @@ We collected sequencing runs from studies covering breast cancer and colorectal 
 studies were only included if both cancer-positive and healthy control labels were available.
 We stored SRA Run accessions (beginning with SRR, ERR, or DRR) and study metadata in the repository and downloaded each run's read archive from NCBI.
 
-Our compilation spans 26 studies in total: 13 for breast cancer and 13 for colorectal cancer (Table 2).
+Our compilation spans 26 studies in total: 13 for breast cancer and 13 for colorectal cancer (Table 1).
 Arranged chronologically by publication year, the first seven studies per cancer type form the development partition
 (train, validation, and test splits), and the more recent six studies per cancer type are reserved as the holdout partition.
 Development and holdout sets are separated not only by study boundaries but also by time: all holdout studies are from 2023 onward.
@@ -196,7 +184,7 @@ Cancer and healthy numbers reflect counts after stratified subsampling at the in
 
 Some studies have substantially larger sample counts than others.
 To improve study balance, we applied random sampling within several studies (stratified by cancer vs healthy label).
-The sample sizes in Table 2 reflect counts after sampling at the indicated rate.
+The sample sizes in Table 1 reflect counts after sampling at the indicated rate.
 Additionally, for two studies (refs [@BVW+21] and [@CAB+24]) we excluded runs with <2000 spots.
 
 ### Preprocessing, splits, and sampling
@@ -229,7 +217,7 @@ For the majority-class baseline, we predict the most frequent class in the train
 
 #### Hyperparameter grid search
 
-Table 3 lists the hyperparameter values used for grid search.
+Table 2 lists the hyperparameter values used for grid search.
 
 : Classifier models and hyperparameter grids used in run-level tetramer frequency classification
 and in UC/CAP classification for tetramer counts.
@@ -332,18 +320,18 @@ and those differences are expected to transfer, at least partially, to new studi
 
 ### Classification with run-level tetramer frequencies
 
-All models exceed the majority-class baseline on the test split, with particularly large margins for cancer type prediction (Table 4).
+All models exceed the majority-class baseline on the test split, with particularly large margins for cancer type prediction (Table 3).
 The holdout picture is sharply different.
 For cancer diagnosis, SVM achieves a modest AUC of 0.59 while random forest and KNN fall closer to baseline.
 For cancer type, SVM reaches an AUC of 0.71 while KNN collapses below baseline on holdout.
 
-[Table 4 data](table4_tetramer.html "Test and holdout AUC for run-level tetramer frequency classification
+[Table 3 data](table3_tetramer.html "Test and holdout AUC for run-level tetramer frequency classification
 with the majority-class baseline, KNN, SVM, and random forest. Bold marks the best value per column.").
 
 ### Classification with cluster abundance profiles for tetramer counts
 
 We explored six combinations of the three UC/CAP hyperparameters defined by *n*<sub>UC</sub> (sequences per run used for unsupervised clustering),
-*K* (number of clusters), and *n*<sub>CAP</sub> (sequences per run assigned to centroids and used to build cluster abundance profiles) (Table 5).
+*K* (number of clusters), and *n*<sub>CAP</sub> (sequences per run assigned to centroids and used to build cluster abundance profiles) (Table 4).
 
 : UC/CAP feature sets.
 
@@ -354,13 +342,13 @@ We explored six combinations of the three UC/CAP hyperparameters defined by *n*<
 | 3 | 1000 | 2000 |  1000 | 6 | 1000 | 3000 |  5000 |
 
 These UC/CAP parameters produced six different cluster abundance profiles (or feature sets) used for standard supervised classification
-with the models and hyperparameter grids described above (Table 3). 
+with the models and hyperparameter grids described above (Table 2). 
 SVM achieves higher holdout AUC than KNN across feature sets for cancer diagnosis, but the pattern is reversed for cancer type, where KNN leads (Figure 2).
 For cancer type, both models show near-perfect in-study test performance across feature sets, but holdout values drop sharply.
 
 ![Feature-set stability for UC/CAP with tetramer counts in SVM and KNN.](figure2_tetramer_uc_cap.svg)
 
-Table 6 shows the results for the best UC/CAP feature set as judged by *test* AUC in each task,
+Table 5 shows the results for the best UC/CAP feature set as judged by *test* AUC in each task,
 so we can legitimately assess holdout performance on unseen studies.
 For cancer diagnosis, SVM achieves the best holdout performance, followed by random forest and KNN.
 For cancer type, KNN leads on holdout, followed by random forest and SVM.
@@ -368,20 +356,20 @@ For cancer type, KNN leads on holdout, followed by random forest and SVM.
 The gap between in-study test and holdout is again large for cancer type, but UC/CAP with KNN achieves substantially higher cancer type holdout AUC
 than any tetramer-based classifier, demonstrating that richer within-run compositional features partially attenuate the study-level shortcut problem.
 
-[Table 6 data](table6_tetramer_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts,
+[Table 5 data](table5_tetramer_uc_cap.html "Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts,
 with the best feature set selected per task by test AUC.").
 
 ### Classification with HyenaDNA
 
 For each task we fine-tuned a HyenaDNA model from the pre-trained backbone.
-The results with different head architectures are shown in Table 7.
+The results with different head architectures are shown in Table 6.
 For cancer diagnosis, test and holdout AUC are similar across all three heads (around 0.61--0.62 test, 0.54--0.57 holdout),
 suggesting that head choice matters little for this task.
 For cancer type, all heads show similar test AUC (0.88--0.89) and the MLP head achieves the highest holdout AUC (0.79),
 though with the largest standard deviation (±0.10), indicating some instability across seeds.
 Linear and cosine heads both reach 0.74 on holdout.
 
-[Table 7 data](table7_hyenadna.html "HyenaDNA fine-tuning results with 5 sets at 2048 max length per set,
+[Table 6 data](table6_hyenadna.html "HyenaDNA fine-tuning results with 5 sets at 2048 max length per set,
 reported as mean ± standard deviation across three random seeds.").
 
 We used the linear head (the configuration with the best holdout AUC for cancer diagnosis) to study the effect of context length.
@@ -394,19 +382,19 @@ The divergence between test and holdout trends for cancer type suggests that lar
 using the linear head with three random seeds.](figure3_hyenadna.svg)
 
 For the most direct comparison between HyenaDNA and the UC/CAP pipeline, look at the results for feature set 1 in Figure 2 and 16k set length in Figure 3.
-Feature set 1 uses 350 sequences per sample for clustering (Table 5).
+Feature set 1 uses 350 sequences per sample for clustering (Table 4).
 At 16k positions per set and 5 sets per run, the number of sequences per sample seen by HyenaDNA is 323 ± 112 (min 50 for ref [@YTK+26], max 540 for ref [@BVW+21]).
 For cancer diagnosis, HyenaDNA loses to both SVM and KNN on test AUC, but shows competetive holdout AUC near 0.58, slightly higher than either SVM or KNN.
 For cancer type, HyenaDNA shows respectable test AUC (>0.9) and but struggles on holdout (<0.6), considerably lower than either SVM or KNN.
 
 ### Classification with SetBERT
 
-We evaluated the same three classification heads on SetBERT (Table 8).
+We evaluated the same three classification heads on SetBERT (Table 7).
 For cancer diagnosis, test and holdout AUC are similar across heads (0.61--0.64 test, 0.54--0.56 holdout), as with HyenaDNA.
 For cancer type, the pattern differs: test AUC is similar across heads (0.97--0.98), while the cosine head is best on holdout (0.70)
 and the MLP head is the worst on holdout (0.56 ± 0.16), with substantially higher variance than the other two heads.
 
-[Table 8 data](table8_setbert.html "SetBERT fine-tuning results with a per-run set size of 350 sequences,
+[Table 7 data](table7_setbert.html "SetBERT fine-tuning results with a per-run set size of 350 sequences,
 reported as mean ± standard deviation across two random seeds.").
 
 ## Discussion
@@ -417,14 +405,14 @@ indicates that classifiers overfit to study-level signals when trained on single
 Fitting to cluster abundance profiles (UC/CAP) preserves within-run compositional information
 and improves holdout performance on cancer type but not on the cancer diagnosis task.
 
-We list our per-study AUC for cancer diagnosis and comparisons with colorectal cancer where available (Table 9).
+We list our per-study AUC for cancer diagnosis and comparisons with colorectal cancer where available (Table 8).
 On two of the three development studies with a published comparison (refs [@ZTV+14; @YDS+21]), our test AUC is very high (0.98--1.00),
 but it drops to 0.73 on a third dataset where the literature value is 0.85 (ref [@BRRS16]).
 For holdout studies with published AUC values (refs [@BWY+23; @CAB+24; @GYX+25]), our AUC (0.66--0.68) is consistently lower than the literature (0.86--0.88).
 The literature numbers come from within-study cross-validation or test splits rather than independent cohorts
 and are therefore not directly comparable to true holdout performance.
 
-[Table 9 data](table9_auc_comparison.html "Per-study cancer diagnosis AUC from the best tetramer UC/CAP classifier selected in Table 6 (SVM, feature set 5).
+[Table 8 data](table8_auc_comparison.html "Per-study cancer diagnosis AUC from the best tetramer UC/CAP classifier selected in Table 5 (SVM, feature set 5).
 AUC is computed over each study's test-split runs (development) or all runs (holdout); the *n* column reports the total number of samples (cancer + healthy)
 contributing to each per-study AUC. Literature AUC values for colorectal cancer are shown where reported.")
 
@@ -433,12 +421,12 @@ Wang et al. [@WYH+22] trained random forest classifiers on fecal microbiome data
 two of which include healthy controls and correspond to development datasets in our compilation (refs [@GHB+18;@BVW+21]).
 They reported cross-cohort AUCs of 0.65--0.66, which sit toward the upper end of our holdout values for breast cancer (0.47--0.69).
 
-Interestingly, the test AUCs for breast cancer are generally lower than those for colorectal cancer (Table 9).
+Interestingly, the test AUCs for breast cancer are generally lower than those for colorectal cancer (Table 8).
 This pattern extends to the holdout studies; for breast cancer only 2 out of 6 holdout studies have AUC > 0.6,
 while for colorectal cancer this grows to 5 out of 6 studies.
 This indicates easier detection of colorectal cancer than breast cancer for models simultaneously trained on data from both cancer types.
 
-Comparing holdout performance across Tables 4 and 6, UC/CAP offers a consistent advantage over run-level tetramer features for cancer type.
+Comparing holdout performance across Tables 3 and 5, UC/CAP offers a consistent advantage over run-level tetramer features for cancer type.
 However, it barely improves holdout AUC for cancer diagnosis despite a large increase on in-study test splits.
 This suggests that the compositional diversity captured by cluster abundance profiles
 partially breaks the study-level shortcuts that hinder tetramer-based cancer type classifiers,
@@ -447,7 +435,7 @@ while transferable signal for discriminating cancer from healthy may not reside 
 ### HyenaDNA versus SetBERT
 
 Both deep-learning models underperform the best classical methods on holdout data.
-Comparing Tables 7 and 8, the two models produce nearly identical holdout AUC for cancer diagnosis
+Comparing Tables 6 and 7, the two models produce nearly identical holdout AUC for cancer diagnosis
 (best: 0.57 for HyenaDNA linear, 0.56 for SetBERT MLP).
 For cancer type, SetBERT achieves higher test AUC (0.98 versus 0.89 for HyenaDNA)
 but HyenaDNA generalizes better to holdout studies (best: 0.79 MLP versus 0.70 cosine for SetBERT).
@@ -463,7 +451,7 @@ Also, SetBERT was pre-trained on V3-V4 regions on 16S rRNA, while some of our ho
 
 ### Directions for improvement
 
-Table 9 reveals substantial variation in per-study AUC for cancer diagnosis.
+Table 8 reveals substantial variation in per-study AUC for cancer diagnosis.
 Most values exceed 0.5, meaning the model makes better-than-random predictions for the majority of datasets.
 Where AUC falls below 0.5, the model is systematically wrong.
 Targeting the most challenging studies for model improvement, for example, by up-weighting hard examples during training,
