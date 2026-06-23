@@ -8391,7 +8391,19 @@ Classification with SetBERT
 \end_layout
 
 \begin_layout Standard
-We evaluated the same three classification heads on SetBERT (Table 8).
+We evaluated the same three classification heads on SetBERT (Table 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:setbert"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+).
  For cancer diagnosis,
  test and holdout AUC are similar across heads (0.61–0.64 test,
  0.54–0.56 holdout),
@@ -10329,13 +10341,37 @@ tuple "list"
 
 ).
  This pattern extends to the holdout studies;
- for breast cancer only 2 out of 6 holdout studies have AUC > 0.6,
- while for colorectal cancer this grows to 5 out of 6 studies.
+ for breast cancer only two out of six holdout studies have AUC > 0.6,
+ while for colorectal cancer this grows to five out of six studies.
  This indicates easier detection of colorectal cancer than breast cancer for models simultaneously trained on data from both cancer types.
 \end_layout
 
 \begin_layout Standard
-Comparing holdout performance across Tables 4 and 6,
+Comparing holdout performance across Tables 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:tetramer"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+ and 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:tetramer_uc_cap"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+,
  UC/CAP offers a consistent advantage over run-level tetramer features for cancer type.
  However,
  it barely improves holdout AUC for cancer diagnosis despite a large increase on in-study test splits.
