@@ -54,7 +54,7 @@ We are not aware of existing benchmarks that measure the performance of cancer-t
 
 Reliable benchmarks for both cancer diagnosis and type prediction must evaluate models on one or more "prediction sets" [@WSNP22],
 i.e. studies never encountered during training, which we refer to as holdout studies.
-To to this, we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer, 13 colorectal cancer),
+To do this, we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer, 13 colorectal cancer),
 covering healthy controls and two cancer types across studies from 2013 to 2026.
 Studies are partitioned chronologically: the first seven studies per cancer type form the development set (training, validation, and test),
 while the more recent six studies per cancer type are reserved as an external holdout.
@@ -384,7 +384,7 @@ using the linear head with three random seeds.](figure3_hyenadna.svg)
 For the most direct comparison between HyenaDNA and the UC/CAP pipeline, look at the results for feature set 1 in Figure 2 and 16k set length in Figure 3.
 Feature set 1 uses 350 sequences per sample for clustering (Table 4).
 At 16k positions per set and 5 sets per run, the number of sequences per sample seen by HyenaDNA is 323 ± 112 (min 50 for ref [@YTK+26], max 540 for ref [@BVW+21]).
-For cancer diagnosis, HyenaDNA loses to both SVM and KNN on test AUC, but shows competetive holdout AUC near 0.58, slightly higher than either SVM or KNN.
+For cancer diagnosis, HyenaDNA loses to both SVM and KNN on test AUC, but shows competitive holdout AUC near 0.58, slightly higher than either SVM or KNN.
 For cancer type, HyenaDNA shows respectable test AUC (>0.9) and but struggles on holdout (<0.6), considerably lower than either SVM or KNN.
 
 ### Classification with SetBERT
@@ -400,7 +400,7 @@ reported as mean ± standard deviation across two random seeds.").
 ## Discussion
 
 Results are consistently lower on holdout splits than on in-study test splits.
-For run-level tetramer frequencies, the stark contrast betwen test and holdout performance (AUC >0.9 for test vs 0.71 or less for holdout)
+For run-level tetramer frequencies, the stark contrast between test and holdout performance (AUC >0.9 for test vs 0.71 or less for holdout)
 indicates that classifiers overfit to study-level signals when trained on single-study cancer-type data.
 Fitting to cluster abundance profiles (UC/CAP) preserves within-run compositional information
 and improves holdout performance on cancer type but not on the cancer diagnosis task.

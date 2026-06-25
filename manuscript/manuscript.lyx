@@ -88,6 +88,7 @@
 \shortcut idx
 \color #008000
 \end_index
+\spellchecker_ignore english jeff
 \secnumdepth 3
 \tocdepth 3
 \paragraph_separation indent
@@ -165,7 +166,7 @@ jeff@chnosz.net
 \end_layout
 
 \begin_layout Abstract
-Establishing the generalizability of models for cancer detection from gut microbiomes requires evaluations across multiple studies.
+Assessing the generalizability of models for cancer detection from gut microbiomes requires evaluations across multiple studies.
  We propose BreCol,
  a 16S rRNA benchmark of 2,040 sequencing runs across 26 studies spanning breast cancer,
  colorectal cancer,
@@ -270,15 +271,7 @@ literal "false"
 \end_layout
 
 \begin_layout Standard
-Reliable benchmarks must evaluate models on one or more 
-\begin_inset Quotes eld
-\end_inset
-
-prediction sets
-\begin_inset Quotes erd
-\end_inset
-
- 
+Reliable benchmarks must evaluate models on one or more prediction sets 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "WSNP22"
@@ -289,8 +282,8 @@ literal "false"
 ,
  i.e.
  studies never encountered during training,
- which we refer to as holdout studies.
- To to this,
+ also known as holdout studies.
+ To do this,
  we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer,
  13 colorectal cancer) from 2013 to 2026.
  Studies are partitioned chronologically:
@@ -409,7 +402,7 @@ Rather than performing taxonomic classification,
  we count tetramer occurrences in each raw 16S sequence to generate a 256-dimensional feature space from sequence composition alone.
  Tetramer frequencies,
  also known as tetranucleotide frequencies,
- have proven useful for taxonomic binning of metagenomic sequences 
+ have proven useful for unsupervised clustering of metagenomic sequences 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "DAB+09"
@@ -421,20 +414,6 @@ literal "false"
 \begin_inset CommandInset citation
 LatexCommand cite
 key "KBC+25"
-literal "false"
-
-\end_inset
-
-.
- Tetramer counting is a specific instance of 
-\emph on
-k
-\emph default
--mer counting,
- which has recently gained interest as an efficient method for reference-free profiling of microbiome data 
-\begin_inset CommandInset citation
-LatexCommand cite
-key "Bok25"
 literal "false"
 
 \end_inset
@@ -505,15 +484,7 @@ literal "false"
  A learned class token ([CLS]) prepended to the set is conditioned on all reads by the SABs;
  its output embedding summarizes the entire run and serves as input to the classification head.
  Unlike HyenaDNA,
- SetBERT was pre-trained on approximately 280,000 microbial 16S amplicon samples with a relative-abundance prediction objective 
-\begin_inset CommandInset citation
-LatexCommand cite
-key "LGA+25"
-literal "false"
-
-\end_inset
-
-,
+ SetBERT was pre-trained on approximately 280,000 microbial 16S amplicon samples with a relative-abundance prediction objective,
  making its learned representations relevant to the domain.
 \end_layout
 
@@ -881,7 +852,7 @@ United States
 \begin_inset Text
 
 \begin_layout Plain Layout
-
+V4
 \end_layout
 
 \end_inset
@@ -1078,7 +1049,7 @@ United States
 \begin_inset Text
 
 \begin_layout Plain Layout
-
+V3-V4
 \end_layout
 
 \end_inset
@@ -6046,7 +6017,7 @@ tuple "list"
 
  reflect counts after sampling at the indicated rate.
  Additionally,
- for two studies 
+ for two studies we excluded runs with <2000 spots 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "BVW+21,CAB+24"
@@ -6054,7 +6025,7 @@ literal "false"
 
 \end_inset
 
- we excluded runs with <2000 spots.
+.
 \end_layout
 
 \begin_layout Subsection
@@ -6114,14 +6085,7 @@ We calculated tetramer frequencies for each run by counting all 4-mers within ea
 \begin_layout Standard
 For the majority-class baseline,
  we predict the most frequent class in the training set for all samples.
-\end_layout
-
-\begin_layout Subsubsection
-Hyperparameter Grid Search
-\end_layout
-
-\begin_layout Standard
-Table
+ For other classifier models we performed grid search over the hyperparameters listed in Table
 \begin_inset space ~
 \end_inset
 
@@ -6137,7 +6101,7 @@ tuple "list"
 
 \end_inset
 
- lists the hyperparameter values used for grid search.
+.
 \end_layout
 
 \begin_layout Standard
@@ -6316,10 +6280,7 @@ gamma
 scale
 \family default
 ).
-\end_layout
-
-\begin_layout Standard
-For random forest,
+ For random forest,
  we used the same CLR and standardization but omitted PCA.
  We tuned the number of trees,
  maximum tree depth,
@@ -6375,8 +6336,8 @@ To construct run-level features,
 K
 \emph default
 -dimensional cluster abundance profile (CAP).
- These CAP vectors serve as the feature matrix for supervised classification on both binary tasks,
- with downstream classifiers selected separately per task.
+ These CAP vectors serve as the feature matrix for supervised classification using KNN,
+ SVM or Random Forest as described above.
 \end_layout
 
 \begin_layout Subsection
@@ -6481,7 +6442,7 @@ cancer diagnosis
 \series default
  (cancer vs.
  healthy,
- all samples) and 
+ all samples for both cancer types) and 
 \series bold
 cancer type
 \series default
@@ -6489,39 +6450,6 @@ cancer type
  colorectal,
  cancer-positive samples only).
  Performance is reported as AUC on the test split (unseen samples from the development studies used to train the model) and the holdout split (entirely unseen studies).
-\end_layout
-
-\begin_layout Standard
-For cancer type,
- all development studies for breast cancer are separate from all development studies for colorectal cancer.
- A model can therefore exploit study-level signals,
- e.g.
- different sequencing protocols,
- primer sets,
- or regional microbiome composition,
- as a near-perfect shortcut for in-study test performance.
- Holdout performance,
- where the model encounters new studies it has not seen during training,
- removes this shortcut.
- We accordingly expect cancer type to be the 
-\emph on
-easier
-\emph default
- task for in-study test data but the 
-\emph on
-harder
-\emph default
- task for holdout data.
-\end_layout
-
-\begin_layout Standard
-For cancer diagnosis,
- each included study contains both cancer-positive and healthy samples,
- so study identity alone does not predict the label.
- Models must learn biological differences between cancer and healthy microbiomes within studies,
- and those differences are expected to transfer,
- at least partially,
- to new studies.
 \end_layout
 
 \begin_layout Subsection
@@ -6924,62 +6852,6 @@ Random Forest
 \end_inset
 
 
-\end_layout
-
-\begin_layout Subsection
-Classification with cluster abundance profiles for tetramer counts
-\end_layout
-
-\begin_layout Standard
-We explored six combinations of the three UC/CAP hyperparameters defined by 
-\emph on
-n
-\emph default
-
-\begin_inset script subscript
-
-\begin_layout Plain Layout
-UC
-\end_layout
-
-\end_inset
-
- (sequences per run used for unsupervised clustering),
- 
-\emph on
-K
-\emph default
- (number of clusters),
- and 
-\emph on
-n
-\emph default
-
-\begin_inset script subscript
-
-\begin_layout Plain Layout
-CAP
-\end_layout
-
-\end_inset
-
- (sequences per run assigned to centroids and used to build cluster abundance profiles) (Table
-\begin_inset space ~
-\end_inset
-
-
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "tab:feature_sets"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
-).
 \end_layout
 
 \begin_layout Standard
@@ -7386,138 +7258,12 @@ CAP
 \end_layout
 
 \begin_layout Standard
-These UC/CAP parameters produced six different cluster abundance profiles (or feature sets) used for standard supervised classification with the models and hyperparameter grids described above (Table
-\begin_inset space ~
-\end_inset
-
-
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "tab:hyperparameters"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
-).
- SVM achieves higher holdout AUC than KNN across feature sets for cancer diagnosis,
- but the pattern is reversed for cancer type,
- where KNN leads (Fig.
-\begin_inset space ~
-\end_inset
-
-
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "fig:tetramer_uc_cap"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
-).
- For cancer type,
- both models show near-perfect in-study test performance across feature sets,
- but holdout values drop sharply.
-\end_layout
-
-\begin_layout Standard
-\begin_inset Float figure
-placement document
-alignment document
-wide false
-sideways false
-status collapsed
-
-\begin_layout Plain Layout
-\align center
-\begin_inset Graphics
-	filename figure2_tetramer_uc_cap.svg
-	lyxscale 50
-	width 100col%
-
-\end_inset
-
-
-\end_layout
-
-\begin_layout Plain Layout
-\begin_inset Caption Standard
-
-\begin_layout Plain Layout
-\begin_inset CommandInset label
-LatexCommand label
-name "fig:tetramer_uc_cap"
-
-\end_inset
-
-Feature-set stability for UC/CAP with tetramer counts in SVM and KNN.
-\end_layout
-
-\end_inset
-
-
-\end_layout
-
-\begin_layout Plain Layout
-
-\end_layout
-
-\end_inset
-
-
-\end_layout
-
-\begin_layout Standard
-Table
-\begin_inset space ~
-\end_inset
-
-
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "tab:tetramer_uc_cap"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
- shows the results for the best UC/CAP feature set as judged by 
-\emph on
-test
-\emph default
- AUC in each task,
- so we can legitimately assess holdout performance on unseen studies.
- For cancer diagnosis,
- SVM achieves the best holdout performance,
- followed by random forest and KNN.
- For cancer type,
- KNN leads on holdout,
- followed by random forest and SVM.
-\end_layout
-
-\begin_layout Standard
-The gap between in-study test and holdout is again large for cancer type,
- but UC/CAP with KNN achieves substantially higher cancer type holdout AUC than any tetramer-based classifier,
- demonstrating that richer within-run compositional features partially attenuate the study-level shortcut problem.
-\end_layout
-
-\begin_layout Standard
 \begin_inset Float table
 placement document
 alignment document
 wide false
 sideways false
-status open
+status collapsed
 
 \begin_layout Plain Layout
 \begin_inset Caption Standard
@@ -7673,7 +7419,7 @@ KNN
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.69 
+0.69
 \end_layout
 
 \end_inset
@@ -7682,7 +7428,7 @@ KNN
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.54 
+0.54
 \end_layout
 
 \end_inset
@@ -7691,7 +7437,7 @@ KNN
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.998 
+0.998
 \end_layout
 
 \end_inset
@@ -7703,8 +7449,6 @@ KNN
 
 \series bold
 0.83
-\series default
- 
 \end_layout
 
 \end_inset
@@ -7727,8 +7471,6 @@ SVM
 
 \series bold
 0.77
-\series default
- 
 \end_layout
 
 \end_inset
@@ -7740,8 +7482,6 @@ SVM
 
 \series bold
 0.60
-\series default
- 
 \end_layout
 
 \end_inset
@@ -7753,8 +7493,6 @@ SVM
 
 \series bold
 1.00
-\series default
- 
 \end_layout
 
 \end_inset
@@ -7763,7 +7501,7 @@ SVM
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.74 
+0.74
 \end_layout
 
 \end_inset
@@ -7783,7 +7521,7 @@ Random Forest
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.74 
+0.74
 \end_layout
 
 \end_inset
@@ -7792,7 +7530,7 @@ Random Forest
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.57 
+0.57
 \end_layout
 
 \end_inset
@@ -7801,7 +7539,7 @@ Random Forest
 \begin_inset Text
 
 \begin_layout Plain Layout
-1.000 
+1.000
 \end_layout
 
 \end_inset
@@ -7810,7 +7548,7 @@ Random Forest
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.79 
+0.79
 \end_layout
 
 \end_inset
@@ -7870,6 +7608,131 @@ Feature Set
 
 \end_layout
 
+\end_inset
+
+
+\end_layout
+
+\begin_layout Subsection
+Classification with cluster abundance profiles for tetramer counts
+\end_layout
+
+\begin_layout Standard
+We explored six combinations of the three UC/CAP hyperparameters defined by 
+\emph on
+n
+\emph default
+
+\begin_inset script subscript
+
+\begin_layout Plain Layout
+UC
+\end_layout
+
+\end_inset
+
+ (sequences per run used for unsupervised clustering),
+ 
+\emph on
+K
+\emph default
+ (number of clusters),
+ and 
+\emph on
+n
+\emph default
+
+\begin_inset script subscript
+
+\begin_layout Plain Layout
+CAP
+\end_layout
+
+\end_inset
+
+ (sequences per run assigned to centroids and used to build cluster abundance profiles) (Table
+\begin_inset space ~
+\end_inset
+
+
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:feature_sets"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+).
+\end_layout
+
+\begin_layout Standard
+These UC/CAP parameters produced six different cluster abundance profiles (or feature sets) used for standard supervised classification.
+ SVM achieves higher holdout AUC than KNN across feature sets for cancer diagnosis,
+ but the pattern is reversed for cancer type,
+ where KNN leads (Fig.
+\begin_inset space ~
+\end_inset
+
+
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "fig:tetramer_uc_cap"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+).
+ For cancer type,
+ both models show near-perfect in-study test performance across feature sets,
+ but holdout values drop sharply.
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+placement document
+alignment document
+wide false
+sideways false
+status collapsed
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Graphics
+	filename figure2_tetramer_uc_cap.svg
+	lyxscale 50
+	width 100col%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption Standard
+
+\begin_layout Plain Layout
+\begin_inset CommandInset label
+LatexCommand label
+name "fig:tetramer_uc_cap"
+
+\end_inset
+
+Feature-set stability for UC/CAP with tetramer counts in SVM and KNN.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
 \begin_layout Plain Layout
 
 \end_layout
@@ -7877,6 +7740,83 @@ Feature Set
 \end_inset
 
 
+\end_layout
+
+\begin_layout Standard
+\begin_inset Float figure
+placement document
+alignment document
+wide false
+sideways false
+status collapsed
+
+\begin_layout Plain Layout
+\align center
+\begin_inset Graphics
+	filename figure3_hyenadna.svg
+	lyxscale 50
+	width 100col%
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Plain Layout
+\begin_inset Caption Standard
+
+\begin_layout Plain Layout
+\begin_inset CommandInset label
+LatexCommand label
+name "fig:hyenadna"
+
+\end_inset
+
+Effect of context length per set on HyenaDNA predictions for cancer diagnosis (left) and cancer type (right),
+ using the linear head with three random seeds.
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+Table
+\begin_inset space ~
+\end_inset
+
+
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:tetramer_uc_cap"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+ shows the results for the best UC/CAP feature set as judged by 
+\emph on
+test
+\emph default
+ AUC in each task,
+ so we can legitimately assess holdout performance on unseen studies.
+ For cancer diagnosis,
+ SVM achieves the best holdout performance,
+ followed by random forest and KNN.
+ For cancer type,
+ KNN leads on holdout,
+ followed by random forest and SVM.
+ The gap between in-study test and holdout is again large for cancer type,
+ but UC/CAP with KNN achieves substantially higher cancer type holdout AUC than any tetramer-based classifier.
 \end_layout
 
 \begin_layout Subsection
@@ -7907,9 +7847,39 @@ tuple "list"
 ).
  For cancer type,
  all heads show similar test AUC (0.88–0.89) and the MLP head achieves the highest holdout AUC (0.79),
- though with the largest standard deviation (±0.10),
+ though with the largest standard deviation,
  indicating some instability across seeds.
- Linear and cosine heads both reach 0.74 on holdout.
+\end_layout
+
+\begin_layout Standard
+We used the linear head (the configuration with the best holdout AUC for cancer diagnosis) to study the effect of context length.
+ We varied the length per set (1k,
+ 2k,
+ 4k,
+ 8k,
+ and 16k positions),
+ obtaining shorter configurations by truncating a single large cache built at 16k.
+ Fig.
+\begin_inset space ~
+\end_inset
+
+
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "fig:hyenadna"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+ shows that for cancer diagnosis,
+ holdout AUC increases modestly from 2k to 8k before leveling off,
+ while for cancer type,
+ longer contexts markedly reduce holdout AUC despite slight gains on the test split.
+ The divergence between test and holdout trends for cancer type suggests that larger contexts allow the model to pick up study-specific signals.
 \end_layout
 
 \begin_layout Standard
@@ -8066,7 +8036,7 @@ Holdout
 \begin_inset Text
 
 \begin_layout Plain Layout
-Linear head 
+Linear head
 \end_layout
 
 \end_inset
@@ -8075,7 +8045,7 @@ Linear head
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.61 ± 0.02 
+0.61 ± 0.02
 \end_layout
 
 \end_inset
@@ -8117,7 +8087,7 @@ Linear head
 \begin_inset Text
 
 \begin_layout Plain Layout
-MLP head 
+MLP head
 \end_layout
 
 \end_inset
@@ -8126,7 +8096,7 @@ MLP head
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.61 ± 0.04 
+0.61 ± 0.04
 \end_layout
 
 \end_inset
@@ -8168,7 +8138,7 @@ MLP head
 \begin_inset Text
 
 \begin_layout Plain Layout
-Cosine head 
+Cosine head
 \end_layout
 
 \end_inset
@@ -8181,7 +8151,7 @@ Cosine head
 \series bold
 0.62
 \series default
- ± 0.01 
+ ± 0.01
 \end_layout
 
 \end_inset
@@ -8231,83 +8201,8 @@ Cosine head
 \end_layout
 
 \begin_layout Standard
-We used the linear head (the configuration with the best holdout AUC for cancer diagnosis) to study the effect of context length.
- We varied the length per set (1k,
- 2k,
- 4k,
- 8k,
- and 16k positions),
- obtaining shorter configurations by truncating a single large cache built at 16k.
- Fig.
-\begin_inset space ~
-\end_inset
-
-
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "fig:hyenadna"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
- shows that for cancer diagnosis,
- holdout AUC increases modestly from 2k to 8k before leveling off,
- while for cancer type,
- longer contexts markedly reduce holdout AUC despite slight gains on the test split.
- The divergence between test and holdout trends for cancer type suggests that larger contexts allow the model to pick up study-specific signals.
-\end_layout
-
-\begin_layout Standard
-\begin_inset Float figure
-placement document
-alignment document
-wide false
-sideways false
-status collapsed
-
-\begin_layout Plain Layout
-\align center
-\begin_inset Graphics
-	filename figure3_hyenadna.svg
-	lyxscale 50
-	width 100col%
-
-\end_inset
-
-
-\end_layout
-
-\begin_layout Plain Layout
-\begin_inset Caption Standard
-
-\begin_layout Plain Layout
-\begin_inset CommandInset label
-LatexCommand label
-name "fig:hyenadna"
-
-\end_inset
-
-Effect of context length per set on HyenaDNA predictions for cancer diagnosis (left) and cancer type (right),
- using the linear head with three random seeds.
-\end_layout
-
-\end_inset
-
-
-\end_layout
-
-\end_inset
-
-
-\end_layout
-
-\begin_layout Standard
-For the most direct comparison between HyenaDNA and the UC/CAP pipeline,
- compare the results for feature set 1 in Fig.
+For a fair comparison between HyenaDNA and the UC/CAP pipeline,
+ we use the results for feature set 1 in Fig.
 \begin_inset space ~
 \end_inset
 
@@ -8341,7 +8236,7 @@ tuple "list"
 \end_inset
 
 .
- Feature set 1 uses 350 sequences per sample for clustering (Table
+ UC/CAP feature set 1 uses 350 sequences per sample for clustering (Table
 \begin_inset space ~
 \end_inset
 
@@ -8358,8 +8253,8 @@ tuple "list"
 \end_inset
 
 ).
- At 16k positions per set and 5 sets per run,
- the number of sequences per sample seen by HyenaDNA is 323 ± 112 (min 50 for 
+ For HyenaDNA at 16k positions per set and 5 sets per run,
+ the number of sequences per sample is 323 ± 112 (min 50 for 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "YTK+26"
@@ -8379,8 +8274,7 @@ literal "false"
 ).
  For cancer diagnosis,
  HyenaDNA loses to both SVM and KNN on test AUC,
- but shows competetive holdout AUC near 0.58,
- slightly higher than either SVM or KNN.
+ but shows competitive holdout AUC near 0.58.
  For cancer type,
  HyenaDNA shows respectable test AUC (>0.9) and but struggles on holdout (<0.6),
  considerably lower than either SVM or KNN.
@@ -8740,8 +8634,37 @@ Discussion
 \begin_layout Standard
 Results are consistently lower on holdout splits than on in-study test splits.
  For run-level tetramer frequencies,
- the stark contrast betwen test and holdout performance (AUC >0.9 for test vs 0.71 or less for holdout) indicates that classifiers overfit to study-level signals when trained on single-study cancer-type data.
- Fitting to cluster abundance profiles (UC/CAP) preserves within-run compositional information and improves holdout performance on cancer type but not on the cancer diagnosis task.
+ the stark contrast between test and holdout performance (AUC >0.9 for test vs 0.71 or less for holdout) indicates that classifiers overfit to study-level signals for the cancer type task.
+ Comparing holdout performance across Tables 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:tetramer"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+ and 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:tetramer_uc_cap"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+,
+ UC/CAP offers a consistent advantage over run-level tetramer features for cancer type.
+ However,
+ it barely improves holdout AUC for cancer diagnosis despite a large increase on in-study test splits.
+ This suggests that the compositional diversity captured by cluster abundance profiles partially breaks the study-level shortcuts that hinder tetramer-based cancer type classifiers,
+ while transferable signal for discriminating cancer from healthy may not reside in fine-scale within-run compositional structure.
 \end_layout
 
 \begin_layout Standard
@@ -8787,7 +8710,34 @@ literal "false"
 
 ,
  our AUC (0.66–0.68) is consistently lower than the literature (0.86–0.88).
- The literature numbers come from within-study cross-validation or test splits rather than independent cohorts and are therefore not directly comparable to true holdout performance.
+ The literature numbers come from within-study cross-validation or test splits rather than independent cohorts and are therefore not directly comparable to holdout performance.
+\end_layout
+
+\begin_layout Standard
+We did not find microbiome-based AUC values reported in the breast cancer studies we used,
+ but some comparable results exist.
+ Wang et al.
+ 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "WYH+22"
+literal "false"
+
+\end_inset
+
+ trained random forest classifiers on fecal microbiome data from four studies,
+ two of which include healthy controls and correspond to development datasets in our compilation 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "GHB+18,BVW+21"
+literal "false"
+
+\end_inset
+
+.
+ They reported cross-cohort AUCs of 0.54–0.59 for these datasets,
+ which is in the range of our holdout values for breast cancer (0.47–0.69).
+ 
 \end_layout
 
 \begin_layout Standard
@@ -8817,7 +8767,7 @@ Per-study AUC for cancer diagnosis in this study compared with literature values
 
 \end_inset
 
- 
+
 \end_layout
 
 \end_inset
@@ -8935,7 +8885,7 @@ Partition
 
 \series bold
 \emph on
-Ref 
+Ref
 \end_layout
 
 \end_inset
@@ -8948,8 +8898,6 @@ Ref
 \series bold
 \emph on
 n
-\emph default
- 
 \end_layout
 
 \end_inset
@@ -8985,7 +8933,7 @@ a
 
 \series bold
 \emph on
-Ref 
+Ref
 \end_layout
 
 \end_inset
@@ -8998,8 +8946,6 @@ Ref
 \series bold
 \emph on
 n
-\emph default
- 
 \end_layout
 
 \end_inset
@@ -9011,7 +8957,7 @@ n
 
 \series bold
 \emph on
-AUC 
+AUC
 \end_layout
 
 \end_inset
@@ -9034,7 +8980,7 @@ Lit
 \begin_inset Text
 
 \begin_layout Plain Layout
-Development 
+Development
 \end_layout
 
 \end_inset
@@ -9059,7 +9005,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-9 
+9
 \end_layout
 
 \end_inset
@@ -9068,7 +9014,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.21 
+0.21
 \end_layout
 
 \end_inset
@@ -9093,7 +9039,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-23 
+23
 \end_layout
 
 \end_inset
@@ -9102,7 +9048,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.98 
+0.98
 \end_layout
 
 \end_inset
@@ -9111,7 +9057,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.84 
+0.84
 \end_layout
 
 \end_inset
@@ -9122,7 +9068,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Development 
+Development
 \end_layout
 
 \end_inset
@@ -9147,7 +9093,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-19 
+19
 \end_layout
 
 \end_inset
@@ -9156,7 +9102,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.72 
+0.72
 \end_layout
 
 \end_inset
@@ -9181,7 +9127,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-31 
+31
 \end_layout
 
 \end_inset
@@ -9190,7 +9136,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.73 
+0.73
 \end_layout
 
 \end_inset
@@ -9199,7 +9145,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.85 
+0.85
 \end_layout
 
 \end_inset
@@ -9210,7 +9156,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Development 
+Development
 \end_layout
 
 \end_inset
@@ -9235,7 +9181,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-20 
+20
 \end_layout
 
 \end_inset
@@ -9244,7 +9190,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.62 
+0.62
 \end_layout
 
 \end_inset
@@ -9269,7 +9215,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-23 
+23
 \end_layout
 
 \end_inset
@@ -9278,7 +9224,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.35 
+0.35
 \end_layout
 
 \end_inset
@@ -9288,7 +9234,7 @@ literal "false"
 
 \begin_layout Plain Layout
 —
- 
+
 \end_layout
 
 \end_inset
@@ -9299,7 +9245,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Development 
+Development
 \end_layout
 
 \end_inset
@@ -9324,7 +9270,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-29 
+29
 \end_layout
 
 \end_inset
@@ -9333,7 +9279,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.71 
+0.71
 \end_layout
 
 \end_inset
@@ -9358,7 +9304,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-18 
+18
 \end_layout
 
 \end_inset
@@ -9367,7 +9313,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-1.00 
+1.00
 \end_layout
 
 \end_inset
@@ -9376,7 +9322,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.87 
+0.87
 \end_layout
 
 \end_inset
@@ -9387,7 +9333,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Development 
+Development
 \end_layout
 
 \end_inset
@@ -9412,7 +9358,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-7 
+7
 \end_layout
 
 \end_inset
@@ -9421,7 +9367,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.60 
+0.60
 \end_layout
 
 \end_inset
@@ -9446,7 +9392,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-20 
+20
 \end_layout
 
 \end_inset
@@ -9455,7 +9401,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.92 
+0.92
 \end_layout
 
 \end_inset
@@ -9465,7 +9411,7 @@ literal "false"
 
 \begin_layout Plain Layout
 —
- 
+
 \end_layout
 
 \end_inset
@@ -9476,7 +9422,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Development 
+Development
 \end_layout
 
 \end_inset
@@ -9501,7 +9447,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-15 
+15
 \end_layout
 
 \end_inset
@@ -9510,7 +9456,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.52 
+0.52
 \end_layout
 
 \end_inset
@@ -9535,7 +9481,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-16 
+16
 \end_layout
 
 \end_inset
@@ -9544,7 +9490,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.78 
+0.78
 \end_layout
 
 \end_inset
@@ -9554,7 +9500,7 @@ literal "false"
 
 \begin_layout Plain Layout
 —
- 
+
 \end_layout
 
 \end_inset
@@ -9565,7 +9511,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Development 
+Development
 \end_layout
 
 \end_inset
@@ -9590,7 +9536,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-8 
+8
 \end_layout
 
 \end_inset
@@ -9599,7 +9545,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-1.00 
+1.00
 \end_layout
 
 \end_inset
@@ -9624,7 +9570,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-10 
+10
 \end_layout
 
 \end_inset
@@ -9633,7 +9579,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.88 
+0.88
 \end_layout
 
 \end_inset
@@ -9643,7 +9589,7 @@ literal "false"
 
 \begin_layout Plain Layout
 —
- 
+
 \end_layout
 
 \end_inset
@@ -9654,7 +9600,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Holdout 
+Holdout
 \end_layout
 
 \end_inset
@@ -9679,7 +9625,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-43 
+43
 \end_layout
 
 \end_inset
@@ -9688,7 +9634,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.58 
+0.58
 \end_layout
 
 \end_inset
@@ -9713,7 +9659,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-89 
+89
 \end_layout
 
 \end_inset
@@ -9722,7 +9668,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.66 
+0.66
 \end_layout
 
 \end_inset
@@ -9731,7 +9677,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.86 
+0.86
 \end_layout
 
 \end_inset
@@ -9742,7 +9688,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Holdout 
+Holdout
 \end_layout
 
 \end_inset
@@ -9767,7 +9713,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-92 
+92
 \end_layout
 
 \end_inset
@@ -9776,7 +9722,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.51 
+0.51
 \end_layout
 
 \end_inset
@@ -9801,7 +9747,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-102 
+102
 \end_layout
 
 \end_inset
@@ -9810,7 +9756,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.61 
+0.61
 \end_layout
 
 \end_inset
@@ -9820,7 +9766,7 @@ literal "false"
 
 \begin_layout Plain Layout
 —
- 
+
 \end_layout
 
 \end_inset
@@ -9831,7 +9777,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Holdout 
+Holdout
 \end_layout
 
 \end_inset
@@ -9856,7 +9802,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-20 
+20
 \end_layout
 
 \end_inset
@@ -9865,7 +9811,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.50 
+0.50
 \end_layout
 
 \end_inset
@@ -9890,7 +9836,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-120 
+120
 \end_layout
 
 \end_inset
@@ -9899,7 +9845,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.68 
+0.68
 \end_layout
 
 \end_inset
@@ -9908,7 +9854,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.86 
+0.86
 \end_layout
 
 \end_inset
@@ -9919,7 +9865,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Holdout 
+Holdout
 \end_layout
 
 \end_inset
@@ -9944,7 +9890,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-64 
+64
 \end_layout
 
 \end_inset
@@ -9953,7 +9899,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.47 
+0.47
 \end_layout
 
 \end_inset
@@ -9978,7 +9924,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-20 
+20
 \end_layout
 
 \end_inset
@@ -9987,7 +9933,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.52 
+0.52
 \end_layout
 
 \end_inset
@@ -9997,7 +9943,7 @@ literal "false"
 
 \begin_layout Plain Layout
 —
- 
+
 \end_layout
 
 \end_inset
@@ -10008,7 +9954,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Holdout 
+Holdout
 \end_layout
 
 \end_inset
@@ -10033,7 +9979,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-52 
+52
 \end_layout
 
 \end_inset
@@ -10042,7 +9988,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.68 
+0.68
 \end_layout
 
 \end_inset
@@ -10067,7 +10013,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-40 
+40
 \end_layout
 
 \end_inset
@@ -10076,7 +10022,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.70 
+0.70
 \end_layout
 
 \end_inset
@@ -10086,7 +10032,7 @@ literal "false"
 
 \begin_layout Plain Layout
 —
- 
+
 \end_layout
 
 \end_inset
@@ -10097,7 +10043,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-Holdout 
+Holdout
 \end_layout
 
 \end_inset
@@ -10122,7 +10068,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-30 
+30
 \end_layout
 
 \end_inset
@@ -10131,7 +10077,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.69 
+0.69
 \end_layout
 
 \end_inset
@@ -10156,7 +10102,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-131 
+131
 \end_layout
 
 \end_inset
@@ -10165,7 +10111,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.68 
+0.68
 \end_layout
 
 \end_inset
@@ -10174,7 +10120,7 @@ literal "false"
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.88 
+0.88
 \end_layout
 
 \end_inset
@@ -10289,40 +10235,9 @@ n
 
 \end_layout
 
-\begin_layout Plain Layout
-
-\end_layout
-
 \end_inset
 
 
-\end_layout
-
-\begin_layout Standard
-We did not find microbiome-based AUC values reported in the breast cancer studies we used,
- but some comparable results exist.
- Wang et al.
- 
-\begin_inset CommandInset citation
-LatexCommand cite
-key "WYH+22"
-literal "false"
-
-\end_inset
-
- trained random forest classifiers on fecal microbiome data from four studies,
- two of which include healthy controls and correspond to development datasets in our compilation 
-\begin_inset CommandInset citation
-LatexCommand cite
-key "GHB+18,BVW+21"
-literal "false"
-
-\end_inset
-
-.
- They reported cross-cohort AUCs of 0.65–0.66,
- which sit toward the upper end of our holdout values for breast cancer (0.47–0.69).
- 
 \end_layout
 
 \begin_layout Standard
@@ -10344,39 +10259,6 @@ tuple "list"
  for breast cancer only two out of six holdout studies have AUC > 0.6,
  while for colorectal cancer this grows to five out of six studies.
  This indicates easier detection of colorectal cancer than breast cancer for models simultaneously trained on data from both cancer types.
-\end_layout
-
-\begin_layout Standard
-Comparing holdout performance across Tables 
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "tab:tetramer"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
- and 
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "tab:tetramer_uc_cap"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
-,
- UC/CAP offers a consistent advantage over run-level tetramer features for cancer type.
- However,
- it barely improves holdout AUC for cancer diagnosis despite a large increase on in-study test splits.
- This suggests that the compositional diversity captured by cluster abundance profiles partially breaks the study-level shortcuts that hinder tetramer-based cancer type classifiers,
- while transferable signal for discriminating cancer from healthy may not reside in fine-scale within-run compositional structure.
 \end_layout
 
 \begin_layout Subsection
@@ -10434,65 +10316,7 @@ The aggregated representation in HyenaDNA before classification may contribute t
 \end_layout
 
 \begin_layout Subsection
-Directions for improvement
-\end_layout
-
-\begin_layout Standard
-Table 
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "tab:auc_comparison"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
- reveals substantial variation in per-study AUC for cancer diagnosis.
- Most values exceed 0.5,
- meaning the model makes better-than-random predictions for the majority of datasets.
- Where AUC falls below 0.5,
- the model is systematically wrong.
- Targeting the most challenging studies for model improvement,
- for example,
- by up-weighting hard examples during training,
- could be a productive direction for future work.
-\end_layout
-
-\begin_layout Standard
-Several avenues may improve holdout performance.
- UC/CAP parameters (
-\emph on
-K
-\emph default
-,
- 
-\emph on
-n
-\emph default
-
-\begin_inset script subscript
-
-\begin_layout Plain Layout
-CAP
-\end_layout
-
-\end_inset
-
-) could be tuned jointly with the classifier rather than selected independently.
- Soft cluster assignments (Gaussian mixture or fuzzy 
-\emph on
-k
-\emph default
--means) might better capture the continuous composition of microbial communities.
- For both deep-learning models,
- additional pre-training on 16S rRNA sequences would better align their representations with the target domain.
-\end_layout
-
-\begin_layout Subsection
-Limitations
+Limitations and directions for improvement
 \end_layout
 
 \begin_layout Standard
@@ -10507,8 +10331,7 @@ literal "false"
 
 \end_inset
 
- could confound this comparison,
- because a model may learn to distinguish female from mixed-sex samples rather than breast from colorectal cancer.
+ could confound this comparison.
  Filtering colorectal cancer datasets to include only female participants would address this,
  but is feasible only where participant sex metadata are available.
  Second,
@@ -10536,12 +10359,84 @@ tuple "list"
 ).
 \end_layout
 
+\begin_layout Standard
+Several avenues may improve holdout performance.
+ UC/CAP parameters (
+\emph on
+n
+\emph default
+
+\begin_inset script subscript
+
+\begin_layout Plain Layout
+UC
+\end_layout
+
+\end_inset
+
+,
+
+\emph on
+ K
+\emph default
+,
+ 
+\emph on
+n
+\emph default
+
+\begin_inset script subscript
+
+\begin_layout Plain Layout
+CAP
+\end_layout
+
+\end_inset
+
+) could be tuned jointly with the classifier rather than selected independently.
+ Soft cluster assignments (Gaussian mixture or fuzzy 
+\emph on
+k
+\emph default
+-means) might better capture the continuous composition of microbial communities.
+ Table 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "tab:auc_comparison"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+ reveals substantial variation in per-study AUC for cancer diagnosis;
+ targeting the most challenging studies for model improvement,
+ for example,
+ by up-weighting hard examples during training,
+ could be a productive direction for future work.
+ For both deep-learning models,
+ additional pre-training on 16S rRNA sequences would better align their representations with the target domain.
+\end_layout
+
 \begin_layout Subsection*
 Acknowledgments
 \end_layout
 
 \begin_layout Standard
-All contributors to the previous studies whose data are used here are acknowledged for making this study possible.
+\noindent
+No funding was received for conducting this study.
+ The author has no relevant financial or nonfinancial interests to disclose.
+\end_layout
+
+\begin_layout Subsection*
+Compliance with ethical standards
+\end_layout
+
+\begin_layout Standard
+\noindent
+This is a meta-analysis study for which no ethical approval was required.
 \end_layout
 
 \begin_layout Subsection*
@@ -10549,6 +10444,7 @@ Declaration of generative AI use
 \end_layout
 
 \begin_layout Standard
+\noindent
 Cursor was used for code generation.
  Cursor and Claude Sonnet 4.6 were used for writing sections of the manuscript.
  Claude Sonnet 4.6 was used for polishing the text.
@@ -10560,6 +10456,7 @@ Code and data availability
 \end_layout
 
 \begin_layout Standard
+\noindent
 Code and data are available at 
 \begin_inset Flex URL
 status open
@@ -10571,7 +10468,6 @@ https://github.com/jedick/BreCol
 \end_inset
 
 .
- The repository also holds the manuscript revision prompts and manuscript files with history of AI and human edits.
 \end_layout
 
 \begin_layout Standard

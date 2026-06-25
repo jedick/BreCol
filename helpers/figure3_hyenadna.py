@@ -42,6 +42,12 @@ _RESULT_RE = re.compile(r"^(cd|ct)_max_length_(\d+)_(\d+k)_s\d+\.json$")
 OUTPUT_PNG = Path("manuscript") / "figure3_hyenadna.png"
 OUTPUT_SVG = Path("manuscript") / "figure3_hyenadna.svg"
 
+# Apply global font size settings
+plt.rcParams['legend.fontsize'] = 16
+plt.rcParams['axes.titlesize'] = 16
+plt.rcParams['axes.labelsize'] = 14
+plt.rcParams['xtick.labelsize'] = 12
+plt.rcParams['ytick.labelsize'] = 12
 
 @dataclass(frozen=True)
 class LengthPoint:

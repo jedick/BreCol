@@ -18,6 +18,12 @@ MODELS_SVM_KNN: List[Tuple[str, str]] = [
     ("knn", "KNN"),
 ]
 
+# Apply global font size settings
+plt.rcParams['legend.fontsize'] = 16
+plt.rcParams['axes.titlesize'] = 16
+plt.rcParams['axes.labelsize'] = 14
+plt.rcParams['xtick.labelsize'] = 12
+plt.rcParams['ytick.labelsize'] = 12
 
 def _load_yaml(path: Path) -> Dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
