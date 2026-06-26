@@ -176,7 +176,7 @@ make -j4 fit_uc_cap FEAT=0 EXPT=0  # Train UC/CAP classifiers (~13 min)
 make hyenadna_run_tensors          # Build HyenaDNA input tensors (~12 min, 2.5 GB)
 make train_hyenadna EXPT=0         # Fine-tune HyenaDNA (~6 hr)
 make setbert_run_tensors           # Build SetBERT input tensors (~43 min, 2.3 GB)
-make train_setbert EXPT=0          # Fine-tune SetBERT (~11.5 hr)
+make train_setbert EXPT=0          # Fine-tune SetBERT (~17 hr)
 ```
 
 After running the above, regenerate manuscript tables and figures:
@@ -197,7 +197,7 @@ over one of them.
 `make explain-<target>` prints why Make would rebuild a target and its full
 prerequisite chain. For example: `make explain-run_uc_cap FEAT=0`.
 
-**Hardware:** The full pipeline runs in approximately 20 hours on a machine with
+**Hardware:** The full pipeline runs in approximately 25 hours on a machine with
 8 CPU cores, a 16 GB NVIDIA GPU, and 32 GB of RAM.
 
 ---

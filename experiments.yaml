@@ -115,15 +115,15 @@ train_setbert:
     - name: head_linear
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1]
+        random_seed: [0,1,2]
         head_type: linear
     - name: head_mlp
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1]
+        random_seed: [0,1,2]
         head_type: mlp
     - name: head_cosine
       overrides:
         task: [cancer_diagnosis, cancer_type]
-        random_seed: [0,1]
+        random_seed: [0,1,2]
         head_type: cosine

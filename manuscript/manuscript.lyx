@@ -6333,7 +6333,7 @@ literal "false"
 
 \end_inset
 
- is a transformer architecture designed specifically for high-throughput sequencing data.
+ is a transformer architecture designed for high-throughput sequencing data.
  It represents each read with a DNABERT sequence encoder using overlapping 3-mer (trinucleotide) tokens and then contextualizes the sequences from a given sample with a stack of Set Attention Blocks (SABs).
  SABs are standard transformer blocks without positional encoding,
  making the model permutation-equivariant.
@@ -6468,7 +6468,7 @@ The benchmark dataset is composed of CSV files including accession numbers and m
  The project code is written in Python with YAML configuration files and a Makefile-driven analysis pipeline.
  The official HyenaDNA and SetBERT implementations were modified for this project and structured as pip-installable packages for import by the analysis scripts.
  After downloading the data,
- the entire pipeline runs in approximately 20 hours on a machine with 8 CPU cores,
+ the entire pipeline runs in approximately 25 hours on a machine with 8 CPU cores,
  a 16 GB NVIDIA GPU,
  and 32 GB of RAM.
 \end_layout
@@ -8019,13 +8019,13 @@ tuple "list"
 
 ).
  For cancer diagnosis,
- test and holdout AUC are similar across heads (0.61–0.64 test,
- 0.54–0.56 holdout),
+ test and holdout AUC are similar across heads (0.61–0.65 test,
+ 0.55–0.58 holdout),
  as with HyenaDNA.
  For cancer type,
  the pattern differs:
  test AUC is similar across heads (0.97–0.98),
- while the cosine head is best on holdout (0.70) and the MLP head is the worst on holdout (0.56),
+ while the cosine head is best on holdout (0.71) and the MLP head is the worst on holdout (0.62),
  with substantially higher variance than the other two heads.
 \end_layout
 
@@ -8353,7 +8353,7 @@ placement document
 alignment document
 wide false
 sideways false
-status collapsed
+status open
 
 \begin_layout Plain Layout
 \begin_inset Caption Standard
@@ -8510,11 +8510,7 @@ Linear head
 \begin_inset Text
 
 \begin_layout Plain Layout
-
-\series bold
-0.64
-\series default
- ± 0.03
+0.61 ± 0.07
 \end_layout
 
 \end_inset
@@ -8523,7 +8519,58 @@ Linear head
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.54 ± 0.02
+0.55 ± 0.02
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+0.98 ± 0.01
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+0.66 ± 0.04
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row color="default">
+<cell alignment="center" valignment="top" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+MLP head
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+0.61 ± 0.02
+\end_layout
+
+\end_inset
+</cell>
+<cell alignment="center" valignment="top" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\series bold
+0.58
+\series default
+ ± 0.04
 \end_layout
 
 \end_inset
@@ -8545,58 +8592,7 @@ Linear head
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.65 ± 0.05
-\end_layout
-
-\end_inset
-</cell>
-</row>
-<row color="default">
-<cell alignment="center" valignment="top" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout Plain Layout
-MLP head
-\end_layout
-
-\end_inset
-</cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout Plain Layout
-0.61 ± 0.03
-\end_layout
-
-\end_inset
-</cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout Plain Layout
-
-\series bold
-0.56
-\series default
- ± 0.02
-\end_layout
-
-\end_inset
-</cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout Plain Layout
-0.98 ± 0.02
-\end_layout
-
-\end_inset
-</cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout Plain Layout
-0.56 ± 0.16
+0.62 ± 0.15
 \end_layout
 
 \end_inset
@@ -8616,7 +8612,11 @@ Cosine head
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.63 ± 0.00
+
+\series bold
+0.65
+\series default
+ ± 0.02
 \end_layout
 
 \end_inset
@@ -8625,7 +8625,7 @@ Cosine head
 \begin_inset Text
 
 \begin_layout Plain Layout
-0.56 ± 0.03
+0.56 ± 0.02
 \end_layout
 
 \end_inset
@@ -8645,9 +8645,9 @@ Cosine head
 \begin_layout Plain Layout
 
 \series bold
-0.70
+0.71
 \series default
- ± 0.06
+ ± 0.04
 \end_layout
 
 \end_inset
@@ -8785,7 +8785,7 @@ placement document
 alignment document
 wide false
 sideways false
-status open
+status collapsed
 
 \begin_layout Plain Layout
 \begin_inset Caption Standard
@@ -10333,10 +10333,10 @@ tuple "list"
 ,
  the two models produce nearly identical holdout AUC for cancer diagnosis (best:
  0.57 for HyenaDNA linear,
- 0.56 for SetBERT MLP).
+ 0.58 for SetBERT MLP).
  For cancer type,
  SetBERT achieves higher test AUC (0.98 versus 0.89 for HyenaDNA) but HyenaDNA generalizes better to holdout studies (best:
- 0.79 MLP versus 0.70 cosine for SetBERT).
+ 0.79 for HyenaDNA with MLP versus 0.71 for SetBERT with cosine head).
  HyenaDNA's stronger holdout AUC on cancer type is notable given that it was pre-trained on the human genome rather than on microbial sequences;
  the domain mismatch does not appear to be the limiting factor.
 \end_layout
