@@ -6,25 +6,22 @@
 \origin unavailable
 \textclass IEEEtran
 \begin_preamble
-\IEEEoverridecommandlockouts
-% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
-%Template version as of 6/27/2024
-
-\usepackage{cite}
-\usepackage{amsfonts}\usepackage{algorithmic}
-\usepackage{textcomp}
-\usepackage{xcolor}
-\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
-    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+% Template version as of 6/27/2024
+% The following line is only needed to identify funding in the first footnote.
+% If that is unneeded, please comment it out.
+%\IEEEoverridecommandlockouts
 
 % Use the url package or hyperref to handle URLs 
 % with underscores in BibTeX entries  20260617 jmd
-\usepackage{url}
+%\usepackage{url}
 
 % Hack to make a normal looking tilde in text mode  20260625
 % https://tex.stackexchange.com/questions/312/correctly-typesetting-a-tilde
 %\usepackage{textcomp}
-\newcommand{\textapprox}{\raisebox{0.5ex}{\texttildelow}}
+\newcommand{\mytextapprox}{\raisebox{0.5ex}{\texttildelow}}
+
+% Balance the columns on the last page  20260627
+\usepackage{pbalance}
 \end_preamble
 \options conference
 \use_default_options false
@@ -56,7 +53,18 @@
 \float_alignment class
 \paperfontsize default
 \spacing single
-\use_hyperref false
+\use_hyperref true
+\pdf_title "BreCol: Multi-Study Benchmark for Cancer Detection from Gut Microbiomes"
+\pdf_author "Jeffrey M. Dick"
+\pdf_bookmarks true
+\pdf_bookmarksnumbered false
+\pdf_bookmarksopen false
+\pdf_bookmarksopenlevel 1
+\pdf_breaklinks false
+\pdf_pdfborder true
+\pdf_colorlinks false
+\pdf_backref false
+\pdf_pdfusetitle false
 \papersize default
 \use_geometry false
 \use_package amsmath 2
@@ -138,7 +146,7 @@ Jeffrey M.
 
  
 \begin_inset Flex Author Affiliation
-status collapsed
+status open
 
 \begin_layout Plain Layout
 
@@ -162,7 +170,17 @@ Central South University
 \begin_inset Newline newline
 \end_inset
 
-jeff@chnosz.net
+
+\begin_inset CommandInset href
+LatexCommand href
+name "jeff@chnosz.net"
+target "jeff@chnosz.net"
+type "mailto:"
+literal "false"
+
+\end_inset
+
+
 \end_layout
 
 \end_inset
@@ -180,7 +198,8 @@ Assessing the generalizability of models for cancer detection from gut microbiom
  while holdout evaluation uses studies from 2023 onward,
  reflecting temporal separation from training data.
  Classical models reach test/holdout AUCs of 0.77/0.60 for cancer diagnosis and 1.00/0.83 for cancer type prediction.
- Colorectal cancer is often easier to detect than breast cancer when models are trained on both cancer types simultaneously.
+ Colorectal cancer is often easier to detect than breast cancer for our model,
+ which is trained on both cancer types simultaneously.
  We also evaluate two deep learning models:
  HyenaDNA,
  a long-range sequence model that pools hidden states for classification,
@@ -6422,7 +6441,7 @@ status open
 \begin_layout Plain Layout
 
 \backslash
-textapprox
+mytextapprox
 \end_layout
 
 \end_inset
@@ -8353,7 +8372,7 @@ placement document
 alignment document
 wide false
 sideways false
-status open
+status collapsed
 
 \begin_layout Plain Layout
 \begin_inset Caption Standard
@@ -8366,7 +8385,7 @@ name "tab:setbert"
 \end_inset
 
 SetBERT fine-tuning results with a per-run set size of 350 sequences,
- reported as mean ± standard deviation across two random seeds.
+ reported as mean ± standard deviation across three random seeds.
 \end_layout
 
 \end_inset
@@ -10526,7 +10545,7 @@ Code and data availability
 \noindent
 Code and data are available at 
 \begin_inset Flex URL
-status open
+status collapsed
 
 \begin_layout Plain Layout
 https://github.com/jedick/BreCol
@@ -10542,7 +10561,7 @@ https://github.com/jedick/BreCol
 LatexCommand bibtex
 btprint "btPrintCited"
 bibfiles "references"
-options "IEEEtran"
+options "IEEEtranDOI"
 encoding "default"
 
 \end_inset
