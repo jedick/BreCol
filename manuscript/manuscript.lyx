@@ -22,6 +22,11 @@
 
 % Balance the columns on the last page  20260627
 \usepackage{pbalance}
+
+% Don't hyphenate trin-ucleotide that way  20260702
+\hyphenation{tri-nucleo-tide}
+% Don't split SetBERT  20260703
+\hyphenation{SetBERT}
 \end_preamble
 \options conference
 \use_default_options false
@@ -189,9 +194,9 @@ literal "false"
 \end_layout
 
 \begin_layout Abstract
-Assessing the generalizability of models for cancer detection from gut microbiomes requires evaluations across multiple studies.
+Evaluations across multiple studies are needed to assess the generalizability of microbiome-based cancer detection methods.
  We propose BreCol,
- a 16S rRNA benchmark of 2,040 sequencing runs across 26 studies spanning breast cancer,
+ a benchmark of 2,040 16S rRNA gene sequencing runs across 26 studies spanning breast cancer,
  colorectal cancer,
  and healthy cohorts.
  Train-test splits are made within pre-2023 studies,
@@ -294,20 +299,23 @@ A deeper problem,
  primer choice and sequencing platform) and regional microbiome variation limit the generalizability of models 
 \begin_inset CommandInset citation
 LatexCommand cite
-key "WSNP22,SHL+25"
+key "SHL+25,WSNP22"
 literal "false"
 
 \end_inset
 
 .
- This problem is exacerbated for cancer type prediction (a different task from cancer vs healthy prediction).
+ This problem is exacerbated for cancer type prediction (a different task from cancer vs healthy prediction,
+ i.e.
+ cancer diagnosis).
  Breast and colorectal cancer samples almost always come from different studies,
  so a classifier can achieve near-perfect in-study accuracy simply by identifying the study of origin rather than the disease.
- We are not aware of existing benchmarks that measure the performance of cancer-type classifiers on holdout studies.
+ This motivates our development of a benchmark for better real-world performance estimates of not only cancer diagnosis but also cancer type prediction.
 \end_layout
 
 \begin_layout Standard
-Reliable benchmarks must evaluate models on one or more holdout cohorts never encountered during training (also called prediction sets 
+Reliable benchmarks must evaluate models on one or more holdout cohorts never encountered during training,
+ also called prediction sets 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "WSNP22"
@@ -315,11 +323,11 @@ literal "false"
 
 \end_inset
 
-).
+.
  To do this,
  we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer,
  13 colorectal cancer) from 2013 to 2026.
- Studies are partitioned chronologically by publication year:
+ Studies are partitioned chronologically by publication year;
  for each cancer type,
  the first seven studies form the development partition (training,
  validation,
@@ -387,7 +395,7 @@ name "fig:pipelines"
 
 \end_inset
 
-Classification pipelines
+Classification pipelines.
 \end_layout
 
 \end_inset
@@ -437,8 +445,8 @@ literal "false"
 \end_layout
 
 \begin_layout Standard
-Our compilation spans 26 studies in total:
- 13 for breast cancer and 13 for colorectal cancer (Table
+Our compilation spans 26 studies in total,
+ evenly split between breast cancer and colorectal cancer (Table
 \begin_inset space ~
 \end_inset
 
@@ -455,15 +463,12 @@ tuple "list"
 \end_inset
 
 ).
- Arranged chronologically by publication year,
- the first seven studies per cancer type form the development partition (train,
+ Development studies used for training (including train,
  validation,
- and test splits),
- and the more recent six studies per cancer type are reserved as the holdout partition.
- Development and holdout sets are separated not only by study boundaries but also by time:
+ and test splits) and unseen holdout studies are separated not only by study boundaries but also by time:
  all holdout studies are from 2023 onward.
- This design makes the benchmark a realistic challenge:
- predictions must transfer to future datasets available only after the model was trained.
+ This design makes the benchmark a realistic challenge,
+ as predictions must transfer to future datasets available only after the training date cutoff.
 \end_layout
 
 \begin_layout Standard
@@ -5920,7 +5925,7 @@ tuple "list"
 
  reflect counts after sampling at the indicated rate (fraction of samples).
  Additionally,
- for two studies we excluded runs with <2000 spots 
+ for two studies we excluded runs with <2000 reads 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "BVW+21,CAB+24"
@@ -5938,7 +5943,7 @@ Preprocessing,
 \end_layout
 
 \begin_layout Standard
-We normalized sample labels to a restricted vocabulary:
+We normalized sample labels using three classes:
  healthy,
  breast cancer,
  and colorectal cancer.
@@ -5952,9 +5957,10 @@ We normalized sample labels to a restricted vocabulary:
  we assigned each sequencing run to stratified training,
  validation,
  or test sets in a 70:10:20 ratio.
- Runs from holdout studies were excluded from this assignment.
- Split assignments were defined in advance from study lists and per-study sample tables,
+ Split assignments were defined in advance,
  independent of any downstream feature computation.
+ Runs from holdout studies were excluded from this assignment.
+ 
 \end_layout
 
 \begin_layout Standard
@@ -5973,9 +5979,11 @@ k
 
 \begin_layout Standard
 For all classification pipelines we dropped the first 1000 sequences in each run to avoid potential quality artifacts from run initiation.
- We then randomly sampled up to 5000 sequences from the remaining sequences in each run for tetramer and UC/CAP feature computation.
- For HyenaDNA,
- sequences were packed into sets up to 16k positions rather than sampled to a fixed count.
+ For classical feature computation,
+ we then randomly sampled up to 5000 sequences from the remaining sequences in each run.
+ For deep-learning models (HyenaDNA and SetBERT),
+ smaller sequence sets were used,
+ as described below.
 \end_layout
 
 \begin_layout Subsection
@@ -6006,8 +6014,8 @@ literal "false"
 \end_inset
 
 .
- We calculated tetramer frequencies for each run by counting all 4-mers within each sequence,
- summing counts over all sequences in the run,
+ We calculated tetramer frequencies for each run by counting all 4-mers within each sequence sampled from the run,
+ summing counts over all sampled sequences,
  then converting to relative frequencies,
  yielding a 256-dimensional feature vector used for supervised classification.
 \end_layout
@@ -6027,7 +6035,7 @@ Because run-level tetramer frequencies are averages,
 
 \begin_layout Standard
 To preserve within-run compositional structure,
- we use unsupervised clustering followed by cluster abundance profiles (UC/CAP).
+ we used unsupervised clustering followed by cluster abundance profiles (UC/CAP).
  Even with mini-batch 
 \emph on
 k
@@ -6100,7 +6108,7 @@ Classification Pipeline
 
 \begin_layout Standard
 For the majority-class baseline,
- we predict the most frequent class in the training set for all samples.
+ we predicted the most frequent class in the training set.
  For other classifier models we performed grid search over the hyperparameters listed in Table
 \begin_inset space ~
 \end_inset
@@ -6138,7 +6146,7 @@ name "tab:hyperparameters"
 
 \end_inset
 
-Classifier models and hyperparameter grids used in run-level tetramer frequency classification and in UC/CAP classification for tetramer counts.
+Classifier models and hyperparameter grids used with run-level tetramer frequencies and cluster abundance profiles (UC/CAP features).
 \end_layout
 
 \end_inset
@@ -6277,9 +6285,9 @@ min_samples_leaf (1,
 \end_layout
 
 \begin_layout Standard
-For both KNN and SVM we applied a centered log-ratio transform (CLR),
+For both KNN and SVM we applied a centered log-ratio transform (CLR) to handle compositional data,
  standardized the CLR coordinates,
- then applied PCA.
+ then applied principal component analysis (PCA) to reduce dimensionality.
  For KNN we used inverse distance weighting and tuned the PCA components and number of neighbors.
  For SVM,
  we used an RBF kernel and tuned the PCA components and penalty parameter 
@@ -6325,7 +6333,7 @@ literal "false"
 
 \end_inset
 
- is a long-range genomic sequence model pre-trained on the human reference genome.
+ is a long-range genomic foundation model pre-trained on the human reference genome.
  It uses single-nucleotide tokens and a Hyena operator (a convolutional architecture) to process sequences of up to 1 million bases.
  For each sequencing run we pack sequences into sets and mean-pool the per-position hidden states of the backbone to produce a single vector for classification.
  This follows the pooling strategy used by the HyenaDNA authors for their 1k and 32k models on a species classification task 
@@ -6358,9 +6366,7 @@ literal "false"
  making the model permutation-equivariant.
  A learned class token ([CLS]) prepended to the set is conditioned on all reads by the SABs;
  its output embedding summarizes the entire run and serves as input to the classification head.
- Unlike HyenaDNA,
- SetBERT was pre-trained on approximately 280,000 microbial 16S amplicon samples with a relative-abundance prediction objective,
- making its learned representations relevant to the domain.
+ SetBERT was pre-trained on approximately 280,000 microbial 16S rRNA amplicon samples with a relative-abundance prediction objective.
 \end_layout
 
 \begin_layout Standard
@@ -6400,10 +6406,8 @@ We initialized HyenaDNA from the
 \emph on
 hyenadna-small-32k-seqlen
 \emph default
- pre-trained checkpoint and fine-tuned one model per task.
- Binary cross-entropy loss was computed per task;
- because each run produces multiple sequence sets,
- training loss was averaged across all valid sets for a run.
+ pre-trained checkpoint and fine-tuned separate models for each task.
+ We use binary cross-entropy loss averaged across all sequence sets for each run.
  At evaluation,
  set-level logits were averaged to obtain one prediction per run.
  
@@ -6472,8 +6476,9 @@ For both models we used a learning rate of 1Ã—10
 \end_inset
 
  for the backbone (a 10Ã— reduction to preserve pre-trained representations).
- Models were trained for 5 epochs.
- AUC was computed on the same splits used for the classical pipelines and the epoch with the highest validation AUC was selected.
+ The optimizer was AdamW and weight decay was set to 0.1.
+ Models were trained for 5 epochs,
+ and the epoch with the highest validation AUC was selected.
  
 \end_layout
 
@@ -6539,9 +6544,10 @@ tuple "list"
 ).
  The holdout picture is sharply different.
  For cancer diagnosis,
- SVM achieves a modest AUC of 0.59 while random forest and KNN fall closer to baseline.
+ SVM achieves the highest AUC of 0.59 followed closely by KNN and random forest.
  For cancer type,
- SVM reaches an AUC of 0.71 while KNN collapses below baseline on holdout.
+ SVM reaches an AUC of 0.71 on holdout followed by random forest,
+ while KNN collapses below baseline.
 \end_layout
 
 \begin_layout Subsection
@@ -6644,8 +6650,7 @@ tuple "list"
 \end_inset
 
  lists the results for the best UC/CAP feature set as judged by test AUC across models in each task.
- In this case,
- selecting on the test AUC generates an optimistic result,
+ Selecting on the test AUC generates an optimistic result,
  but the holdout AUCs still represent performance on unseen datasets.
  For cancer diagnosis,
  SVM achieves the best holdout performance,
@@ -6654,7 +6659,7 @@ tuple "list"
  KNN leads on holdout,
  followed by random forest and SVM.
  The gap between in-study test and holdout is again large for cancer type,
- but UC/CAP with KNN achieves substantially higher cancer type holdout AUC than any tetramer-based classifier.
+ but UC/CAP with KNN achieves substantially higher cancer type holdout AUC than any classifier based on run-level tetramer frequencies.
 \end_layout
 
 \begin_layout Subsection
@@ -6664,9 +6669,8 @@ Classification with HyenaDNA
 \begin_layout Standard
 For each task we fine-tuned a HyenaDNA model from the pre-trained backbone with different head architectures.
  For cancer diagnosis,
- test and holdout AUC are similar across all three heads (around 0.61â€“0.62 test,
- 0.54â€“0.57 holdout),
- suggesting that head choice matters little for this task (Table
+ test and holdout AUC are similar across all three heads,
+ at around 0.61â€“0.62 for test and 0.54â€“0.57 for holdout (Table
 \begin_inset space ~
 \end_inset
 
@@ -6684,9 +6688,8 @@ tuple "list"
 
 ).
  For cancer type,
- all heads show similar test AUC (0.88â€“0.89) and the MLP head achieves the highest holdout AUC (0.79),
- though with the largest standard deviation,
- indicating some instability across seeds.
+ all heads show similar test AUC (0.88â€“0.89) and the MLP head achieves the highest holdout AUC by a small margin (0.79),
+ though with the largest standard deviation.
 \end_layout
 
 \begin_layout Standard
@@ -6707,10 +6710,7 @@ name "tab:tetramer"
 
 \end_inset
 
-Test and holdout AUC for run-level tetramer frequency classification with the majority-class baseline,
- KNN,
- SVM,
- and random forest.
+Test and holdout AUC for run-level tetramer frequencies.
  Bold marks the best value per column.
 \end_layout
 
@@ -6993,7 +6993,7 @@ SVM
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
-Random Forest
+Random forest
 \end_layout
 
 \end_inset
@@ -7454,7 +7454,7 @@ CAP
 
 \begin_layout Standard
 We used the linear head (the configuration with the best holdout AUC for cancer diagnosis) to study the effect of context length.
- We varied the length per set (1k,
+ We varied the length per sequence set (1k,
  2k,
  4k,
  8k,
@@ -7479,8 +7479,8 @@ tuple "list"
  shows that for cancer diagnosis,
  holdout AUC increases modestly from 2k to 8k before leveling off,
  while for cancer type,
- longer contexts markedly reduce holdout AUC despite slight gains on the test split.
- The divergence between test and holdout trends for cancer type suggests that larger contexts allow the model to pick up study-specific signals.
+ contexts longer than 2k positions markedly reduce holdout AUC despite slight gains on the test split.
+ The divergence between test and holdout trends suggests that larger contexts allow the model to pick up study-specific signals for cancer type prediction.
 \end_layout
 
 \begin_layout Standard
@@ -7501,8 +7501,8 @@ name "tab:tetramer_uc_cap"
 
 \end_inset
 
-Test and holdout AUC for UC/CAP cluster abundance profiles built from tetramer counts,
- with the best feature set selected per task by test AUC.
+Test and holdout AUC for cluster abundance profiles.
+ The best UC/CAP feature set per task was selected by test AUC.
 \end_layout
 
 \end_inset
@@ -7739,7 +7739,7 @@ SVM
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
-Random Forest
+Random forest
 \end_layout
 
 \end_inset
@@ -7786,7 +7786,7 @@ Random Forest
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
-Feature Set
+Feature set
 \end_layout
 
 \end_inset
@@ -7870,7 +7870,12 @@ name "fig:tetramer_uc_cap"
 
 \end_inset
 
-Test and holdout AUC for SVM and KNN models trained with cluster abundance profiles of tetramer counts (feature sets are UC/CAP parameters in Table 
+Test and holdout AUC for SVM and KNN models trained with cluster abundance profiles.
+ UC/CAP feature sets are listed in Table
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:feature_sets"
@@ -7882,7 +7887,7 @@ tuple "list"
 
 \end_inset
 
-).
+.
 \end_layout
 
 \end_inset
@@ -7925,8 +7930,8 @@ name "fig:hyenadna"
 
 \end_inset
 
-Effect of context length per set on HyenaDNA predictions for cancer diagnosis (left) and cancer type (right),
- using the linear head with three random seeds.
+Test and holdout AUC for HyenaDNA with the linear classification head and varying sequence set length.
+ Error bars represent standard deviation with three random seeds.
 \end_layout
 
 \end_inset
@@ -8024,7 +8029,11 @@ Classification with SetBERT
 \end_layout
 
 \begin_layout Standard
-We evaluated the same three classification heads on SetBERT (Table 
+We evaluated the same three classification heads on SetBERT (Table
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:setbert"
@@ -8042,9 +8051,8 @@ tuple "list"
  0.55â€“0.58 holdout),
  as with HyenaDNA.
  For cancer type,
- the pattern differs:
- test AUC is similar across heads (0.97â€“0.98),
- while the cosine head is best on holdout (0.71) and the MLP head is the worst on holdout (0.62),
+ test AUC is again similar across heads (0.97â€“0.98),
+ while the cosine similarity head is best on holdout (0.71) and the MLP head is the worst on holdout (0.62),
  with substantially higher variance than the other two heads.
 \end_layout
 
@@ -8202,7 +8210,7 @@ Holdout
 \begin_inset Text
 
 \begin_layout Plain Layout
-Linear head
+Linear
 \end_layout
 
 \end_inset
@@ -8253,7 +8261,7 @@ Linear head
 \begin_inset Text
 
 \begin_layout Plain Layout
-MLP head
+MLP
 \end_layout
 
 \end_inset
@@ -8304,7 +8312,7 @@ MLP head
 \begin_inset Text
 
 \begin_layout Plain Layout
-Cosine head
+Cosine similarity
 \end_layout
 
 \end_inset
@@ -8520,7 +8528,7 @@ Holdout
 \begin_inset Text
 
 \begin_layout Plain Layout
-Linear head
+Linear
 \end_layout
 
 \end_inset
@@ -8567,7 +8575,7 @@ Linear head
 \begin_inset Text
 
 \begin_layout Plain Layout
-MLP head
+MLP
 \end_layout
 
 \end_inset
@@ -8622,7 +8630,7 @@ MLP head
 \begin_inset Text
 
 \begin_layout Plain Layout
-Cosine head
+Cosine
 \end_layout
 
 \end_inset
@@ -8692,7 +8700,11 @@ Discussion
 Results are consistently lower on holdout splits than on in-study test splits.
  For run-level tetramer frequencies,
  the stark contrast between test and holdout performance (AUC >0.9 for test vs 0.71 or less for holdout) indicates that classifiers overfit to study-level signals for the cancer type task.
- Comparing holdout performance across Tables 
+ Comparing holdout performance across Tables
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:tetramer"
@@ -8719,13 +8731,19 @@ tuple "list"
 ,
  UC/CAP offers a consistent advantage over run-level tetramer features for cancer type.
  However,
- it barely improves holdout AUC for cancer diagnosis despite a large increase on in-study test splits.
+ it barely improves,
+ and in some cases even weakens,
+ holdout AUC for cancer diagnosis on in-study test splits and external holdout studies.
  This suggests that the compositional diversity captured by cluster abundance profiles partially breaks the study-level shortcuts that hinder tetramer-based cancer type classifiers,
  while transferable signal for discriminating cancer from healthy may not reside in fine-scale within-run compositional structure.
 \end_layout
 
 \begin_layout Standard
-We list our per-study AUC for cancer diagnosis and comparisons with colorectal cancer where available (Table 
+We list per-study AUCs for cancer diagnosis using UC/CAP and comparisons with published values for colorectal cancer where available (Table
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:auc_comparison"
@@ -8738,7 +8756,7 @@ tuple "list"
 \end_inset
 
 ).
- On two of the three development studies with a published comparison 
+ On two of the three development studies with published values 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "ZTV+14,YDS+21"
@@ -8767,7 +8785,8 @@ literal "false"
 
 ,
  our AUC (0.66â€“0.68) is consistently lower than the literature (0.86â€“0.88).
- The literature numbers come from within-study cross-validation or test splits rather than independent cohorts and are therefore not directly comparable to holdout performance.
+ The literature numbers come from within-study cross-validation or test splits rather than independent cohorts,
+ explaining their higher values compared to holdout performance.
 \end_layout
 
 \begin_layout Standard
@@ -8794,7 +8813,7 @@ literal "false"
 .
  While Wang et al.
  reported higher cancer-diagnosis AUCs for tissue than for fecal microbiomes,
- their cross-cohort AUCs of 0.54â€“0.59 for the two fecal datasets with healthy controls is in the range of our holdout values for breast cancer diagnosis (0.47â€“0.69).
+ their cross-cohort AUCs of 0.54â€“0.59 for the two fecal datasets with healthy controls are in the range of our holdout values for breast cancer diagnosis (0.47â€“0.69).
  
 \end_layout
 
@@ -8862,7 +8881,7 @@ Per-study AUC for cancer diagnosis in this study compared with literature values
 \begin_layout Plain Layout
 
 \series bold
-Breast Cancer
+Breast cancer
 \end_layout
 
 \end_inset
@@ -8891,7 +8910,7 @@ Breast Cancer
 \begin_layout Plain Layout
 
 \series bold
-Colorectal Cancer
+Colorectal cancer
 \end_layout
 
 \end_inset
@@ -10197,7 +10216,11 @@ a
 
 \end_inset
 
-AUC from the best tetramer UC/CAP classifier in Table 
+AUC from the best tetramer UC/CAP classifier in Table
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:tetramer_uc_cap"
@@ -10300,7 +10323,11 @@ n
 
 \begin_layout Standard
 Interestingly,
- the test AUCs for breast cancer are generally lower than those for colorectal cancer (Table 
+ the test AUCs for breast cancer are on average lower than those for colorectal cancer (0.63 vs 0.81 for development studies in Table
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:auc_comparison"
@@ -10316,7 +10343,8 @@ tuple "list"
  This pattern extends to the holdout studies;
  for breast cancer only two out of six holdout studies have AUC > 0.6,
  while for colorectal cancer this grows to five out of six studies.
- This indicates easier detection of colorectal cancer than breast cancer when models are simultaneously trained on data from both cancer types (as done in this study).
+ This indicates easier detection of colorectal cancer than breast cancer when models are simultaneously trained on data from both cancer types,
+ as done in this study.
 \end_layout
 
 \begin_layout Subsection
@@ -10325,7 +10353,11 @@ HyenaDNA versus SetBERT
 
 \begin_layout Standard
 Both deep-learning models underperform the best classical methods on holdout data.
- Comparing Tables 
+ Comparing Tables
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:hyenadna"
@@ -10355,7 +10387,7 @@ tuple "list"
  0.58 for SetBERT MLP).
  For cancer type,
  SetBERT achieves higher test AUC (0.98 versus 0.89 for HyenaDNA) but HyenaDNA generalizes better to holdout studies (best:
- 0.79 for HyenaDNA with MLP versus 0.71 for SetBERT with cosine head).
+ 0.79 for HyenaDNA with MLP versus 0.71 for SetBERT with cosine similarity head).
  HyenaDNA's stronger holdout AUC on cancer type is notable given that it was pre-trained on the human genome rather than on microbial sequences;
  the domain mismatch does not appear to be the limiting factor.
 \end_layout
@@ -10405,7 +10437,11 @@ literal "false"
  both deep-learning models were fine-tuned with a small number of sequences per run relative to the full sequencing depth of many runs.
  Strategies that use more sequences could better exploit available data.
  However,
- our experiments do not support set size between 1k and 16k as the limiting factor for HyenaDNA (Figure 
+ our experiments do not support set size between 1k and 16k as the limiting factor for HyenaDNA (Fig.
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "fig:hyenadna"
@@ -10420,7 +10456,11 @@ tuple "list"
 ).
  Finally,
  no baseline values for classification using traditional taxonomic abundance features were obtained in this study.
- Comparisons with previous work in Table 
+ Comparisons with previous work in Table
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:auc_comparison"
@@ -10484,7 +10524,11 @@ CAP
 k
 \emph default
 -means) might better capture the continuous composition of microbial communities.
- Table 
+ Table
+\begin_inset space ~
+\end_inset
+
+
 \begin_inset CommandInset ref
 LatexCommand ref
 reference "tab:auc_comparison"
@@ -10501,11 +10545,11 @@ tuple "list"
  for example,
  by up-weighting hard examples during training,
  could be a productive direction for future work.
- For both deep-learning models,
- additional pre-training on 16S rRNA sequences would better align their representations with the target domain.
+ For HyenaDNA,
+ pre-training on microbial 16S rRNA sequences would better align its representations with the target domain.
 \end_layout
 
-\begin_layout Subsection*
+\begin_layout Section*
 Acknowledgments
 \end_layout
 
@@ -10515,8 +10559,8 @@ No funding was received for conducting this study.
  The author has no relevant financial or nonfinancial interests to disclose.
 \end_layout
 
-\begin_layout Subsection*
-Compliance with ethical standards
+\begin_layout Section*
+Compliance with Ethical Standards
 \end_layout
 
 \begin_layout Standard
@@ -10524,8 +10568,8 @@ Compliance with ethical standards
 This is a meta-analysis study for which no ethical approval was required.
 \end_layout
 
-\begin_layout Subsection*
-Declaration of generative AI use
+\begin_layout Section*
+Declaration of Generative AI Use
 \end_layout
 
 \begin_layout Standard
@@ -10537,8 +10581,8 @@ Cursor was used for code generation.
  Manuscript revision history and prompts are available in the project repository.
 \end_layout
 
-\begin_layout Subsection*
-Code and data availability
+\begin_layout Section*
+Code and Data Availability
 \end_layout
 
 \begin_layout Standard
