@@ -233,15 +233,7 @@ Introduction
 The community of microorganisms inhabiting the human digestive tract,
  known as the gut microbiome,
  is increasingly linked to cancer risk and progression.
- Clinical studies have associated compositional shifts in gut bacteria with colorectal cancer 
-\begin_inset CommandInset citation
-LatexCommand cite
-key "ZFL18"
-literal "false"
-
-\end_inset
-
-,
+ Clinical studies have associated compositional shifts in gut bacteria with colorectal cancer,
  and growing evidence implicates gut dysbiosis in breast cancer as well 
 \begin_inset CommandInset citation
 LatexCommand cite
@@ -266,10 +258,12 @@ literal "false"
 
 \begin_layout Standard
 The dominant workflow for characterizing the gut microbiome is 16S rRNA amplicon sequencing.
- A short,
- phylogenetically informative region of the bacterial ribosomal gene is amplified and sequenced,
- and the resulting reads are matched to known reference taxa to produce species- or genus-level abundance tables.
- Most machine learning studies operate on these pre-processed abundance tables.
+ A short region of the bacterial ribosomal gene is amplified and sequenced,
+ and the resulting reads are matched to reference taxa to produce taxon abundance tables.
+ Most machine learning studies operate on these pre-processed abundance tables,
+ framing the classification problem as one of finding biomarkers,
+ i.e.
+ species or genera associated with disease.
  This discards potentially informative signal:
  fine-grained genetic variation within taxa,
  sequences with no close reference in curated databases,
@@ -288,15 +282,25 @@ literal "false"
 \end_inset
 
 .
+ Genome language models offer another route to sequence-level representations and have been benchmarked extensively on genomic tasks 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "FWZ+25"
+literal "false"
+
+\end_inset
+
+,
+ but these benchmarks do not target the short,
+ mixed-community reads produced by 16S rRNA or metagenomic sequencing.
+ How reference-free classical features and deep-learning models perform on microbiome sequences remains largely unexplored.
 \end_layout
 
 \begin_layout Standard
-A deeper problem,
- however,
- arises when test sets are constructed by random sampling from the same studies used for training.
- This creates optimistically biased performance estimates that do not reflect real-world deployment.
- In microbiome studies the bias is especially severe because technical factors (e.g.
- primer choice and sequencing platform) and regional microbiome variation limit the generalizability of models 
+A deeper problem arises when test sets are constructed from the same studies used for training.
+ This creates optimistically biased performance estimates that do not reflect real-world deployment,
+ due to both technical factors (e.g.
+ primer choice and sequencing platform) and regional microbiome variation 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "SHL+25,WSNP22"
@@ -305,65 +309,14 @@ literal "false"
 \end_inset
 
 .
- This problem is exacerbated for cancer type prediction (a different task from cancer vs healthy prediction,
- i.e.
- cancer diagnosis).
+ This problem is exacerbated for cancer type prediction.
  Breast and colorectal cancer samples almost always come from different studies,
  so a classifier can achieve near-perfect in-study accuracy simply by identifying the study of origin rather than the disease.
- This motivates our development of a benchmark for better real-world performance estimates of not only cancer diagnosis but also cancer type prediction.
-\end_layout
-
-\begin_layout Standard
-Reliable benchmarks must evaluate models on one or more holdout cohorts never encountered during training,
- also called prediction sets 
-\begin_inset CommandInset citation
-LatexCommand cite
-key "WSNP22"
-literal "false"
-
-\end_inset
-
-.
- To do this,
- we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer,
- 13 colorectal cancer) from 2013 to 2026.
- Studies are partitioned chronologically by publication year;
- for each cancer type,
- the first seven studies form the development partition (training,
- validation,
- and test),
- while the more recent six studies are reserved as an external holdout.
-\end_layout
-
-\begin_layout Standard
-Against this benchmark we evaluate a progression of feature representations and learning approaches (Fig.
-\begin_inset space ~
-\end_inset
-
-
-\begin_inset CommandInset ref
-LatexCommand ref
-reference "fig:pipelines"
-plural "false"
-caps "false"
-noprefix "false"
-nolink "false"
-tuple "list"
-
-\end_inset
-
-).
- For classical machine learning we use either run-level aggregated tetramer frequencies or cluster abundance profiles.
- For deep learning we fine-tune two pre-trained genome language models:
- HyenaDNA,
- a long-context genome foundation model,
- and SetBERT,
- which contextualizes individual reads within their parent sample.
- These models were chosen to overcome limitations of other language models,
+ To our knowledge,
+ no previous study has addressed prediction of cancer type,
  i.e.
- short context length,
- and lack of compositional representation,
- which is important for microbial communities.
+ distinguishing different primary cancer sites such as breast and colorectal cancer,
+ from fecal microbiome data.
 \end_layout
 
 \begin_layout Standard
@@ -403,13 +356,74 @@ Classification pipelines.
 
 \end_layout
 
-\begin_layout Plain Layout
-
-\end_layout
-
 \end_inset
 
 
+\end_layout
+
+\begin_layout Standard
+Reliable benchmarks must evaluate models on one or more external validation cohorts never encountered during training 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "WSNP22"
+literal "false"
+
+\end_inset
+
+;
+ we refer to these as holdout studies or datasets.
+ Machine learning studies that draw on published datasets typically reserve only one or two for external holdout while using the rest for training and internal cross-validation 
+\begin_inset CommandInset citation
+LatexCommand cite
+key "TLL+25"
+literal "false"
+
+\end_inset
+
+.
+ To improve the representation of holdout datasets,
+ we curated a new compilation of 2,040 16S rRNA sequencing runs spanning 26 studies (13 breast cancer,
+ 13 colorectal cancer) from 2013 to 2026.
+ Studies are partitioned chronologically by publication year;
+ for each cancer type,
+ the first seven studies form the development partition (training,
+ validation,
+ and test),
+ while the more recent six studies are reserved as an external holdout.
+\end_layout
+
+\begin_layout Standard
+Against this benchmark we evaluate a progression of feature representations and learning approaches (Fig.
+\begin_inset space ~
+\end_inset
+
+
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "fig:pipelines"
+plural "false"
+caps "false"
+noprefix "false"
+nolink "false"
+tuple "list"
+
+\end_inset
+
+).
+ For classical machine learning we use either run-level aggregated tetramer frequencies or cluster abundance profiles,
+ which serve as an alternative to taxonomic abundance features without requiring identification of specific taxa as biomarkers.
+ For deep learning we fine-tune two pre-trained genome language models:
+ HyenaDNA,
+ a long-context genome foundation model,
+ and SetBERT,
+ which contextualizes individual reads within their parent sample.
+ These models were chosen to overcome limitations of other language models,
+ i.e.
+ short context length,
+ and lack of compositional representation,
+ which is important for microbial communities.
+ To our knowledge,
+ this is among the first applications of genome language models to cancer classification from 16S rRNA microbiome data.
 \end_layout
 
 \begin_layout Standard
@@ -6129,6 +6143,38 @@ tuple "list"
 \end_layout
 
 \begin_layout Standard
+For both KNN and SVM we applied a centered log-ratio transform (CLR) to handle compositional data,
+ standardized the CLR coordinates,
+ then applied principal component analysis (PCA) to reduce dimensionality.
+ For KNN we used inverse distance weighting and tuned the PCA components and number of neighbors.
+ For SVM,
+ we used an RBF kernel and tuned the PCA components and penalty parameter 
+\emph on
+C
+\emph default
+.
+ The kernel width parameter 
+\emph on
+gamma
+\emph default
+ was left at scikit-learn's default (
+\family typewriter
+scale
+\family default
+).
+ For random forest,
+ we used the same CLR and standardization but omitted PCA.
+ We tuned the number of trees,
+ maximum tree depth,
+ and minimum samples per leaf.
+\end_layout
+
+\begin_layout Standard
+After selecting hyperparameters using area under the receiver operating characteristic (ROC) curve (AUC) by grid search on the validation split,
+ we fit each final pipeline on the training split.
+\end_layout
+
+\begin_layout Standard
 \begin_inset Float table
 placement document
 alignment document
@@ -6275,45 +6321,9 @@ min_samples_leaf (1,
 
 \end_layout
 
-\begin_layout Plain Layout
-
-\end_layout
-
 \end_inset
 
 
-\end_layout
-
-\begin_layout Standard
-For both KNN and SVM we applied a centered log-ratio transform (CLR) to handle compositional data,
- standardized the CLR coordinates,
- then applied principal component analysis (PCA) to reduce dimensionality.
- For KNN we used inverse distance weighting and tuned the PCA components and number of neighbors.
- For SVM,
- we used an RBF kernel and tuned the PCA components and penalty parameter 
-\emph on
-C
-\emph default
-.
- The kernel width parameter 
-\emph on
-gamma
-\emph default
- was left at scikit-learn's default (
-\family typewriter
-scale
-\family default
-).
- For random forest,
- we used the same CLR and standardization but omitted PCA.
- We tuned the number of trees,
- maximum tree depth,
- and minimum samples per leaf.
-\end_layout
-
-\begin_layout Standard
-After selecting hyperparameters using area under the receiver operating characteristic (ROC) curve (AUC) by grid search on the validation split,
- we fit each final pipeline on the training split.
 \end_layout
 
 \begin_layout Subsection
@@ -7572,7 +7582,7 @@ Cancer type
 </cell>
 </row>
 <row color="default">
-<cell alignment="center" valignment="top" topline="true" bottomline="true" color="default" usebox="none">
+<cell alignment="center" valignment="top" topline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout Plain Layout
@@ -7583,7 +7593,7 @@ Model
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" topline="true" bottomline="true" color="default" usebox="none">
+<cell alignment="center" valignment="top" topline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
@@ -7595,7 +7605,7 @@ Test
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" topline="true" bottomline="true" color="default" usebox="none">
+<cell alignment="center" valignment="top" topline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
@@ -7607,7 +7617,7 @@ Holdout
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" topline="true" bottomline="true" color="default" usebox="none">
+<cell alignment="center" valignment="top" topline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
@@ -7619,7 +7629,7 @@ Test
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" topline="true" bottomline="true" color="default" usebox="none">
+<cell alignment="center" valignment="top" topline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
@@ -7627,6 +7637,53 @@ Test
 \series bold
 \emph on
 Holdout
+\end_layout
+
+\end_inset
+</cell>
+</row>
+<row color="default">
+<cell alignment="center" valignment="top" topline="true" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+</cell>
+<cell multicolumn="1" alignment="center" valignment="top" topline="true" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Feature set 5
+\end_layout
+
+\end_inset
+</cell>
+<cell multicolumn="2" alignment="center" valignment="top" topline="true" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
+\end_layout
+
+\end_inset
+</cell>
+<cell multicolumn="1" alignment="center" valignment="top" topline="true" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+Feature set 5
+\end_layout
+
+\end_inset
+</cell>
+<cell multicolumn="2" alignment="center" valignment="top" topline="true" color="default" usebox="none">
+\begin_inset Text
+
+\begin_layout Plain Layout
+
 \end_layout
 
 \end_inset
@@ -7735,7 +7792,7 @@ SVM
 </cell>
 </row>
 <row color="default">
-<cell alignment="center" valignment="top" color="default" usebox="none">
+<cell alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
@@ -7744,7 +7801,7 @@ Random forest
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
+<cell alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout Plain Layout
@@ -7753,7 +7810,7 @@ Random forest
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
+<cell alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout Plain Layout
@@ -7762,7 +7819,7 @@ Random forest
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
+<cell alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout Plain Layout
@@ -7771,58 +7828,11 @@ Random forest
 
 \end_inset
 </cell>
-<cell alignment="center" valignment="top" color="default" usebox="none">
+<cell alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
 \begin_inset Text
 
 \begin_layout Plain Layout
 0.79
-\end_layout
-
-\end_inset
-</cell>
-</row>
-<row color="default">
-<cell alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
-Feature set
-\end_layout
-
-\end_inset
-</cell>
-<cell multicolumn="1" alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
-5
-\end_layout
-
-\end_inset
-</cell>
-<cell multicolumn="2" alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout Plain Layout
-
-\end_layout
-
-\end_inset
-</cell>
-<cell multicolumn="1" alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout üŸ¢¹“€ ü¡‘”¼  Ð¨Éœ   a! üŸ¢¹“ 
-5
-\end_layout
-
-\end_inset
-</cell>
-<cell multicolumn="2" alignment="center" valignment="top" bottomline="true" color="default" usebox="none">
-\begin_inset Text
-
-\begin_layout Plain Layout
-
 \end_layout
 
 \end_inset
@@ -8312,7 +8322,7 @@ MLP
 \begin_inset Text
 
 \begin_layout Plain Layout
-Cosine similarity
+Cosine
 \end_layout
 
 \end_inset
@@ -8801,8 +8811,8 @@ literal "false"
 
 \end_inset
 
- trained random forest classifiers on amplicon sequence variants using 16S rRNA data from four studies for breast tissue microbiomes and four for stool samples;
- two of the latter include healthy controls and correspond to development datasets in our compilation 
+ trained random forest classifiers on amplicon sequence variants using 16S rRNA data from breast tissue and fecal microbiomes;
+ two of the latter correspond to development datasets in our compilation 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "GHB+18,BVW+21"
@@ -8813,7 +8823,7 @@ literal "false"
 .
  While Wang et al.
  reported higher cancer-diagnosis AUCs for tissue than for fecal microbiomes,
- their cross-cohort AUCs of 0.54â€“0.59 for the two fecal datasets with healthy controls are in the range of our holdout values for breast cancer diagnosis (0.47â€“0.69).
+ their cross-cohort AUCs of 0.54â€“0.59 for the two fecal datasets are in the range of our holdout values for breast cancer diagnosis (0.47â€“0.69).
  
 \end_layout
 
@@ -10434,7 +10444,7 @@ literal "false"
 ,
  enabling future filtering to female-only participants for controlled cancer-type comparisons.
  Second,
- both deep-learning models were fine-tuned with a small number of sequences per run relative to the full sequencing depth of many runs.
+ both deep-learning models were fine-tuned with a small fraction of available sequences per run.
  Strategies that use more sequences could better exploit available data.
  However,
  our experiments do not support set size between 1k and 16k as the limiting factor for HyenaDNA (Fig.
@@ -10454,6 +10464,11 @@ tuple "list"
 \end_inset
 
 ).
+ Third,
+ our reference-free tetramer and cluster abundance features,
+ as well as the deep-learning embeddings,
+ are not interpretable as taxonomic biomarkers,
+ limiting biological interpretation of which microbial taxa drive classification decisions.
  Finally,
  no baseline values for classification using traditional taxonomic abundance features were obtained in this study.
  Comparisons with previous work in Table
@@ -10557,15 +10572,6 @@ Acknowledgments
 \noindent
 No funding was received for conducting this study.
  The author has no relevant financial or nonfinancial interests to disclose.
-\end_layout
-
-\begin_layout Section*
-Compliance with Ethical Standards
-\end_layout
-
-\begin_layout Standard
-\noindent
-This is a meta-analysis study for which no ethical approval was required.
 \end_layout
 
 \begin_layout Section*
