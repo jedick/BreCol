@@ -59,7 +59,7 @@
 \paperfontsize default
 \spacing single
 \use_hyperref true
-\pdf_title "BreCol: Multi-Study Benchmark for Cancer Detection from Gut Microbiomes"
+\pdf_title "BreCol: Benchmarking Classical and Deep-Learning Methods for Microbiome-Based Cancer Detection"
 \pdf_author "Jeffrey M. Dick"
 \pdf_bookmarks true
 \pdf_bookmarksnumbered false
@@ -135,7 +135,7 @@
 
 \begin_layout Title
 BreCol:
- Multi-Study Benchmark for Cancer Detection from Gut Microbiomes
+ Benchmarking Classical and Deep-Learning Methods for Microbiome-Based Cancer Detection
 \end_layout
 
 \begin_layout Author
@@ -194,7 +194,8 @@ literal "false"
 \end_layout
 
 \begin_layout Abstract
-Evaluations across multiple studies are needed to assess the generalizability of microbiome-based cancer detection methods.
+DNA sequencing of the gut microbial community for cancer detection shows promise,
+ but questions remain about the generalizability of results across studies.
  We propose BreCol,
  a benchmark of 2,040 16S rRNA gene sequencing runs across 26 studies spanning breast cancer,
  colorectal cancer,
@@ -203,8 +204,7 @@ Evaluations across multiple studies are needed to assess the generalizability of
  while holdout evaluation uses studies from 2023 onward,
  reflecting temporal separation from training data.
  Classical models reach test/holdout AUCs of 0.77/0.60 for cancer diagnosis and 1.00/0.83 for cancer type prediction.
- Colorectal cancer is often easier to detect than breast cancer for our model,
- which is trained on both cancer types simultaneously.
+ We train the models on both cancer types simultaneously and find that colorectal cancer is often easier to detect than breast cancer.
  We also evaluate two deep learning models:
  HyenaDNA,
  a long-range sequence model that pools hidden states for classification,
@@ -214,7 +214,7 @@ Evaluations across multiple studies are needed to assess the generalizability of
  though tuning training set size and the classification head yields modest gains.
  Our classical pipeline uses unsupervised clustering to derive features from tetramer frequencies,
  preserving within-run compositional signal and achieving near state-of-the-art performance without relying on taxonomic assignments.
- BreCol data and associated code are publicly available.
+ BreCol data and associated code are freely available.
 \end_layout
 
 \begin_layout Keywords
@@ -232,7 +232,7 @@ Introduction
 \begin_layout Standard
 The community of microorganisms inhabiting the human digestive tract,
  known as the gut microbiome,
- is increasingly linked to cancer risk and progression.
+ is increasingly linked to cancer occurrence.
  Clinical studies have associated compositional shifts in gut bacteria with colorectal cancer,
  and growing evidence implicates gut dysbiosis in breast cancer as well 
 \begin_inset CommandInset citation
@@ -258,14 +258,14 @@ literal "false"
 
 \begin_layout Standard
 The dominant workflow for characterizing the gut microbiome is 16S rRNA amplicon sequencing.
- A short region of the bacterial ribosomal gene is amplified and sequenced,
+ A short region of the bacterial ribosomal gene is amplified from fecal samples and sequenced,
  and the resulting reads are matched to reference taxa to produce taxon abundance tables.
  Most machine learning studies operate on these pre-processed abundance tables,
  framing the classification problem as one of finding biomarkers,
  i.e.
  species or genera associated with disease.
- This discards potentially informative signal:
- fine-grained genetic variation within taxa,
+ This discards potentially informative signal,
+ including fine-grained genetic variation within taxa,
  sequences with no close reference in curated databases,
  and compositional structure at the level of individual reads within a sample.
  Methods that work directly on raw sequence data or on reference-free sequence features can in principle recover this signal,
@@ -292,8 +292,7 @@ literal "false"
 
 ,
  but these benchmarks do not target the short,
- mixed-community reads produced by 16S rRNA or metagenomic sequencing.
- How reference-free classical features and deep-learning models perform on microbiome sequences remains largely unexplored.
+ mixed-community reads produced by 16S rRNA sequencing.
 \end_layout
 
 \begin_layout Standard
@@ -423,7 +422,7 @@ tuple "list"
  and lack of compositional representation,
  which is important for microbial communities.
  To our knowledge,
- this is among the first applications of genome language models to cancer classification from 16S rRNA microbiome data.
+ this is one of the earliest applications of genome language models to cancer classification from 16S rRNA microbiome data.
 \end_layout
 
 \begin_layout Standard
@@ -5966,7 +5965,7 @@ We normalized sample labels using three classes:
  Any benign samples (e.g.
  adenomas,
  benign colon polyps,
- and breast ductal carcinoma in situ (DCIS)) and non-fecal samples in the studies were excluded from our analysis.
+ and breast ductal carcinoma in situ (DCIS)) and non-fecal samples in the datasets were excluded from our analysis.
  Among development studies,
  we assigned each sequencing run to stratified training,
  validation,
@@ -5995,7 +5994,7 @@ k
 For all classification pipelines we dropped the first 1000 sequences in each run to avoid potential quality artifacts from run initiation.
  For classical feature computation,
  we then randomly sampled up to 5000 sequences from the remaining sequences in each run.
- For deep-learning models (HyenaDNA and SetBERT),
+ For deep-learning models,
  smaller sequence sets were used,
  as described below.
 \end_layout
@@ -6344,7 +6343,7 @@ literal "false"
 \end_inset
 
  is a long-range genomic foundation model pre-trained on the human reference genome.
- It uses single-nucleotide tokens and a Hyena operator (a convolutional architecture) to process sequences of up to 1 million bases.
+ It uses single-nucleotide tokens and a stack of Hyena operators for implicit convolutions to process sequences of up to 1 million bases.
  For each sequencing run we pack sequences into sets and mean-pool the per-position hidden states of the backbone to produce a single vector for classification.
  This follows the pooling strategy used by the HyenaDNA authors for their 1k and 32k models on a species classification task 
 \begin_inset CommandInset citation
@@ -6380,7 +6379,7 @@ literal "false"
 \end_layout
 
 \begin_layout Standard
-For both models we tried three classification head architectures applied to the run-level summary vector.
+For both models we tested three classification head architectures applied to the run-level summary vector.
  A 
 \series bold
 linear
@@ -6437,7 +6436,7 @@ qiita-16s
 \end_layout
 
 \begin_layout Standard
-Although HyenaDNA offers larger context lengths (up to 1 million bases) and SetBERT was pre-trained with 1000 sequences per run and tested with up to 10,000 sequences per run 
+Although HyenaDNA offers large context lengths (up to 1 million bases) and SetBERT was pre-trained with 1000 sequences per run and tested with up to 10,000 sequences per run 
 \begin_inset CommandInset citation
 LatexCommand cite
 key "LGA+25"
@@ -6446,7 +6445,7 @@ literal "false"
 \end_inset
 
 ,
- we use a smaller number of sequences due to lower GPU resources (16 GB GPU RAM) available in our study.
+ the 16 GB of GPU RAM available for our study required using relatively few sequences.
  For HyenaDNA we packed non-truncated sequences from each run into the context window (up to 16k positions in our experiments) and generated 5 sets of packed sequences per run,
  representing up to 
 \begin_inset ERT
@@ -6660,8 +6659,8 @@ tuple "list"
 \end_inset
 
  lists the results for the best UC/CAP feature set as judged by test AUC across models in each task.
- Selecting on the test AUC generates an optimistic result,
- but the holdout AUCs still represent performance on unseen datasets.
+ Selecting on the test AUC of development studies does not invalidate the holdout AUC,
+ which represents performance on entirely unseen datasets.
  For cancer diagnosis,
  SVM achieves the best holdout performance,
  followed by random forest and KNN.
@@ -8744,8 +8743,8 @@ tuple "list"
  it barely improves,
  and in some cases even weakens,
  holdout AUC for cancer diagnosis on in-study test splits and external holdout studies.
- This suggests that the compositional diversity captured by cluster abundance profiles partially breaks the study-level shortcuts that hinder tetramer-based cancer type classifiers,
- while transferable signal for discriminating cancer from healthy may not reside in fine-scale within-run compositional structure.
+ This suggests that the within-run compositional structure captured by cluster abundance profiles partially breaks the study-level shortcuts that hinder cancer type classifiers,
+ but may not generate transferable signal for cancer diagnosis.
 \end_layout
 
 \begin_layout Standard
@@ -10333,7 +10332,7 @@ n
 
 \begin_layout Standard
 Interestingly,
- the test AUCs for breast cancer are on average lower than those for colorectal cancer (0.63 vs 0.81 for development studies in Table
+ the test AUCs for breast cancer are on average lower than those for colorectal cancer (means of 0.63 vs 0.81 for the development studies in Table
 \begin_inset space ~
 \end_inset
 
@@ -10471,7 +10470,15 @@ tuple "list"
  limiting biological interpretation of which microbial taxa drive classification decisions.
  Finally,
  no baseline values for classification using traditional taxonomic abundance features were obtained in this study.
- Comparisons with previous work in Table
+ Comparisons with previous work (
+\begin_inset CommandInset citation
+LatexCommand cite
+key "ZTV+14,YDS+21"
+literal "false"
+
+\end_inset
+
+ in Table
 \begin_inset space ~
 \end_inset
 
@@ -10487,15 +10494,7 @@ tuple "list"
 
 \end_inset
 
- 
-\begin_inset CommandInset citation
-LatexCommand cite
-key "ZTV+14,YDS+21"
-literal "false"
-
-\end_inset
-
- suggest that UC/CAP has the ability to surpass taxonomy-based classifiers on in-study test splits,
+) suggest that UC/CAP has the ability to surpass taxonomy-based classifiers on in-study test splits,
  but a systematic baseline on all datasets in the benchmark would be more conclusive.
 \end_layout
 
