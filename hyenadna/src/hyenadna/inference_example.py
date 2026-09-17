@@ -45,7 +45,6 @@ def inference_single():
 
     # we need these for the decoder head, if using
     use_head = False
-    n_classes = 2  # not used for embeddings only
 
     # you can override with your own backbone config here if you want,
     # otherwise we'll load the HF one in None
@@ -69,12 +68,11 @@ def inference_single():
             config=backbone_cfg,
             device=device,
             use_head=use_head,
-            n_classes=n_classes,
         )
 
     # from scratch
     elif pretrained_model_name is None:
-        model = HyenaDNAModel(**backbone_cfg, use_head=use_head, n_classes=n_classes)
+        model = HyenaDNAModel(**backbone_cfg, use_head=use_head)
 
     # create tokenizer
     tokenizer = CharacterTokenizer(

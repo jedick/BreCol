@@ -217,7 +217,7 @@ pip install -e hyenadna
 - `huggingface_wrapper.py` and `inference_example.py` — extracted from the [HyenaDNA Colab Notebook](https://colab.research.google.com/drive/1wyVEQd4R3HYLTUOXEEQmp_I8aNC_aLhL)
 
 Local modifications are summarized in the comments within each file. To verify the
-installation: `cd hyenadna; python -c 'import inference_example as ex; ex.inference_single()'`
+installation: `cd hyenadna/src/hyenadna; python -c 'import inference_example as ex; ex.inference_single()'`
 
 Pre-trained checkpoint: `hyenadna-small-32k-seqlen`, cloned from Hugging Face
 on first use if not already present under `paths.checkpoint_dir`.
