@@ -194,7 +194,7 @@ literal "false"
 \end_layout
 
 \begin_layout Abstract
-DNA sequencing of the gut microbial community for cancer detection shows promise,
+DNA sequencing of the gut microbial community shows promise for cancer detection,
  but questions remain about the generalizability of results across studies.
  We propose BreCol,
  a benchmark of 2,040 16S rRNA gene sequencing runs across 26 studies spanning breast cancer,
@@ -214,7 +214,7 @@ DNA sequencing of the gut microbial community for cancer detection shows promise
  though tuning training set size and the classification head yields modest gains.
  Our classical pipeline uses unsupervised clustering to derive features from tetramer frequencies,
  preserving within-run compositional signal and achieving near state-of-the-art performance without relying on taxonomic assignments.
- BreCol data and associated code are freely available.
+ BreCol data and associated code are publicly available.
 \end_layout
 
 \begin_layout Keywords
@@ -10587,12 +10587,12 @@ Cursor was used for code generation.
 \end_layout
 
 \begin_layout Section*
-Code and Data Availability
+Data and Code Availability
 \end_layout
 
 \begin_layout Standard
 \noindent
-Code and data are available at 
+The data compilation and code produced in this study are available at 
 \begin_inset Flex URL
 status collapsed
 
